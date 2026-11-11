@@ -1,0 +1,391 @@
+//! Loading a commit's metadata and its diff against its first parent, using
+//! gitoxide for the tree diff and imara-diff for the text diff.
+
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use gix::ObjectId;
+use imara_diff::{Algorithm, Diff, InternedInput};
+
+use super::diff::{DiffLine, FileDiff, FileStatus, Hunk, LineKind};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Person {
+    pub name: String,
+    pub email: String,
+    pub time: i64,
+    /// Offset from UTC in seconds.
+    pub offset: i32,
+}
+
+/// The full text of both sides of a file, kept for syntax highlighting.
+#[derive(Debug, Clone, Default)]
+pub struct FileTexts {
+    pub old: Option<Arc<str>>,
+    pub new: Option<Arc<str>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CommitDetail {
+    pub id: ObjectId,
+    pub parents: Vec<ObjectId>,
+    pub message: String,
+    pub author: Person,
+    pub committer: Person,
+    pub files: Vec<FileDiff>,
+    pub texts: Vec<FileTexts>,
+}
+
+/// Blobs bigger than this aren't diffed unless the user asks.
+pub const MAX_BLOB: usize = 4 * 1024 * 1024;
+
+pub fn load(
+    repo: &gix::Repository,
+    id: ObjectId,
+    context: u32,
+    line_limit: usize,
+) -> Result<CommitDetail> {
+    let commit = repo.find_commit(id).context("commit not found")?;
+    let (message, author, committer, parents) = {
+        let c = commit.decode().context("bad commit")?;
+        let person = |s: gix::actor::SignatureRef<'_>| {
+            let t = s.time().unwrap_or_default();
+            Person {
+                name: String::from_utf8_lossy(s.name).trim().to_string(),
+                email: String::from_utf8_lossy(s.email).trim().to_string(),
+                time: t.seconds,
+                offset: t.offset,
+            }
+        };
+        (
+            String::from_utf8_lossy(c.message).into_owned(),
+            person(c.author().context("bad author")?),
+            person(c.committer().context("bad committer")?),
+            c.parents().collect::<Vec<_>>(),
+        )
+    };
+    let new_tree = commit.tree().context("commit has no tree")?;
+    let old_tree = match parents.first() {
+        Some(p) => repo
+            .find_commit(*p)
+            .context("parent not found")?
+            .tree()
+            .context("parent has no tree")?,
+        None => repo.empty_tree(),
+    };
+    let (files, texts) = diff_trees(repo, &old_tree, &new_tree, context, line_limit)?;
+    Ok(CommitDetail {
+        id,
+        parents,
+        message,
+        author,
+        committer,
+        files,
+        texts,
+    })
+}
+
+pub fn diff_trees(
+    repo: &gix::Repository,
+    old_tree: &gix::Tree<'_>,
+    new_tree: &gix::Tree<'_>,
+    context: u32,
+    line_limit: usize,
+) -> Result<(Vec<FileDiff>, Vec<FileTexts>)> {
+    use gix::object::tree::diff::ChangeDetached as C;
+    let changes = repo
+        .diff_tree_to_tree(Some(old_tree), Some(new_tree), None)
+        .context("tree diff failed")?;
+    let mut files = Vec::new();
+    let mut texts = Vec::new();
+    for change in changes {
+        let (status, old_path, new_path, old, new) = match change {
+            C::Addition {
+                entry_mode,
+                id,
+                location,
+                ..
+            } => {
+                if entry_mode.is_tree() {
+                    continue;
+                }
+                (
+                    FileStatus::Added,
+                    None,
+                    Some(location),
+                    None,
+                    Some((id, entry_mode)),
+                )
+            }
+            C::Deletion {
+                entry_mode,
+                id,
+                location,
+                ..
+            } => {
+                if entry_mode.is_tree() {
+                    continue;
+                }
+                (
+                    FileStatus::Deleted,
+                    Some(location),
+                    None,
+                    Some((id, entry_mode)),
+                    None,
+                )
+            }
+            C::Modification {
+                previous_entry_mode,
+                previous_id,
+                entry_mode,
+                id,
+                location,
+            } => {
+                if entry_mode.is_tree() && previous_entry_mode.is_tree() {
+                    continue;
+                }
+                let status = if previous_entry_mode.kind() == entry_mode.kind() {
+                    FileStatus::Modified
+                } else {
+                    FileStatus::TypeChange
+                };
+                (
+                    status,
+                    Some(location.clone()),
+                    Some(location),
+                    Some((previous_id, previous_entry_mode)),
+                    Some((id, entry_mode)),
+                )
+            }
+            C::Rewrite {
+                source_location,
+                source_entry_mode,
+                source_id,
+                entry_mode,
+                id,
+                copy,
+                location,
+                ..
+            } => {
+                if entry_mode.is_tree() {
+                    continue;
+                }
+                (
+                    if copy {
+                        FileStatus::Copied
+                    } else {
+                        FileStatus::Renamed
+                    },
+                    Some(source_location),
+                    Some(location),
+                    Some((source_id, source_entry_mode)),
+                    Some((id, entry_mode)),
+                )
+            }
+        };
+        let mut f = FileDiff::new(
+            status,
+            old_path.map(|p| p.to_string()),
+            new_path.map(|p| p.to_string()),
+        );
+        f.old_id = old.map(|o| o.0);
+        f.new_id = new.map(|n| n.0);
+        f.old_mode = old.map(|o| o.1.kind().as_octal_str().to_string());
+        f.new_mode = new.map(|n| n.1.kind().as_octal_str().to_string());
+
+        let old_text = old.map(|(id, mode)| blob_text(repo, id, mode)).transpose()?;
+        let new_text = new.map(|(id, mode)| blob_text(repo, id, mode)).transpose()?;
+        let binary = old_text.as_ref().is_some_and(|t| t.is_none())
+            || new_text.as_ref().is_some_and(|t| t.is_none());
+        let old_text = old_text.flatten();
+        let new_text = new_text.flatten();
+        if binary {
+            f.binary = true;
+            texts.push(FileTexts::default());
+        } else if old_text.as_ref().map_or(0, |t| t.len()) > MAX_BLOB
+            || new_text.as_ref().map_or(0, |t| t.len()) > MAX_BLOB
+        {
+            f.too_large = true;
+            texts.push(FileTexts::default());
+        } else {
+            f.hunks = diff_texts(
+                old_text.as_deref().unwrap_or(""),
+                new_text.as_deref().unwrap_or(""),
+                context,
+            );
+            if f.line_count() > line_limit {
+                f.too_large = true;
+                f.hunks.clear();
+            }
+            texts.push(FileTexts {
+                old: old_text,
+                new: new_text,
+            });
+        }
+        files.push(f);
+    }
+    // Sort by path, keeping `texts` in the same order as `files`.
+    let mut paired: Vec<(FileDiff, FileTexts)> = files.into_iter().zip(texts).collect();
+    paired.sort_by(|a, b| a.0.path().cmp(b.0.path()));
+    Ok(paired.into_iter().unzip())
+}
+
+/// The text of a blob, or `None` if it looks binary. Submodule entries are
+/// shown the way git shows them.
+fn blob_text(
+    repo: &gix::Repository,
+    id: ObjectId,
+    mode: gix::object::tree::EntryMode,
+) -> Result<Option<Arc<str>>> {
+    if mode.is_commit() {
+        return Ok(Some(format!("Subproject commit {id}\n").into()));
+    }
+    let blob = repo.find_blob(id).context("blob not found")?;
+    if is_binary(&blob.data) {
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(&blob.data).into()))
+}
+
+pub fn is_binary(data: &[u8]) -> bool {
+    data[..data.len().min(8000)].contains(&0)
+}
+
+/// Compute unified-diff hunks between two texts.
+pub fn diff_texts(old: &str, new: &str, context: u32) -> Vec<Hunk> {
+    let old_lines: Vec<&str> = old.split_inclusive('\n').collect();
+    let new_lines: Vec<&str> = new.split_inclusive('\n').collect();
+    let mut input: InternedInput<&str> = InternedInput::default();
+    input.update_before(old_lines.iter().copied());
+    input.update_after(new_lines.iter().copied());
+    let mut diff = Diff::compute(Algorithm::Histogram, &input);
+    diff.postprocess_lines(&input);
+
+    let changes: Vec<imara_diff::Hunk> = diff.hunks().collect();
+    let ctx = context as usize;
+    let mut hunks = Vec::new();
+    let mut i = 0;
+    while i < changes.len() {
+        // Group changes whose gaps are small enough to share context.
+        let mut j = i;
+        while j + 1 < changes.len()
+            && (changes[j + 1].before.start - changes[j].before.end) as usize <= 2 * ctx
+        {
+            j += 1;
+        }
+        let first = &changes[i];
+        let last = &changes[j];
+        let old_begin = (first.before.start as usize).saturating_sub(ctx);
+        let new_begin = (first.after.start as usize).saturating_sub(ctx);
+        let old_end = (last.before.end as usize + ctx).min(old_lines.len());
+
+        let mut lines = Vec::new();
+        let mut o = old_begin;
+        let mut n = new_begin;
+        let push = |lines: &mut Vec<DiffLine>, kind, text: &str, o: Option<usize>, n: Option<usize>, last: bool| {
+            let no_eol = last && !text.ends_with('\n');
+            lines.push(DiffLine {
+                kind,
+                text: text.strip_suffix('\n').unwrap_or(text).to_string(),
+                old_no: o.map(|x| x as u32 + 1),
+                new_no: n.map(|x| x as u32 + 1),
+                no_eol,
+            });
+        };
+        for c in &changes[i..=j] {
+            while o < c.before.start as usize {
+                push(&mut lines, LineKind::Context, old_lines[o], Some(o), Some(n), o + 1 == old_lines.len());
+                o += 1;
+                n += 1;
+            }
+            for k in c.before.clone() {
+                let k = k as usize;
+                push(&mut lines, LineKind::Del, old_lines[k], Some(k), None, k + 1 == old_lines.len());
+            }
+            for k in c.after.clone() {
+                let k = k as usize;
+                push(&mut lines, LineKind::Add, new_lines[k], None, Some(k), k + 1 == new_lines.len());
+            }
+            o = c.before.end as usize;
+            n = c.after.end as usize;
+        }
+        while o < old_end {
+            push(&mut lines, LineKind::Context, old_lines[o], Some(o), Some(n), o + 1 == old_lines.len());
+            o += 1;
+            n += 1;
+        }
+        let old_len = (o - old_begin) as u32;
+        let new_len = (n - new_begin) as u32;
+        hunks.push(Hunk {
+            old_start: if old_len == 0 { old_begin as u32 } else { old_begin as u32 + 1 },
+            old_len,
+            new_start: if new_len == 0 { new_begin as u32 } else { new_begin as u32 + 1 },
+            new_len,
+            section: String::new(),
+            lines,
+        });
+        i = j + 1;
+    }
+    hunks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render(hunks: &[Hunk]) -> String {
+        let mut s = String::new();
+        for h in hunks {
+            s.push_str(&h.header());
+            s.push('\n');
+            for l in &h.lines {
+                s.push(match l.kind {
+                    LineKind::Add => '+',
+                    LineKind::Del => '-',
+                    LineKind::Context => ' ',
+                });
+                s.push_str(&l.text);
+                s.push('\n');
+                if l.no_eol {
+                    s.push_str("\\ No newline at end of file\n");
+                }
+            }
+        }
+        s
+    }
+
+    #[test]
+    fn matches_git_style() {
+        let old = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n";
+        let new = "1\n2\nthree\n4\n5\n6\n7\n8\n9\n10\neleven";
+        insta::assert_snapshot!(render(&diff_texts(old, new, 3)), @r"
+        @@ -1,6 +1,6 @@
+         1
+         2
+        -3
+        +three
+         4
+         5
+         6
+        @@ -8,3 +8,4 @@
+         8
+         9
+         10
+        +eleven
+        \ No newline at end of file
+        ");
+    }
+
+    #[test]
+    fn new_and_empty() {
+        insta::assert_snapshot!(render(&diff_texts("", "a\nb\n", 3)), @r"
+        @@ -0,0 +1,2 @@
+        +a
+        +b
+        ");
+        insta::assert_snapshot!(render(&diff_texts("a\n", "", 3)), @r"
+        @@ -1 +0,0 @@
+        -a
+        ");
+    }
+}

@@ -1,0 +1,577 @@
+//! The diff model shared by commit diffs and working tree diffs, plus a parser
+//! for the unified diffs that `git diff` prints.
+
+use gix::ObjectId;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineKind {
+    Context,
+    Add,
+    Del,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffLine {
+    pub kind: LineKind,
+    pub text: String,
+    pub old_no: Option<u32>,
+    pub new_no: Option<u32>,
+    /// The line is the last one in its file and has no trailing newline.
+    pub no_eol: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hunk {
+    pub old_start: u32,
+    pub old_len: u32,
+    pub new_start: u32,
+    pub new_len: u32,
+    /// The text after the second `@@`, usually the enclosing function.
+    pub section: String,
+    pub lines: Vec<DiffLine>,
+}
+
+impl Hunk {
+    pub fn header(&self) -> String {
+        let mut s = format!(
+            "@@ -{} +{} @@",
+            range(self.old_start, self.old_len),
+            range(self.new_start, self.new_len)
+        );
+        if !self.section.is_empty() {
+            s.push(' ');
+            s.push_str(&self.section);
+        }
+        s
+    }
+
+    pub fn changed_lines(&self) -> impl Iterator<Item = usize> + '_ {
+        self.lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.kind != LineKind::Context)
+            .map(|(i, _)| i)
+    }
+}
+
+fn range(start: u32, len: u32) -> String {
+    if len == 1 {
+        start.to_string()
+    } else {
+        format!("{start},{len}")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileStatus {
+    Added,
+    Deleted,
+    Modified,
+    Renamed,
+    Copied,
+    TypeChange,
+    Untracked,
+    Conflicted,
+}
+
+impl FileStatus {
+    pub fn letter(self) -> char {
+        match self {
+            FileStatus::Added => 'A',
+            FileStatus::Deleted => 'D',
+            FileStatus::Modified => 'M',
+            FileStatus::Renamed => 'R',
+            FileStatus::Copied => 'C',
+            FileStatus::TypeChange => 'T',
+            FileStatus::Untracked => '?',
+            FileStatus::Conflicted => 'U',
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileDiff {
+    /// `None` when the file didn't exist before.
+    pub old_path: Option<String>,
+    /// `None` when the file was deleted.
+    pub new_path: Option<String>,
+    pub status: FileStatus,
+    pub old_mode: Option<String>,
+    pub new_mode: Option<String>,
+    pub old_id: Option<ObjectId>,
+    pub new_id: Option<ObjectId>,
+    pub binary: bool,
+    /// The diff was too big to show, so `hunks` is empty.
+    pub too_large: bool,
+    pub similarity: Option<u8>,
+    pub hunks: Vec<Hunk>,
+}
+
+impl FileDiff {
+    pub fn new(status: FileStatus, old_path: Option<String>, new_path: Option<String>) -> Self {
+        Self {
+            old_path,
+            new_path,
+            status,
+            old_mode: None,
+            new_mode: None,
+            old_id: None,
+            new_id: None,
+            binary: false,
+            too_large: false,
+            similarity: None,
+            hunks: Vec::new(),
+        }
+    }
+
+    /// The path to show for this file.
+    pub fn path(&self) -> &str {
+        self.new_path
+            .as_deref()
+            .or(self.old_path.as_deref())
+            .unwrap_or("")
+    }
+
+    pub fn display_path(&self) -> String {
+        match (&self.old_path, &self.new_path) {
+            (Some(o), Some(n)) if o != n => format!("{o} → {n}"),
+            _ => self.path().to_string(),
+        }
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.hunks.iter().map(|h| h.lines.len()).sum()
+    }
+
+    pub fn added_removed(&self) -> (usize, usize) {
+        let mut a = 0;
+        let mut r = 0;
+        for l in self.hunks.iter().flat_map(|h| &h.lines) {
+            match l.kind {
+                LineKind::Add => a += 1,
+                LineKind::Del => r += 1,
+                LineKind::Context => {}
+            }
+        }
+        (a, r)
+    }
+
+    pub fn is_new(&self) -> bool {
+        self.old_path.is_none()
+    }
+
+    pub fn is_deleted(&self) -> bool {
+        self.new_path.is_none()
+    }
+}
+
+/// Files with more diff lines than this are marked `too_large` and their
+/// hunks are dropped, unless the caller asks for everything.
+pub const DEFAULT_LINE_LIMIT: usize = 20_000;
+
+/// Parse the output of `git diff` (without color, with `--no-ext-diff`).
+pub fn parse_unified(text: &str, line_limit: usize) -> Vec<FileDiff> {
+    let mut files: Vec<FileDiff> = Vec::new();
+    let lines = text.split('\n');
+    // Track where we are in the current hunk so we know when it ends. A hunk
+    // body line can start with "diff --git" if a file contains that text, so
+    // we rely on the counts in the hunk header instead of guessing.
+    let mut old_left = 0u32;
+    let mut new_left = 0u32;
+    let mut old_no = 0u32;
+    let mut new_no = 0u32;
+    let mut file_lines = 0usize;
+
+    for line in lines {
+        if old_left > 0 || new_left > 0 {
+            let Some(file) = files.last_mut() else { break };
+            let (kind, body) = match line.as_bytes().first() {
+                Some(b'+') => (LineKind::Add, &line[1..]),
+                Some(b'-') => (LineKind::Del, &line[1..]),
+                Some(b' ') => (LineKind::Context, &line[1..]),
+                // Some tools strip the space from empty context lines.
+                None => (LineKind::Context, ""),
+                Some(b'\\') => {
+                    mark_no_eol(file);
+                    continue;
+                }
+                _ => {
+                    // Malformed. Stop the hunk and treat the line normally.
+                    old_left = 0;
+                    new_left = 0;
+                    continue;
+                }
+            };
+            let (o, n) = match kind {
+                LineKind::Context => {
+                    old_left = old_left.saturating_sub(1);
+                    new_left = new_left.saturating_sub(1);
+                    old_no += 1;
+                    new_no += 1;
+                    (Some(old_no - 1), Some(new_no - 1))
+                }
+                LineKind::Del => {
+                    old_left = old_left.saturating_sub(1);
+                    old_no += 1;
+                    (Some(old_no - 1), None)
+                }
+                LineKind::Add => {
+                    new_left = new_left.saturating_sub(1);
+                    new_no += 1;
+                    (None, Some(new_no - 1))
+                }
+            };
+            if !file.too_large
+                && let Some(h) = file.hunks.last_mut()
+            {
+                h.lines.push(DiffLine {
+                    kind,
+                    text: body.to_string(),
+                    old_no: o,
+                    new_no: n,
+                    no_eol: false,
+                });
+                file_lines += 1;
+                if file_lines > line_limit {
+                    file.too_large = true;
+                    file.hunks.clear();
+                }
+            }
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            let (a, b) = split_git_paths(rest);
+            // The paths are refined later by the ---/+++ and rename lines.
+            files.push(FileDiff::new(FileStatus::Modified, a, b));
+            file_lines = 0;
+        } else if let Some(rest) = line.strip_prefix("diff --cc ").or(line.strip_prefix("diff --combined ")) {
+            let p = unquote(rest);
+            let mut f = FileDiff::new(FileStatus::Conflicted, Some(p.clone()), Some(p));
+            f.too_large = true;
+            files.push(f);
+            file_lines = 0;
+        } else if let Some(file) = files.last_mut() {
+            if let Some(rest) = line.strip_prefix("@@ ") {
+                if let Some(h) = parse_hunk_header(rest) {
+                    old_left = h.old_len;
+                    new_left = h.new_len;
+                    old_no = h.old_start;
+                    new_no = h.new_start;
+                    // For empty ranges git prints the line before the change.
+                    if h.old_len == 0 {
+                        old_no += 1;
+                    }
+                    if h.new_len == 0 {
+                        new_no += 1;
+                    }
+                    if !file.too_large {
+                        file.hunks.push(h);
+                    }
+                }
+            } else if line.starts_with("\\ ") {
+                mark_no_eol(file);
+            } else if let Some(rest) = line.strip_prefix("--- ") {
+                file.old_path = header_path(rest, "a/");
+            } else if let Some(rest) = line.strip_prefix("+++ ") {
+                file.new_path = header_path(rest, "b/");
+            } else if let Some(m) = line.strip_prefix("new file mode ") {
+                file.status = FileStatus::Added;
+                file.old_path = None;
+                file.new_mode = Some(m.to_string());
+            } else if let Some(m) = line.strip_prefix("deleted file mode ") {
+                file.status = FileStatus::Deleted;
+                file.new_path = None;
+                file.old_mode = Some(m.to_string());
+            } else if let Some(m) = line.strip_prefix("old mode ") {
+                file.old_mode = Some(m.to_string());
+            } else if let Some(m) = line.strip_prefix("new mode ") {
+                file.new_mode = Some(m.to_string());
+                if file.status == FileStatus::Modified
+                    && file.old_mode.as_deref().map(mode_kind) != Some(mode_kind(m))
+                {
+                    file.status = FileStatus::TypeChange;
+                }
+            } else if let Some(p) = line.strip_prefix("rename from ") {
+                file.status = FileStatus::Renamed;
+                file.old_path = Some(unquote(p));
+            } else if let Some(p) = line.strip_prefix("rename to ") {
+                file.new_path = Some(unquote(p));
+            } else if let Some(p) = line.strip_prefix("copy from ") {
+                file.status = FileStatus::Copied;
+                file.old_path = Some(unquote(p));
+            } else if let Some(p) = line.strip_prefix("copy to ") {
+                file.new_path = Some(unquote(p));
+            } else if let Some(s) = line
+                .strip_prefix("similarity index ")
+                .and_then(|s| s.strip_suffix('%'))
+            {
+                file.similarity = s.parse().ok();
+            } else if let Some(rest) = line.strip_prefix("index ") {
+                let ids = rest.split(' ').next().unwrap_or("");
+                if let Some((a, b)) = ids.split_once("..") {
+                    file.old_id = ObjectId::from_hex(a.as_bytes()).ok();
+                    file.new_id = ObjectId::from_hex(b.as_bytes()).ok();
+                }
+                if let Some(mode) = rest.split(' ').nth(1) {
+                    file.old_mode.get_or_insert_with(|| mode.to_string());
+                    file.new_mode.get_or_insert_with(|| mode.to_string());
+                }
+            } else if line.starts_with("Binary files ") || line == "GIT binary patch" {
+                file.binary = true;
+            }
+        }
+    }
+    files
+}
+
+fn mark_no_eol(file: &mut FileDiff) {
+    if let Some(l) = file.hunks.last_mut().and_then(|h| h.lines.last_mut()) {
+        l.no_eol = true;
+    }
+}
+
+fn mode_kind(mode: &str) -> &str {
+    // Regular files are 100644/100755. Symlinks, submodules and so on differ
+    // in the first three digits.
+    if mode.starts_with("100") { "100" } else { mode }
+}
+
+pub fn parse_hunk_header(rest: &str) -> Option<Hunk> {
+    // rest looks like "-1,3 +1,4 @@ fn foo()"
+    let (ranges, section) = match rest.split_once(" @@") {
+        Some((r, s)) => (r, s.strip_prefix(' ').unwrap_or(s)),
+        None => return None,
+    };
+    let mut parts = ranges.split(' ');
+    let old = parts.next()?.strip_prefix('-')?;
+    let new = parts.next()?.strip_prefix('+')?;
+    let parse = |s: &str| -> Option<(u32, u32)> {
+        match s.split_once(',') {
+            Some((a, b)) => Some((a.parse().ok()?, b.parse().ok()?)),
+            None => Some((s.parse().ok()?, 1)),
+        }
+    };
+    let (old_start, old_len) = parse(old)?;
+    let (new_start, new_len) = parse(new)?;
+    Some(Hunk {
+        old_start,
+        old_len,
+        new_start,
+        new_len,
+        section: section.to_string(),
+        lines: Vec::new(),
+    })
+}
+
+fn header_path(rest: &str, prefix: &str) -> Option<String> {
+    // Paths with spaces may be followed by a tab.
+    let rest = rest.split('\t').next().unwrap_or(rest);
+    if rest == "/dev/null" {
+        return None;
+    }
+    let p = unquote(rest);
+    Some(p.strip_prefix(prefix).map(str::to_string).unwrap_or(p))
+}
+
+/// Split the `a/x b/y` part of a `diff --git` line. Unquoted paths with spaces
+/// are ambiguous, so we assume both sides are the same length when they are
+/// not renamed, which is what git does too.
+fn split_git_paths(rest: &str) -> (Option<String>, Option<String>) {
+    if rest.starts_with('"') {
+        let (a, tail) = take_quoted(rest);
+        let b = unquote(tail.trim_start());
+        return (
+            Some(a.strip_prefix("a/").unwrap_or(&a).to_string()),
+            Some(b.strip_prefix("b/").unwrap_or(&b).to_string()),
+        );
+    }
+    if let Some(idx) = rest.find(" \"b/") {
+        let a = &rest[..idx];
+        let b = unquote(&rest[idx + 1..]);
+        return (
+            Some(a.strip_prefix("a/").unwrap_or(a).to_string()),
+            Some(b.strip_prefix("b/").unwrap_or(&b).to_string()),
+        );
+    }
+    let n = rest.len();
+    if n % 2 == 1 {
+        let half = n / 2;
+        let (a, b) = (&rest[..half], &rest[half + 1..]);
+        if let (Some(a2), Some(b2)) = (a.strip_prefix("a/"), b.strip_prefix("b/"))
+            && a2 == b2
+        {
+            return (Some(a2.to_string()), Some(b2.to_string()));
+        }
+    }
+    match rest.split_once(" b/") {
+        Some((a, b)) => (
+            Some(a.strip_prefix("a/").unwrap_or(a).to_string()),
+            Some(b.to_string()),
+        ),
+        None => (Some(rest.to_string()), Some(rest.to_string())),
+    }
+}
+
+fn take_quoted(s: &str) -> (String, &str) {
+    let bytes = s.as_bytes();
+    let mut i = 1;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'"' {
+            return (unquote(&s[..=i]), &s[i + 1..]);
+        }
+        i += 1;
+    }
+    (unquote(s), "")
+}
+
+/// Undo git's C-style path quoting (used for unusual characters).
+pub fn unquote(s: &str) -> String {
+    let Some(inner) = s.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
+        return s.to_string();
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(inner.len());
+    let b = inner.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'\\' || i + 1 >= b.len() {
+            out.push(b[i]);
+            i += 1;
+            continue;
+        }
+        let c = b[i + 1];
+        i += 2;
+        match c {
+            b'n' => out.push(b'\n'),
+            b't' => out.push(b'\t'),
+            b'r' => out.push(b'\r'),
+            b'a' => out.push(7),
+            b'b' => out.push(8),
+            b'f' => out.push(12),
+            b'v' => out.push(11),
+            b'0'..=b'7' => {
+                let mut v = u32::from(c - b'0');
+                let mut k = 0;
+                while k < 2 && i < b.len() && (b'0'..=b'7').contains(&b[i]) {
+                    v = v * 8 + u32::from(b[i] - b'0');
+                    i += 1;
+                    k += 1;
+                }
+                out.push((v & 0xff) as u8);
+            }
+            other => out.push(other),
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE: &str = "\
+diff --git a/src/a.rs b/src/a.rs
+index 1111111..2222222 100644
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1,4 +1,5 @@ fn main() {
+ one
+-two
++TWO
++three
+ four
+ five
+@@ -10 +11,0 @@
+-gone
+diff --git a/new file.txt b/new file.txt
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/new file.txt
+@@ -0,0 +1,2 @@
++hello
++world
+\\ No newline at end of file
+diff --git a/old.txt b/renamed.txt
+similarity index 90%
+rename from old.txt
+rename to renamed.txt
+diff --git a/img.png b/img.png
+index 4444444..5555555 100644
+Binary files a/img.png and b/img.png differ
+";
+
+    #[test]
+    fn parses_sample() {
+        let files = parse_unified(SAMPLE, DEFAULT_LINE_LIMIT);
+        assert_eq!(files.len(), 4);
+
+        let a = &files[0];
+        assert_eq!(a.path(), "src/a.rs");
+        assert_eq!(a.status, FileStatus::Modified);
+        assert_eq!(a.hunks.len(), 2);
+        assert_eq!(a.hunks[0].section, "fn main() {");
+        assert_eq!(a.hunks[0].lines.len(), 6);
+        assert_eq!(a.hunks[0].lines[1].kind, LineKind::Del);
+        assert_eq!(a.hunks[0].lines[1].old_no, Some(2));
+        assert_eq!(a.hunks[0].lines[2].new_no, Some(2));
+        assert_eq!(a.hunks[0].lines[4].old_no, Some(3));
+        assert_eq!(a.hunks[0].lines[4].new_no, Some(4));
+        assert_eq!(a.hunks[1].lines[0].old_no, Some(10));
+        assert_eq!(a.added_removed(), (2, 2));
+
+        let n = &files[1];
+        assert_eq!(n.status, FileStatus::Added);
+        assert_eq!(n.path(), "new file.txt");
+        assert!(n.is_new());
+        assert!(n.hunks[0].lines[1].no_eol);
+        assert!(!n.hunks[0].lines[0].no_eol);
+
+        let r = &files[2];
+        assert_eq!(r.status, FileStatus::Renamed);
+        assert_eq!(r.display_path(), "old.txt → renamed.txt");
+        assert_eq!(r.similarity, Some(90));
+
+        assert!(files[3].binary);
+    }
+
+    #[test]
+    fn content_that_looks_like_a_header() {
+        let text = "\
+diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -1,2 +1,2 @@
+-diff --git a/y b/y
++--- a/z
+ @@ -1 +1 @@
+";
+        let files = parse_unified(text, DEFAULT_LINE_LIMIT);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].hunks[0].lines.len(), 3);
+        assert_eq!(files[0].hunks[0].lines[0].text, "diff --git a/y b/y");
+    }
+
+    #[test]
+    fn line_limit() {
+        let files = parse_unified(SAMPLE, 3);
+        assert!(files[0].too_large);
+        assert!(files[0].hunks.is_empty());
+        assert!(!files[1].too_large);
+    }
+
+    #[test]
+    fn quoted_paths() {
+        assert_eq!(unquote(r#""a\tb\303\251""#), "a\tbé");
+        let (a, b) = split_git_paths(r#""a/x y\t" "b/x y\t""#);
+        assert_eq!(a.as_deref(), Some("x y\t"));
+        assert_eq!(b.as_deref(), Some("x y\t"));
+        let (a, b) = split_git_paths("a/a b b/a b");
+        assert_eq!(a.as_deref(), Some("a b"));
+        assert_eq!(b.as_deref(), Some("a b"));
+    }
+}
