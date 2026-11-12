@@ -13,6 +13,7 @@ use gix::ObjectId;
 use super::doc::{Row, Section, Source};
 use super::planner::{PlanAction, Planner};
 use super::{After, App, Focus, Level, Suspend};
+use super::input::Target;
 use crate::git::diff::FileDiff;
 use crate::git::ops::{self, ApplyMode, ResetMode};
 use crate::git::rebase::{self, Action, Outcome, RepoState};
@@ -745,7 +746,7 @@ impl App {
                     act(Some(Key::ch('r')), "Pull with rebase", Cmd::Pull(PullMode::Rebase)),
                     act(Some(Key::ch('m')), "Pull with merge", Cmd::Pull(PullMode::Merge)),
                 ];
-                self.open_menu("Pull", items);
+                self.open_menu("Pull", items, Some(&Cmd::PullMenu));
             }
             Cmd::Pull(mode) => {
                 let env = self.repo.remote_env();
@@ -769,7 +770,7 @@ impl App {
                     act(Some(Key::ch('P')), "Push", Cmd::Push { force: false }),
                     act(Some(Key::ch('f')), "Force push (with lease)", Cmd::Push { force: true }),
                 ];
-                self.open_menu("Push", items);
+                self.open_menu("Push", items, Some(&Cmd::PushMenu));
             }
             Cmd::Push { force } => {
                 let Some(branch) = self.refs.current_branch().cloned() else {
@@ -855,7 +856,7 @@ impl App {
                     act(Some(Key::ch('m')), "Mixed: keep changes unstaged", Cmd::Reset(id, ResetMode::Mixed)),
                     act(Some(Key::ch('h')), "Hard: discard all changes", Cmd::Reset(id, ResetMode::Hard)),
                 ];
-                self.open_menu(&format!("Reset to {}", short(&id)), items);
+                self.open_menu(&format!("Reset to {}", short(&id)), items, None);
             }
             Cmd::Reset(id, mode) => {
                 let s = id.to_string();
@@ -1024,8 +1025,16 @@ impl App {
         });
     }
 
-    fn open_menu(&mut self, title: &str, items: Vec<ActionDef>) {
-        let anchor = self.mouse;
+    /// Open a menu below the button for `from` if it's on screen, and at the
+    /// mouse pointer otherwise.
+    fn open_menu(&mut self, title: &str, items: Vec<ActionDef>, from: Option<&Cmd>) {
+        let button = from.and_then(|cmd| {
+            self.hits.iter().find_map(|(r, t)| match t {
+                Target::Button(c) if c == cmd => Some((r.x, r.y + 1)),
+                _ => None,
+            })
+        });
+        let anchor = button.unwrap_or(self.mouse);
         self.overlays.push(Overlay::Menu(Menu {
             title: Some(title.to_string()),
             items,
