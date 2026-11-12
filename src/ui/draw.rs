@@ -215,9 +215,18 @@ fn draw_topbar(app: &App, buf: &mut Buffer, r: Rect, hits: &mut Hits) {
     if let Some(b) = app.refs.current_branch() {
         if b.upstream_gone {
             x = put(buf, x + 1, r.y, "upstream gone", 14, base.fg(t.warn));
-        } else if b.upstream.is_some() {
-            let s = format!("↑{} ↓{}", b.ahead, b.behind);
-            x = put(buf, x + 1, r.y, &s, 12, base.fg(if b.ahead + b.behind > 0 { t.warn } else { t.dim }));
+        } else if let Some(up) = &b.upstream {
+            x = put(buf, x + 1, r.y, &format!("→ {up}"), 40, base.fg(t.dim));
+            let mut counts = Vec::new();
+            if b.ahead > 0 {
+                counts.push(format!("↑{}", b.ahead));
+            }
+            if b.behind > 0 {
+                counts.push(format!("↓{}", b.behind));
+            }
+            if !counts.is_empty() {
+                x = put(buf, x + 1, r.y, &counts.join(" "), 14, base.fg(t.warn));
+            }
         }
     }
 
