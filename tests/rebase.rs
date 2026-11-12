@@ -36,6 +36,15 @@ fn reword_head_and_older() {
 }
 
 #[test]
+fn reword_keeps_lines_starting_with_hash() {
+    let (s, ids) = four();
+    rebase::reword(&s.git, &exe(), id(&ids[3]), "#4 four\n\n# not a comment").expect("reword head");
+    rebase::reword(&s.git, &exe(), id(&ids[1]), "#2 two\n\n# not a comment").expect("reword");
+    assert_eq!(s.log(), ["#4 four", "three", "#2 two", "one"]);
+    assert_eq!(s.sh(&["log", "-1", "--format=%B", "HEAD~2"]).trim(), "#2 two\n\n# not a comment");
+}
+
+#[test]
 fn reword_root() {
     let (s, ids) = four();
     rebase::reword(&s.git, &exe(), id(&ids[0]), "ONE").expect("reword root");

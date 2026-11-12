@@ -127,7 +127,7 @@ pub fn build_todo(plan: &Plan, dir: &Path) -> Result<String> {
                 std::fs::write(&file, msg).context("could not write message file")?;
                 todo.push_str(&format!("{verb} {id} {summary}\n"));
                 todo.push_str(&format!(
-                    "exec git commit --amend --allow-empty --no-verify --cleanup=strip -F {}\n",
+                    "exec git commit --amend --allow-empty --no-verify --cleanup=whitespace -F {}\n",
                     shell_quote(&file.to_string_lossy())
                 ));
             }
@@ -268,7 +268,7 @@ pub fn reword(git: &Git, exe: &Path, id: ObjectId, message: &str) -> Result<Outc
     let head = git.read_text(&["rev-parse", "HEAD"])?;
     if ObjectId::from_hex(head.trim().as_bytes()).ok() == Some(id) {
         git.run_opts(
-            &["commit", "--amend", "--only", "--allow-empty", "--cleanup=strip", "-F", "-"],
+            &["commit", "--amend", "--only", "--allow-empty", "--cleanup=whitespace", "-F", "-"],
             &RunOpts {
                 stdin: Some(message.as_bytes().to_vec()),
                 ..Default::default()

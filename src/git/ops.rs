@@ -113,7 +113,10 @@ pub fn delete_untracked(git: &Git, paths: &[&str]) -> Result<()> {
 }
 
 pub fn commit(git: &Git, message: &str, amend: bool) -> Result<String> {
-    let mut args = vec!["commit", "-F", "-", "--cleanup=strip"];
+    // `--cleanup=strip` would also remove every line that starts with "#",
+    // such as a subject like "#42 Fix the crash". Nothing we pass in has
+    // comment lines, so only tidy up the whitespace.
+    let mut args = vec!["commit", "-F", "-", "--cleanup=whitespace"];
     if amend {
         args.push("--amend");
     }
