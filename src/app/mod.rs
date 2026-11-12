@@ -232,7 +232,9 @@ pub struct App {
     message_before_amend: Option<String>,
 
     pub split_diff: bool,
-    pub sidebar_visible: bool,
+    /// Whether the user has shown or hidden the sidebar. `None` means it
+    /// depends on the terminal width.
+    pub sidebar_visible: Option<bool>,
     pub sidebar_width: u16,
     pub history_frac: f32,
 
@@ -324,7 +326,7 @@ impl App {
             amend: false,
             message_before_amend: None,
             split_diff: false,
-            sidebar_visible: true,
+            sidebar_visible: None,
             sidebar_width: 28,
             history_frac: 0.45,
             busy: None,
@@ -792,6 +794,10 @@ impl App {
             }
         }
         self.refresh(REFRESH_ALL);
+    }
+
+    pub fn sidebar_shown(&self) -> bool {
+        self.sidebar_visible.unwrap_or(self.size.0 >= 100)
     }
 
     pub fn toggle_amend(&mut self) {

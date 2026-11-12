@@ -83,7 +83,7 @@ fn layout(app: &mut App, area: Rect) {
     let body = Rect::new(area.x, area.y + top, area.width, area.height.saturating_sub(top + 1));
     app.areas.body = body;
     let mut x = body.x;
-    let show_sidebar = app.sidebar_visible && body.width >= 70;
+    let show_sidebar = app.sidebar_shown() && body.width >= 40;
     if show_sidebar {
         let w = app.sidebar_width.min(body.width / 2);
         app.areas.sidebar = Rect::new(x, body.y, w, body.height);

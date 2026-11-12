@@ -690,8 +690,8 @@ impl App {
             Cmd::CommandLog => self.overlays.push(Overlay::Log { scroll: usize::MAX }),
             Cmd::ContextMenu => self.open_context_menu(None),
             Cmd::ToggleSidebar => {
-                self.sidebar_visible = !self.sidebar_visible;
-                if !self.sidebar_visible && self.focus == Focus::Sidebar {
+                self.sidebar_visible = Some(!self.sidebar_shown());
+                if !self.sidebar_shown() && self.focus == Focus::Sidebar {
                     self.focus = Focus::History;
                 }
             }
@@ -701,7 +701,7 @@ impl App {
             }
             Cmd::FocusNext | Cmd::FocusPrev => {
                 let mut order = Vec::new();
-                if self.sidebar_visible {
+                if self.sidebar_shown() {
                     order.push(Focus::Sidebar);
                 }
                 order.push(Focus::History);
@@ -715,8 +715,8 @@ impl App {
                 self.focus = order[j];
             }
             Cmd::Focus(f) => {
-                if f == Focus::Sidebar && !self.sidebar_visible {
-                    self.sidebar_visible = true;
+                if f == Focus::Sidebar && !self.sidebar_shown() {
+                    self.sidebar_visible = Some(true);
                 }
                 if f == Focus::Message && self.detail.source != Source::Workdir {
                     self.select_history(0);

@@ -161,7 +161,7 @@ impl App {
                 self.focus = Focus::Detail;
                 true
             }
-            (Focus::History, KeyCode::Char('h') | KeyCode::Left) if self.sidebar_visible => {
+            (Focus::History, KeyCode::Char('h') | KeyCode::Left) if self.sidebar_shown() => {
                 self.focus = Focus::Sidebar;
                 true
             }
@@ -596,7 +596,7 @@ impl App {
             }
             Some(Drag::Splitter(Splitter::History)) => {
                 let b = self.areas.body;
-                let left = if self.sidebar_visible { self.sidebar_width + 1 } else { 0 };
+                let left = if self.areas.sidebar.width > 0 { self.areas.sidebar.width + 1 } else { 0 };
                 let avail = b.width.saturating_sub(left).max(1);
                 let rel = x.saturating_sub(b.x + left);
                 self.history_frac = (f32::from(rel) / f32::from(avail)).clamp(0.15, 0.85);
