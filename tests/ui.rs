@@ -14,13 +14,15 @@ use common::Scratch;
 use tergi::app::cmd::{Cmd, Overlay, Unit};
 use tergi::app::doc::Row;
 use tergi::app::input::Target;
-use tergi::app::{App, AppEvent, Repo};
+use tergi::app::{After, App, AppEvent, Repo};
 use tergi::config::Config;
 use tergi::ui::draw::draw;
 
 struct Ui {
     app: App,
     term: Terminal<TestBackend>,
+    // Declared after `app`, so the app and its tasks go away first.
+    _rt: tokio::runtime::Runtime,
 }
 
 impl Ui {
@@ -29,10 +31,17 @@ impl Ui {
         // Git calls back into tergi during a rebase. Here the current
         // executable is the test runner, so point it at the real one.
         repo.exe = env!("CARGO_BIN_EXE_tergi").into();
-        let mut app = App::new(repo, Config::default(), None);
-        app.start();
+        // The app's tasks run on the runtime's own threads, so the tests can
+        // stay synchronous and poll the app with `try_recv`.
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let app = {
+            let _in_rt = rt.enter();
+            let mut app = App::new(repo, Config::default(), None);
+            app.start();
+            app
+        };
         let term = Terminal::new(TestBackend::new(140, 36)).expect("terminal");
-        Ui { app, term }
+        Ui { app, term, _rt: rt }
     }
 
     /// Select a row in the history and wait for its commit to load.
@@ -541,4 +550,14 @@ fn answers_a_password_prompt() {
     let out = child.wait_with_output().expect("askpass output");
     assert!(!out.status.success());
     assert!(out.stdout.is_empty());
+}
+
+#[test]
+#[should_panic(expected = "the operation blew up")]
+fn a_panic_in_the_background_reaches_the_caller() {
+    let s = repo_with_change();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    ui.app.spawn_op("Explode", After::Nothing, |_, _| panic!("the operation blew up"));
+    ui.wait("the operation", |u| u.app.busy.is_none());
 }

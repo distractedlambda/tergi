@@ -12,7 +12,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use tokio::runtime::Handle;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::oneshot;
+use tokio::task::JoinSet;
 use gix::ObjectId;
 use ratatui::layout::Rect;
 
@@ -34,7 +37,7 @@ pub use cmd::Cmd;
 use doc::Detail;
 use planner::Planner;
 
-/// Everything about the repository that background threads need.
+/// Everything about the repository that background tasks need.
 pub struct Repo {
     pub git: Git,
     pub gix: gix::ThreadSafeRepository,
@@ -106,7 +109,7 @@ pub enum AppEvent {
     OpDone(OpResult),
     Progress(String),
     Watch(watch::Event),
-    AskPass(String, Sender<Option<String>>),
+    AskPass(String, oneshot::Sender<Option<String>>),
     Tick,
 }
 
@@ -209,8 +212,13 @@ pub struct Areas {
 
 pub struct App {
     pub repo: Arc<Repo>,
-    pub tx: Sender<AppEvent>,
-    rx: Receiver<AppEvent>,
+    pub tx: UnboundedSender<AppEvent>,
+    rx: UnboundedReceiver<AppEvent>,
+    /// The runtime that background tasks run on.
+    rt: Handle,
+    /// Every background task. Dropping the App aborts them, and a task that
+    /// panics makes `next` and `try_recv` panic too.
+    tasks: JoinSet<()>,
     pub cfg: Config,
     pub theme: Theme,
     pub quit: bool,
@@ -233,7 +241,7 @@ pub struct App {
     pub focus: Focus,
     pub sidebar: SidebarState,
     pub detail: Detail,
-    detail_tx: Sender<(u64, ObjectId)>,
+    detail_tx: tokio::sync::watch::Sender<Option<(u64, ObjectId)>>,
     pub highlighter: Highlighter,
 
     pub overlays: Vec<cmd::Overlay>,
@@ -288,19 +296,28 @@ const REFRESH_WORKDIR: u8 = 2;
 pub const REFRESH_ALL: u8 = REFRESH_REFS | REFRESH_WORKDIR;
 
 impl App {
+    /// Must be called from inside a Tokio runtime, which is where the App's
+    /// background tasks will run.
     pub fn new(mut repo: Repo, cfg: Config, config_error: Option<String>) -> App {
-        let (tx, rx) = unbounded();
+        let rt = Handle::current();
+        let mut tasks = JoinSet::new();
+        let (tx, rx) = unbounded_channel();
         let tx_ask = tx.clone();
-        repo.askpass_socket = crate::askpass::start_server(move |prompt, reply| {
+        if let Some((path, serve)) = crate::askpass::start_server(move |prompt, reply| {
             let _ = tx_ask.send(AppEvent::AskPass(prompt, reply));
-        });
+        }) {
+            repo.askpass_socket = Some(path);
+            tasks.spawn_on(serve, &rt);
+        }
         let theme = Theme::new(cfg.theme);
         let tx2 = tx.clone();
-        let highlighter = Highlighter::new(theme.dark, move |k, h| {
+        let (highlighter, highlight) = Highlighter::new(theme.dark, move |k, h| {
             let _ = tx2.send(AppEvent::Highlight(k, h));
         });
+        tasks.spawn_on(highlight, &rt);
         let repo = Arc::new(repo);
-        let detail_tx = spawn_detail_worker(repo.clone(), tx.clone(), cfg.context_lines);
+        let (detail_tx, detail_rx) = tokio::sync::watch::channel(None);
+        tasks.spawn_on(detail_worker(repo.clone(), detail_rx, tx.clone(), cfg.context_lines), &rt);
         let mut message = TextArea::new(true);
         message.placeholder = "Commit message (Ctrl+Enter to commit)".into();
         let mut collapsed = HashSet::new();
@@ -309,6 +326,8 @@ impl App {
             repo,
             tx,
             rx,
+            rt,
+            tasks,
             cfg,
             theme,
             quit: false,
@@ -371,7 +390,10 @@ impl App {
                 let _ = tx.send(AppEvent::Watch(e));
             },
         ) {
-            Ok(h) => self._watcher = Some(h),
+            Ok((h, run)) => {
+                self._watcher = Some(h);
+                self.spawn(run);
+            }
             Err(e) => {
                 self.watch_degraded = true;
                 self.set_status(format!("File watching is off: {e:#}"), Level::Warn);
@@ -383,36 +405,50 @@ impl App {
         self.select_history(0);
     }
 
-    fn spawn_ticker(&self) {
+    fn spawn_ticker(&mut self) {
         let tx = self.tx.clone();
         let animating = self.animating.clone();
-        std::thread::Builder::new()
-            .name("tick".into())
-            .spawn(move || {
-                loop {
-                    std::thread::sleep(Duration::from_millis(120));
-                    let anim = animating.load(Ordering::Relaxed);
-                    if anim && tx.send(AppEvent::Tick).is_err() {
+        self.spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                let anim = animating.load(Ordering::Relaxed);
+                if anim && tx.send(AppEvent::Tick).is_err() {
+                    break;
+                }
+                if !anim {
+                    // Still tick now and then so status messages expire
+                    // and polling can happen.
+                    tokio::time::sleep(Duration::from_millis(880)).await;
+                    if tx.send(AppEvent::Tick).is_err() {
                         break;
                     }
-                    if !anim {
-                        // Still tick now and then so status messages expire
-                        // and polling can happen.
-                        std::thread::sleep(Duration::from_millis(880));
-                        if tx.send(AppEvent::Tick).is_err() {
-                            break;
-                        }
-                    }
                 }
-            })
-            .ok();
+            }
+        });
     }
 
-    pub fn recv(&self) -> Option<AppEvent> {
-        self.rx.recv().ok()
+    /// Run `fut` in the background, as one of the App's tasks.
+    fn spawn(&mut self, fut: impl Future<Output = ()> + Send + 'static) {
+        self.tasks.spawn_on(fut, &self.rt);
     }
 
-    pub fn try_recv(&self) -> Option<AppEvent> {
+    /// Wait for the next event. If a background task panicked, this panics
+    /// with the same payload.
+    pub async fn next(&mut self) -> Option<AppEvent> {
+        loop {
+            tokio::select! {
+                ev = self.rx.recv() => return ev,
+                Some(done) = self.tasks.join_next() => check_task(done),
+            }
+        }
+    }
+
+    /// Take the next event if there is one. If a background task panicked,
+    /// this panics with the same payload.
+    pub fn try_recv(&mut self) -> Option<AppEvent> {
+        while let Some(done) = self.tasks.try_join_next() {
+            check_task(done);
+        }
         self.rx.try_recv().ok()
     }
 
@@ -460,8 +496,8 @@ impl App {
         let generation = self.refs_generation;
         let repo = self.repo.clone();
         let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let r = Refs::load(&repo.git);
+        self.spawn(async move {
+            let r = crate::util::blocking(move || Refs::load(&repo.git)).await;
             let _ = tx.send(AppEvent::Refs(generation, r));
         });
     }
@@ -473,8 +509,8 @@ impl App {
         let repo = self.repo.clone();
         let tx = self.tx.clone();
         let ctx = self.cfg.context_lines;
-        std::thread::spawn(move || {
-            let r = Workdir::load(&repo.git, ctx, DEFAULT_LINE_LIMIT);
+        self.spawn(async move {
+            let r = crate::util::blocking(move || Workdir::load(&repo.git, ctx, DEFAULT_LINE_LIMIT)).await;
             let _ = tx.send(AppEvent::Workdir(generation, Box::new(r)));
         });
     }
@@ -492,7 +528,7 @@ impl App {
         let repo = self.repo.clone();
         let tx = self.tx.clone();
         let current = self.history_current.clone();
-        std::thread::spawn(move || {
+        self.spawn(crate::util::blocking(move || {
             let tx2 = tx.clone();
             let r = log::walk(&repo.gix, tips, generation, &current, move |b| {
                 let _ = tx2.send(AppEvent::History(b));
@@ -500,7 +536,7 @@ impl App {
             if let Err(e) = r {
                 let _ = tx.send(AppEvent::HistoryError(generation, format!("{e:#}")));
             }
-        });
+        }));
     }
 
     // ----- Event handling -----
@@ -714,7 +750,7 @@ impl App {
         if let Some(id) = load {
             self.detail.loading = true;
             self.detail.request += 1;
-            let _ = self.detail_tx.send((self.detail.request, id));
+            self.detail_tx.send_replace(Some((self.detail.request, id)));
         }
         self.rebuild_doc();
     }
@@ -750,7 +786,7 @@ impl App {
 
     // ----- Operations -----
 
-    /// Run an operation that changes the repository on a background thread.
+    /// Run an operation that changes the repository in the background.
     pub fn spawn_op(
         &mut self,
         label: impl Into<String>,
@@ -770,14 +806,14 @@ impl App {
         self.update_animating();
         let repo = self.repo.clone();
         let tx = self.tx.clone();
-        std::thread::spawn(move || {
+        self.spawn(crate::util::blocking(move || {
             let tx2 = tx.clone();
             let progress = move |s: String| {
                 let _ = tx2.send(AppEvent::Progress(s));
             };
             let result = f(&repo, &progress);
             let _ = tx.send(AppEvent::OpDone(OpResult { label, result, after }));
-        });
+        }));
     }
 
     fn on_op_done(&mut self, r: OpResult) {
@@ -863,24 +899,39 @@ impl App {
     }
 }
 
-/// A thread that loads commit details, skipping requests that were replaced
-/// by newer ones while it was busy.
-fn spawn_detail_worker(repo: Arc<Repo>, tx: Sender<AppEvent>, context: u32) -> Sender<(u64, ObjectId)> {
-    let (req_tx, req_rx) = unbounded::<(u64, ObjectId)>();
-    std::thread::Builder::new()
-        .name("detail".into())
-        .spawn(move || {
-            let local = repo.gix.to_thread_local();
-            while let Ok(mut req) = req_rx.recv() {
-                while let Ok(newer) = req_rx.try_recv() {
-                    req = newer;
-                }
-                let r = crate::git::commit::load(&local, req.1, context, DEFAULT_LINE_LIMIT);
-                if tx.send(AppEvent::Commit(req.0, req.1, Box::new(r))).is_err() {
-                    break;
-                }
-            }
+/// Raise a background task's panic again in the caller.
+fn check_task(done: Result<(), tokio::task::JoinError>) {
+    if let Err(e) = done
+        && e.is_panic()
+    {
+        std::panic::resume_unwind(e.into_panic());
+    }
+}
+
+/// Load commit details as they are requested. The watch channel only keeps
+/// the newest request, so requests that were replaced while we were busy
+/// are skipped.
+async fn detail_worker(
+    repo: Arc<Repo>,
+    mut requests: tokio::sync::watch::Receiver<Option<(u64, ObjectId)>>,
+    tx: UnboundedSender<AppEvent>,
+    context: u32,
+) {
+    // Keep one thread-local repository across loads, so its object cache
+    // carries over from one commit to the next.
+    let mut local = repo.gix.to_thread_local();
+    while requests.changed().await.is_ok() {
+        let Some((request, id)) = *requests.borrow_and_update() else {
+            continue;
+        };
+        let (back, r) = crate::util::blocking(move || {
+            let r = crate::git::commit::load(&local, id, context, DEFAULT_LINE_LIMIT);
+            (local, r)
         })
-        .ok();
-    req_tx
+        .await;
+        local = back;
+        if tx.send(AppEvent::Commit(request, id, Box::new(r))).is_err() {
+            break;
+        }
+    }
 }

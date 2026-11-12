@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use crossbeam_channel::{RecvTimeoutError, unbounded};
+use tokio::sync::mpsc::unbounded_channel;
 use notify::event::ModifyKind;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
@@ -50,18 +50,21 @@ struct Roots {
     common_dir: PathBuf,
 }
 
+/// Start watching. Returns a handle that keeps the watches alive, and a
+/// future that reports changes through `report`. The caller should spawn
+/// the future. It ends when the handle is dropped.
 pub fn start(
     workdir: &Path,
     git_dir: &Path,
     common_dir: &Path,
     report: impl Fn(Event) + Send + 'static,
-) -> Result<Handle> {
+) -> Result<(Handle, impl Future<Output = ()> + Send + 'static)> {
     let roots = Roots {
         workdir: workdir.canonicalize().context("bad workdir")?,
         git_dir: git_dir.canonicalize().context("bad git dir")?,
         common_dir: common_dir.canonicalize().context("bad common dir")?,
     };
-    let (tx, rx) = unbounded::<notify::Result<notify::Event>>();
+    let (tx, mut rx) = unbounded_channel::<notify::Result<notify::Event>>();
     let watcher = notify::recommended_watcher(move |res| {
         let _ = tx.send(res);
     })
@@ -107,65 +110,74 @@ pub fn start(
         report(Event::Degraded(msg));
     }
 
-    let w2 = watcher.clone();
-    std::thread::Builder::new()
-        .name("watch".into())
-        .spawn(move || {
-            let mut pending: u8 = 0;
-            let mut first: Option<Instant> = None;
-            let mut new_dirs: HashSet<PathBuf> = HashSet::new();
-            loop {
-                let timeout = match first {
-                    Some(t) => QUIET.min(MAX_DELAY.saturating_sub(t.elapsed())),
-                    None => Duration::from_secs(3600),
-                };
-                match rx.recv_timeout(timeout) {
-                    Ok(Ok(ev)) => {
-                        if matches!(ev.kind, EventKind::Access(_)) {
+    // Hold the watcher weakly, so dropping the handle stops notify and ends
+    // this future.
+    let w2 = Arc::downgrade(&watcher);
+    let run = async move {
+        let mut pending: u8 = 0;
+        let mut first: Option<Instant> = None;
+        let mut new_dirs: HashSet<PathBuf> = HashSet::new();
+        loop {
+            let timeout = match first {
+                Some(t) => QUIET.min(MAX_DELAY.saturating_sub(t.elapsed())),
+                None => Duration::from_secs(3600),
+            };
+            match tokio::time::timeout(timeout, rx.recv()).await {
+                Ok(Some(Ok(ev))) => {
+                    if matches!(ev.kind, EventKind::Access(_)) {
+                        continue;
+                    }
+                    // A directory can also appear by being moved in.
+                    let appeared = matches!(
+                        ev.kind,
+                        EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
+                    );
+                    for p in &ev.paths {
+                        let flags = classify(&roots, p, &ignored_dirs);
+                        if flags == 0 {
                             continue;
                         }
-                        // A directory can also appear by being moved in.
-                        let appeared = matches!(
-                            ev.kind,
-                            EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
-                        );
-                        for p in &ev.paths {
-                            let flags = classify(&roots, p, &ignored_dirs);
-                            if flags == 0 {
-                                continue;
-                            }
-                            if cfg!(target_os = "linux") && flags == WORKTREE && appeared && p.is_dir() {
-                                new_dirs.insert(p.clone());
-                            }
-                            pending |= flags;
-                            first.get_or_insert_with(Instant::now);
+                        if cfg!(target_os = "linux") && flags == WORKTREE && appeared && p.is_dir() {
+                            new_dirs.insert(p.clone());
                         }
+                        pending |= flags;
+                        first.get_or_insert_with(Instant::now);
                     }
-                    Ok(Err(_)) => {}
-                    Err(RecvTimeoutError::Timeout) => {
-                        // A fresh repository has no reflogs until its first
-                        // commit, which also changes a ref.
-                        if !reflogs_watched && pending & REFS != 0 {
-                            reflogs_watched = watch_reflogs(&w2, &roots.common_dir);
-                        }
-                        for d in new_dirs.drain() {
-                            if !is_ignored(&roots.workdir, &d) {
-                                let _ = watch_tree(&w2, &roots.workdir, &d);
-                            }
-                        }
-                        if pending != 0 {
-                            report(Event::Changed(pending));
-                        }
-                        pending = 0;
-                        first = None;
-                    }
-                    Err(RecvTimeoutError::Disconnected) => break,
                 }
+                Ok(Some(Err(_))) => {}
+                Err(_) => {
+                    // Adding watches walks directories and runs git, so do
+                    // it off the async threads.
+                    let Some(w) = w2.upgrade() else { break };
+                    let common_dir = roots.common_dir.clone();
+                    let workdir = roots.workdir.clone();
+                    let dirs: Vec<PathBuf> = new_dirs.drain().collect();
+                    // A fresh repository has no reflogs until its first
+                    // commit, which also changes a ref.
+                    let check_reflogs = !reflogs_watched && pending & REFS != 0;
+                    let now_watched = crate::util::blocking(move || {
+                        let watched = check_reflogs && watch_reflogs(&w, &common_dir);
+                        for d in dirs {
+                            if !is_ignored(&workdir, &d) {
+                                let _ = watch_tree(&w, &workdir, &d);
+                            }
+                        }
+                        watched
+                    })
+                    .await;
+                    reflogs_watched |= now_watched;
+                    if pending != 0 {
+                        report(Event::Changed(pending));
+                    }
+                    pending = 0;
+                    first = None;
+                }
+                Ok(None) => break,
             }
-        })
-        .context("could not start watcher thread")?;
+        }
+    };
 
-    Ok(Handle { _watcher: watcher })
+    Ok((Handle { _watcher: watcher }, run))
 }
 
 /// Watch the folder that holds the stash reflog. Dropping a stash other
@@ -288,7 +300,9 @@ fn classify_git(rel: &Path) -> u8 {
 mod tests {
     use super::*;
 
-    type Watched = (tempfile::TempDir, Handle, crossbeam_channel::Receiver<u8>);
+    use std::sync::mpsc::{Receiver, channel};
+
+    type Watched = (tempfile::TempDir, Handle, Receiver<u8>, tokio::runtime::Runtime);
 
     /// Watch a new scratch repository and collect the flags it reports.
     fn watched() -> Watched {
@@ -302,15 +316,17 @@ mod tests {
         if !git(dir.path(), &[&["init", "-q"], init].concat()) {
             return None;
         }
-        let (tx, rx) = unbounded();
+        let (tx, rx) = channel();
         let git_dir = dir.path().join(".git");
-        let handle = start(dir.path(), &git_dir, &git_dir, move |e| {
+        let (handle, run) = start(dir.path(), &git_dir, &git_dir, move |e| {
             if let Event::Changed(flags) = e {
                 let _ = tx.send(flags);
             }
         })
         .unwrap();
-        Some((dir, handle, rx))
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.spawn(run);
+        Some((dir, handle, rx, rt))
     }
 
     /// Run git quietly and say whether it succeeded.
@@ -326,14 +342,14 @@ mod tests {
     }
 
     /// Wait until the watcher has been quiet for a second.
-    fn settle(rx: &crossbeam_channel::Receiver<u8>) {
+    fn settle(rx: &Receiver<u8>) {
         while rx.recv_timeout(Duration::from_secs(1)).is_ok() {}
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn watches_a_directory_that_is_moved_in() {
-        let (dir, _handle, rx) = watched();
+        let (dir, _handle, rx, _rt) = watched();
         // Next to the repository, so the move stays on one file system.
         let outside = tempfile::tempdir_in(dir.path().parent().unwrap()).unwrap();
         std::fs::create_dir(outside.path().join("sub")).unwrap();
@@ -348,13 +364,13 @@ mod tests {
 
     #[test]
     fn notices_a_dropped_stash_below_the_top() {
-        let (dir, _handle, rx) = watched();
+        let (dir, _handle, rx, _rt) = watched();
         drop_older_stash(dir.path(), &rx);
     }
 
     #[test]
     fn notices_ref_changes_in_a_reftable_repository() {
-        let Some((dir, _handle, rx)) = watched_with(&["--ref-format=reftable"]) else {
+        let Some((dir, _handle, rx, _rt)) = watched_with(&["--ref-format=reftable"]) else {
             eprintln!("skipped: this git can't create reftable repositories");
             return;
         };
@@ -372,7 +388,7 @@ mod tests {
 
     /// Make two stashes in a repository with one commit, then delete the
     /// older one and check that the watcher reports it.
-    fn drop_older_stash(dir: &Path, rx: &crossbeam_channel::Receiver<u8>) {
+    fn drop_older_stash(dir: &Path, rx: &Receiver<u8>) {
         let git = |args: &[&str]| assert!(git(dir, args), "git {args:?} failed");
         std::fs::write(dir.join("a"), "1").unwrap();
         git(&["add", "a"]);

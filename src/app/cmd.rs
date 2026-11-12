@@ -6,9 +6,9 @@
 
 use std::collections::HashSet;
 
-use crossbeam_channel::Sender;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use gix::ObjectId;
+use tokio::sync::oneshot;
 
 use super::doc::{Row, Section, Source};
 use super::planner::{PlanAction, Planner};
@@ -254,7 +254,7 @@ pub enum Purpose {
     StashPush,
     SetUpstream(String),
     PlannerMessage(usize),
-    AskPass(Sender<Option<String>>),
+    AskPass(oneshot::Sender<Option<String>>),
 }
 
 pub struct InputBox {

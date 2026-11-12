@@ -1,8 +1,21 @@
-//! Small helpers: dates, text width, base64 for the clipboard.
+//! Small helpers: dates, text width, base64 for the clipboard, and running
+//! blocking work from async code.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use unicode_width::UnicodeWidthChar;
+
+/// Run blocking work on Tokio's blocking pool. If `f` panics, the panic
+/// carries on in the caller, so it reaches whoever is waiting on the task.
+pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(f).await {
+        Ok(v) => v,
+        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+        // The work was cancelled because the runtime is shutting down. The
+        // caller is about to be dropped too, so just wait for that.
+        Err(_) => std::future::pending().await,
+    }
+}
 
 pub fn now() -> i64 {
     SystemTime::now()

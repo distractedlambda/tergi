@@ -3,7 +3,9 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use crossterm::event::EventStream;
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+use tokio_stream::StreamExt as _;
 
 use tergi::app::{App, AppEvent, REFRESH_ALL, Repo, Suspend};
 use tergi::config::Config;
@@ -35,7 +37,16 @@ fn main() -> ExitCode {
 
     let cli = Cli::parse();
     let path = cli.path.unwrap_or_else(|| PathBuf::from("."));
-    match run(&path) {
+    let result = tokio::runtime::Runtime::new()
+        .context("could not start the async runtime")
+        .and_then(|rt| {
+            let r = rt.block_on(run(&path));
+            // Don't wait for blocking work that is still running, such as a
+            // history walk. Dropping the runtime would.
+            rt.shutdown_background();
+            r
+        });
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("tergi: {e:#}");
@@ -44,20 +55,17 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(path: &Path) -> Result<()> {
+async fn run(path: &Path) -> Result<()> {
     let repo = Repo::open(path)?;
     let (cfg, config_error) = Config::load();
     terminal::install_panic_hook();
     let mut term = terminal::setup().context("could not set up the terminal")?;
     let mut app = App::new(repo, cfg, config_error);
-    let tx = app.tx.clone();
-    let input = terminal::Input::start(move |ev| {
-        let _ = tx.send(AppEvent::Input(ev));
-    });
     app.start();
 
-    let result = (|| -> Result<()> {
+    let result = async {
         let mut pointer = "default";
+        let mut input = EventStream::new();
         loop {
             crossterm::execute!(term.backend_mut(), BeginSynchronizedUpdate)?;
             term.draw(|f| tergi::ui::draw::draw(&mut app, f))?;
@@ -68,7 +76,14 @@ fn run(path: &Path) -> Result<()> {
                 pointer = shape;
             }
 
-            let Some(ev) = app.recv() else { break };
+            let ev = tokio::select! {
+                ev = app.next() => ev,
+                Some(ev) = input.next() => match ev {
+                    Ok(ev) => Some(AppEvent::Input(ev)),
+                    Err(e) => return Err(anyhow::Error::from(e).context("could not read from the terminal")),
+                },
+            };
+            let Some(ev) = ev else { break };
             app.handle(ev);
             // Handle everything that piled up before drawing again, so a
             // burst of mouse moves doesn't cause a burst of redraws.
@@ -82,17 +97,19 @@ fn run(path: &Path) -> Result<()> {
                 break;
             }
             if let Some(s) = app.suspend.take() {
-                input.pause();
+                // Dropping the stream stops crossterm from reading the
+                // terminal, so it doesn't take keys meant for the editor.
+                drop(input);
                 terminal::restore();
                 let r = match s {
                     Suspend::Stop => {
                         let _ = signal_hook::low_level::raise(signal_hook::consts::SIGTSTP);
                         Ok(())
                     }
-                    Suspend::Edit(file) => edit(&app.repo, &file),
+                    Suspend::Edit(file) => edit(&app.repo, &file).await,
                 };
                 terminal::resume(&mut term)?;
-                input.resume();
+                input = EventStream::new();
                 pointer = "default";
                 if let Err(e) = r {
                     app.show_error("Couldn't run the editor", &e);
@@ -101,7 +118,8 @@ fn run(path: &Path) -> Result<()> {
             }
         }
         Ok(())
-    })();
+    }
+    .await;
 
     terminal::restore();
     if let Some(p) = &app.repo.askpass_socket {
@@ -111,15 +129,16 @@ fn run(path: &Path) -> Result<()> {
 }
 
 /// Open a file in the user's editor, as configured for git.
-fn edit(repo: &Repo, file: &Path) -> Result<()> {
+async fn edit(repo: &Repo, file: &Path) -> Result<()> {
     let editor = repo.git.editor().unwrap_or_else(|_| "vi".into());
-    let status = std::process::Command::new("sh")
+    let status = tokio::process::Command::new("sh")
         .arg("-c")
         .arg(format!("{editor} \"$@\""))
         .arg("editor")
         .arg(file)
         .current_dir(&repo.workdir)
         .status()
+        .await
         .context("could not start the editor")?;
     if !status.success() {
         anyhow::bail!("the editor exited with {status}");

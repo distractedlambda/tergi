@@ -1,11 +1,9 @@
-//! Terminal setup and teardown, and the thread that reads input.
+//! Terminal setup and teardown.
 
 use std::io::{Stdout, Write, stdout};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use anyhow::Result;
-use crossbeam_channel::{Receiver, Sender, bounded};
 use crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
     EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
@@ -99,55 +97,4 @@ pub fn write_raw(s: &str) {
     let mut out = stdout();
     let _ = out.write_all(s.as_bytes());
     let _ = out.flush();
-}
-
-enum Control {
-    Pause,
-    Resume,
-}
-
-/// The input thread reads terminal events and forwards them. It can be
-/// paused while another program (such as an editor) owns the terminal.
-pub struct Input {
-    control: Sender<Control>,
-    ack: Receiver<()>,
-}
-
-impl Input {
-    pub fn start(forward: impl Fn(crossterm::event::Event) + Send + 'static) -> Input {
-        let (control, control_rx) = bounded::<Control>(1);
-        let (ack_tx, ack) = bounded::<()>(1);
-        std::thread::Builder::new()
-            .name("input".into())
-            .spawn(move || {
-                loop {
-                    if let Ok(Control::Pause) = control_rx.try_recv() {
-                        let _ = ack_tx.send(());
-                        // Wait until we're told to resume.
-                        while !matches!(control_rx.recv(), Ok(Control::Resume) | Err(_)) {}
-                        continue;
-                    }
-                    match crossterm::event::poll(Duration::from_millis(50)) {
-                        Ok(true) => match crossterm::event::read() {
-                            Ok(ev) => forward(ev),
-                            Err(_) => break,
-                        },
-                        Ok(false) => {}
-                        Err(_) => break,
-                    }
-                }
-            })
-            .ok();
-        Input { control, ack }
-    }
-
-    pub fn pause(&self) {
-        if self.control.send(Control::Pause).is_ok() {
-            let _ = self.ack.recv_timeout(Duration::from_secs(1));
-        }
-    }
-
-    pub fn resume(&self) {
-        let _ = self.control.send(Control::Resume);
-    }
 }

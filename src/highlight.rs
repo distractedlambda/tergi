@@ -1,4 +1,4 @@
-//! Syntax highlighting for diffs, on a background thread.
+//! Syntax highlighting for diffs, in the background.
 //!
 //! When we have the full text of a file, we highlight the whole file so that
 //! multi-line strings and comments come out right, then pick out the lines
@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use ratatui::style::Color;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::Theme;
@@ -44,20 +44,21 @@ pub struct Job {
 const FULL_FILE_LINES: usize = 20_000;
 
 pub struct Highlighter {
-    tx: Sender<Job>,
+    tx: UnboundedSender<Job>,
     current: Arc<AtomicU64>,
 }
 
 impl Highlighter {
-    pub fn new(dark: bool, done: impl Fn(Key, FileHighlight) + Send + 'static) -> Self {
-        let (tx, rx) = unbounded::<Job>();
+    /// The returned future does the work. The caller should spawn it. It
+    /// ends when the `Highlighter` is dropped.
+    pub fn new(
+        dark: bool,
+        done: impl Fn(Key, FileHighlight) + Send + Sync + 'static,
+    ) -> (Self, impl Future<Output = ()> + Send + 'static) {
+        let (tx, rx) = unbounded_channel::<Job>();
         let current = Arc::new(AtomicU64::new(0));
-        let cur = current.clone();
-        std::thread::Builder::new()
-            .name("highlight".into())
-            .spawn(move || worker(&rx, &cur, dark, &done))
-            .ok();
-        Highlighter { tx, current }
+        let worker = worker(rx, current.clone(), dark, Arc::new(done));
+        (Highlighter { tx, current }, worker)
     }
 
     /// Jobs from older generations are skipped.
@@ -70,31 +71,49 @@ impl Highlighter {
     }
 }
 
-fn worker(rx: &Receiver<Job>, current: &AtomicU64, dark: bool, done: &dyn Fn(Key, FileHighlight)) {
-    let ss = two_face::syntax::extra_newlines();
-    let themes = two_face::theme::extra();
-    let theme = themes
-        .get(if dark {
-            two_face::theme::EmbeddedThemeName::OneHalfDark
-        } else {
-            two_face::theme::EmbeddedThemeName::OneHalfLight
-        })
-        .clone();
-    while let Ok(job) = rx.recv() {
+async fn worker(
+    mut rx: UnboundedReceiver<Job>,
+    current: Arc<AtomicU64>,
+    dark: bool,
+    done: Arc<dyn Fn(Key, FileHighlight) + Send + Sync>,
+) {
+    // Loading the syntaxes takes a while, so do it once, off the async
+    // threads.
+    let loaded = crate::util::blocking(move || {
+        let ss = two_face::syntax::extra_newlines();
+        let themes = two_face::theme::extra();
+        let theme = themes
+            .get(if dark {
+                two_face::theme::EmbeddedThemeName::OneHalfDark
+            } else {
+                two_face::theme::EmbeddedThemeName::OneHalfLight
+            })
+            .clone();
+        (ss, theme)
+    })
+    .await;
+    let loaded = Arc::new(loaded);
+    while let Some(job) = rx.recv().await {
         if job.key.generation < current.load(Ordering::Relaxed) {
             continue;
         }
-        let first_line = job
-            .new
-            .as_deref()
-            .or(job.old.as_deref())
-            .and_then(|t| t.lines().next())
-            .unwrap_or("");
-        let Some(syntax) = find_syntax(&ss, &job.path, first_line) else {
-            continue;
-        };
-        let hl = highlight_job(&ss, syntax, &theme, &job);
-        done(job.key, hl);
+        let loaded = loaded.clone();
+        let done = done.clone();
+        crate::util::blocking(move || {
+            let (ss, theme) = &*loaded;
+            let first_line = job
+                .new
+                .as_deref()
+                .or(job.old.as_deref())
+                .and_then(|t| t.lines().next())
+                .unwrap_or("");
+            let Some(syntax) = find_syntax(ss, &job.path, first_line) else {
+                return;
+            };
+            let hl = highlight_job(ss, syntax, theme, &job);
+            done(job.key, hl);
+        })
+        .await;
     }
 }
 
