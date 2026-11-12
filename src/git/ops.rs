@@ -51,14 +51,32 @@ pub fn apply_lines(
     Ok(())
 }
 
-pub fn stage_paths(git: &Git, paths: &[&str]) -> Result<()> {
+/// Git reads paths on the command line as patterns, so `[ab].txt` also
+/// matches `a.txt`, and a leading colon starts special syntax. Mark such
+/// paths as literal so a command only touches the file we mean.
+pub fn pathspec(path: &str) -> String {
+    if path.starts_with(':') || path.contains(['*', '?', '[', '\\']) {
+        format!(":(literal){path}")
+    } else {
+        path.to_string()
+    }
+}
+
+/// Run a git command on a list of paths.
+fn run_on_paths(git: &Git, command: &[&str], paths: &[&str]) -> Result<()> {
     if paths.is_empty() {
         return Ok(());
     }
-    let mut args = vec!["add", "-A", "--"];
-    args.extend_from_slice(paths);
+    let specs: Vec<String> = paths.iter().map(|p| pathspec(p)).collect();
+    let mut args = command.to_vec();
+    args.push("--");
+    args.extend(specs.iter().map(String::as_str));
     git.run(&args)?;
     Ok(())
+}
+
+pub fn stage_paths(git: &Git, paths: &[&str]) -> Result<()> {
+    run_on_paths(git, &["add", "-A"], paths)
 }
 
 pub fn stage_all(git: &Git) -> Result<()> {
@@ -67,18 +85,12 @@ pub fn stage_all(git: &Git) -> Result<()> {
 }
 
 pub fn unstage_paths(git: &Git, paths: &[&str], has_head: bool) -> Result<()> {
-    if paths.is_empty() {
-        return Ok(());
-    }
-    let mut args = if has_head {
-        vec!["restore", "--staged", "--"]
+    if has_head {
+        run_on_paths(git, &["restore", "--staged"], paths)
     } else {
         // Before the first commit there's nothing to restore from.
-        vec!["rm", "--cached", "-r", "-q", "--"]
-    };
-    args.extend_from_slice(paths);
-    git.run(&args)?;
-    Ok(())
+        run_on_paths(git, &["rm", "--cached", "-r", "-q"], paths)
+    }
 }
 
 pub fn unstage_all(git: &Git, has_head: bool) -> Result<()> {
@@ -92,24 +104,12 @@ pub fn unstage_all(git: &Git, has_head: bool) -> Result<()> {
 
 /// Throw away unstaged changes to tracked files.
 pub fn discard_paths(git: &Git, paths: &[&str]) -> Result<()> {
-    if paths.is_empty() {
-        return Ok(());
-    }
-    let mut args = vec!["restore", "--worktree", "--"];
-    args.extend_from_slice(paths);
-    git.run(&args)?;
-    Ok(())
+    run_on_paths(git, &["restore", "--worktree"], paths)
 }
 
 /// Delete untracked files.
 pub fn delete_untracked(git: &Git, paths: &[&str]) -> Result<()> {
-    if paths.is_empty() {
-        return Ok(());
-    }
-    let mut args = vec!["clean", "-f", "-q", "--"];
-    args.extend_from_slice(paths);
-    git.run(&args)?;
-    Ok(())
+    run_on_paths(git, &["clean", "-f", "-q"], paths)
 }
 
 pub fn commit(git: &Git, message: &str, amend: bool) -> Result<String> {

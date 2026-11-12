@@ -13,3 +13,30 @@ fn message_lines_starting_with_hash() {
     ops::commit(&s.git, "#42 fix it\n\n# Heading\ntext\n", false).expect("commit");
     assert_eq!(s.sh(&["log", "-1", "--format=%B"]).trim(), "#42 fix it\n\n# Heading\ntext");
 }
+
+#[test]
+fn paths_that_look_like_patterns() {
+    let s = Scratch::new();
+    s.write("a.txt", "a\n");
+    s.write("[ab].txt", "x\n");
+    s.commit_all("init");
+    s.write("a.txt", "a2\n");
+    s.write("[ab].txt", "x2\n");
+    ops::stage_paths(&s.git, &["[ab].txt"]).expect("stage");
+    assert_eq!(s.sh(&["diff", "--cached", "--name-only"]).trim(), "[ab].txt");
+    ops::unstage_paths(&s.git, &["[ab].txt"], true).expect("unstage");
+    assert_eq!(s.sh(&["diff", "--cached", "--name-only"]).trim(), "");
+    ops::discard_paths(&s.git, &["[ab].txt"]).expect("discard");
+    assert_eq!(s.read("a.txt"), "a2\n");
+    assert_eq!(s.read("[ab].txt"), "x\n");
+
+    s.write("b.txt", "new\n");
+    s.write("[b].txt", "new\n");
+    ops::delete_untracked(&s.git, &["[b].txt"]).expect("clean");
+    assert!(s.file("b.txt").exists());
+    assert!(!s.file("[b].txt").exists());
+
+    s.write(":colon", "new\n");
+    ops::stage_paths(&s.git, &[":colon"]).expect("stage colon");
+    assert!(s.sh(&["diff", "--cached", "--name-only"]).contains(":colon"));
+}
