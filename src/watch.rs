@@ -77,6 +77,13 @@ pub fn start(
             if refs.is_dir() {
                 let _ = w.watch(&refs, RecursiveMode::Recursive);
             }
+            // Repositories that use the reftable format keep all their refs
+            // and reflogs in here. A linked worktree has its own folder for
+            // its HEAD.
+            let reftable = dir.join("reftable");
+            if reftable.is_dir() {
+                let _ = w.watch(&reftable, RecursiveMode::NonRecursive);
+            }
         }
     }
     let mut reflogs_watched = watch_reflogs(&watcher, &roots.common_dir);
@@ -268,6 +275,9 @@ fn classify_git(rel: &Path) -> u8 {
         "config" => REFS,
         // The other reflogs only change along with their refs.
         "logs" if s == "logs/refs/stash" => REFS,
+        // Every change to a reftable, including reflog changes, ends with
+        // replacing the list of tables.
+        "reftable" if s == "reftable/tables.list" => REFS | INDEX,
         "rebase-merge" | "rebase-apply" | "MERGE_HEAD" | "CHERRY_PICK_HEAD" | "REVERT_HEAD"
         | "sequencer" => STATE | REFS | INDEX,
         _ => 0,
@@ -278,15 +288,20 @@ fn classify_git(rel: &Path) -> u8 {
 mod tests {
     use super::*;
 
+    type Watched = (tempfile::TempDir, Handle, crossbeam_channel::Receiver<u8>);
+
     /// Watch a new scratch repository and collect the flags it reports.
-    fn watched() -> (tempfile::TempDir, Handle, crossbeam_channel::Receiver<u8>) {
+    fn watched() -> Watched {
+        watched_with(&[]).expect("git init failed")
+    }
+
+    /// Like `watched`, with extra options for `git init`. Returns `None` if
+    /// this git doesn't understand them.
+    fn watched_with(init: &[&str]) -> Option<Watched> {
         let dir = tempfile::tempdir().unwrap();
-        let init = std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["init", "-q"])
-            .status()
-            .unwrap();
-        assert!(init.success());
+        if !git(dir.path(), &[&["init", "-q"], init].concat()) {
+            return None;
+        }
         let (tx, rx) = unbounded();
         let git_dir = dir.path().join(".git");
         let handle = start(dir.path(), &git_dir, &git_dir, move |e| {
@@ -295,7 +310,24 @@ mod tests {
             }
         })
         .unwrap();
-        (dir, handle, rx)
+        Some((dir, handle, rx))
+    }
+
+    /// Run git quietly and say whether it succeeded.
+    fn git(dir: &Path, args: &[&str]) -> bool {
+        std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    /// Wait until the watcher has been quiet for a second.
+    fn settle(rx: &crossbeam_channel::Receiver<u8>) {
+        while rx.recv_timeout(Duration::from_secs(1)).is_ok() {}
     }
 
     #[cfg(target_os = "linux")]
@@ -317,26 +349,41 @@ mod tests {
     #[test]
     fn notices_a_dropped_stash_below_the_top() {
         let (dir, _handle, rx) = watched();
-        let git = |args: &[&str]| {
-            let ok = std::process::Command::new("git")
-                .current_dir(dir.path())
-                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
-                .args(args)
-                .status()
-                .unwrap()
-                .success();
-            assert!(ok, "git {args:?} failed");
+        drop_older_stash(dir.path(), &rx);
+    }
+
+    #[test]
+    fn notices_ref_changes_in_a_reftable_repository() {
+        let Some((dir, _handle, rx)) = watched_with(&["--ref-format=reftable"]) else {
+            eprintln!("skipped: this git can't create reftable repositories");
+            return;
         };
-        std::fs::write(dir.path().join("a"), "1").unwrap();
+        drop_older_stash(dir.path(), &rx);
+        let git = |args: &[&str]| assert!(git(dir.path(), args), "git {args:?} failed");
+        settle(&rx);
+        git(&["commit", "-q", "--allow-empty", "-m", "b"]);
+        let committed = rx.recv_timeout(Duration::from_secs(5));
+        assert_eq!(committed.map(|f| f & (REFS | INDEX)), Ok(REFS | INDEX));
+        settle(&rx);
+        git(&["branch", "other"]);
+        let branched = rx.recv_timeout(Duration::from_secs(5));
+        assert_eq!(branched.map(|f| f & REFS), Ok(REFS));
+    }
+
+    /// Make two stashes in a repository with one commit, then delete the
+    /// older one and check that the watcher reports it.
+    fn drop_older_stash(dir: &Path, rx: &crossbeam_channel::Receiver<u8>) {
+        let git = |args: &[&str]| assert!(git(dir, args), "git {args:?} failed");
+        std::fs::write(dir.join("a"), "1").unwrap();
         git(&["add", "a"]);
         git(&["commit", "-qm", "a"]);
         // Let the watcher pick up the new reflog folder before stashing.
-        while rx.recv_timeout(Duration::from_secs(1)).is_ok() {}
+        settle(rx);
         for n in ["2", "3"] {
-            std::fs::write(dir.path().join("a"), n).unwrap();
+            std::fs::write(dir.join("a"), n).unwrap();
             git(&["stash", "-q"]);
         }
-        while rx.recv_timeout(Duration::from_secs(1)).is_ok() {}
+        settle(rx);
         // `git stash drop` also rewrites `refs/stash`, so it would be noticed
         // anyway. Other tools, such as anything built on libgit2, only
         // rewrite the reflog, like this does.
@@ -358,6 +405,9 @@ mod tests {
         assert_eq!(classify_git(Path::new("logs/refs/stash")), REFS);
         assert_eq!(classify_git(Path::new("logs/refs/stash.lock")), 0);
         assert_eq!(classify_git(Path::new("config")), REFS);
+        assert_eq!(classify_git(Path::new("reftable/tables.list")), REFS | INDEX);
+        assert_eq!(classify_git(Path::new("reftable/tables.list.lock")), 0);
+        assert_eq!(classify_git(Path::new("reftable/0x01-0x01-1a2b3c4d.ref")), 0);
     }
 
     #[test]
