@@ -8,4 +8,5 @@ pub mod patch;
 pub mod rebase;
 pub mod refs;
 pub mod status;
+pub mod words;
 pub mod workdir;
