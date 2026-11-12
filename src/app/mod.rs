@@ -549,6 +549,8 @@ impl App {
                         }
                         Err(e) => {
                             self.detail.commit = None;
+                            // Replace the "Loading…" row.
+                            self.rebuild_doc();
                             self.set_status(format!("Loading commit failed: {e:#}"), Level::Error);
                         }
                     }
