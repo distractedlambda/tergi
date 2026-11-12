@@ -25,7 +25,10 @@ struct Ui {
 
 impl Ui {
     fn open(s: &Scratch) -> Ui {
-        let repo = Repo::open(s.path()).expect("open repo");
+        let mut repo = Repo::open(s.path()).expect("open repo");
+        // Git calls back into tergi during a rebase. Here the current
+        // executable is the test runner, so point it at the real one.
+        repo.exe = env!("CARGO_BIN_EXE_tergi").into();
         let mut app = App::new(repo, Config::default(), None);
         app.start();
         let term = Terminal::new(TestBackend::new(140, 36)).expect("terminal");
@@ -104,8 +107,24 @@ impl Ui {
     }
 
     fn key(&mut self, code: KeyCode) {
-        self.app.handle(AppEvent::Input(Event::Key(KeyEvent::new(code, KeyModifiers::NONE))));
+        self.key_with(code, KeyModifiers::NONE);
+    }
+
+    fn key_with(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        self.app.handle(AppEvent::Input(Event::Key(KeyEvent::new(code, modifiers))));
         self.draw();
+    }
+
+    fn type_text(&mut self, text: &str) {
+        for c in text.chars() {
+            self.key(KeyCode::Char(c));
+        }
+    }
+
+    /// Wait until the running operation is done. The reloads it causes
+    /// may still be on their way.
+    fn settle(&mut self) {
+        self.wait("the operation to finish", |u| u.app.busy.is_none());
     }
 }
 
@@ -335,4 +354,33 @@ fn draws_at_any_size() {
     ui.key(KeyCode::Char('i'));
     assert!(ui.app.planner.is_some());
     draw_all(&mut ui, "the planner");
+}
+
+#[test]
+fn commits_and_amends_from_the_message_box() {
+    let s = repo_with_change();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    ui.key(KeyCode::Char('a'));
+    ui.settle();
+    ui.key(KeyCode::Char('c'));
+    ui.type_text("#3 Use a digit");
+    ui.key_with(KeyCode::Enter, KeyModifiers::CONTROL);
+    ui.settle();
+    ui.wait("the new commit", |u| u.app.history.commits.len() == 3);
+    assert_eq!(s.log()[0], "#3 Use a digit");
+    assert!(ui.app.message.is_empty());
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
+
+    // Amend only the message.
+    ui.key(KeyCode::Char('3'));
+    ui.key(KeyCode::Char('A'));
+    assert_eq!(ui.app.message.text(), "#3 Use a digit");
+    ui.key(KeyCode::Char('c'));
+    ui.type_text("!");
+    ui.key_with(KeyCode::Char('s'), KeyModifiers::CONTROL);
+    ui.settle();
+    assert_eq!(s.log(), ["#3 Use a digit!", "Add a fourth note", "Add notes"]);
+    assert!(!ui.app.amend);
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
 }

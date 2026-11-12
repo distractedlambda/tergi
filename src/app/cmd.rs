@@ -896,7 +896,11 @@ impl App {
                     }
                     return;
                 }
-                let staged = self.workdir.as_ref().is_some_and(|w| w.status.has_staged());
+                // The status we have may be from before the last stage, since
+                // it reloads in the background. So before saying that nothing
+                // is staged, ask git. It exits with 1 when something is.
+                let staged = self.workdir.as_ref().is_some_and(|w| w.status.has_staged())
+                    || self.repo.git.read(&["diff", "--cached", "--quiet"]).is_err();
                 if !staged && !self.amend && !all {
                     let any = self.workdir.as_ref().is_some_and(|w| !w.status.is_clean());
                     if any {
