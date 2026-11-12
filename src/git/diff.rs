@@ -181,6 +181,10 @@ pub fn parse_unified(text: &str, line_limit: usize) -> Vec<FileDiff> {
     let mut old_no = 0u32;
     let mut new_no = 0u32;
     let mut file_lines = 0usize;
+    // Inside a combined diff, which we don't show. Its lines start with one
+    // column per parent, so a removed "- item" reads "--- item" and must not
+    // be taken for a file header.
+    let mut combined = false;
 
     for line in lines {
         if old_left > 0 || new_left > 0 {
@@ -245,12 +249,16 @@ pub fn parse_unified(text: &str, line_limit: usize) -> Vec<FileDiff> {
             // The paths are refined later by the ---/+++ and rename lines.
             files.push(FileDiff::new(FileStatus::Modified, a, b));
             file_lines = 0;
+            combined = false;
         } else if let Some(rest) = line.strip_prefix("diff --cc ").or(line.strip_prefix("diff --combined ")) {
             let p = unquote(rest);
             let mut f = FileDiff::new(FileStatus::Conflicted, Some(p.clone()), Some(p));
             f.too_large = true;
             files.push(f);
             file_lines = 0;
+            combined = true;
+        } else if combined {
+            continue;
         } else if let Some(file) = files.last_mut() {
             if let Some(rest) = line.strip_prefix("@@ ") {
                 if let Some(h) = parse_hunk_header(rest) {
@@ -554,6 +562,33 @@ diff --git a/x b/x
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].hunks[0].lines.len(), 3);
         assert_eq!(files[0].hunks[0].lines[0].text, "diff --git a/y b/y");
+    }
+
+    #[test]
+    fn combined_diff_content_is_skipped() {
+        let text = "\
+diff --cc list.md
+index 1111111,2222222..0000000
+--- a/list.md
++++ b/list.md
+@@@ -1,3 -1,3 +1,2 @@@
+  - kept
+--- dropped by the merge
++++ added by the merge
+diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -1 +1 @@
+-old
++new
+";
+        let files = parse_unified(text, DEFAULT_LINE_LIMIT);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].status, FileStatus::Conflicted);
+        assert_eq!(files[0].old_path.as_deref(), Some("list.md"));
+        assert_eq!(files[0].new_path.as_deref(), Some("list.md"));
+        assert_eq!(files[1].path(), "x");
+        assert_eq!(files[1].hunks[0].lines.len(), 2);
     }
 
     #[test]
