@@ -57,10 +57,16 @@ fn run(path: &Path) -> Result<()> {
     app.start();
 
     let result = (|| -> Result<()> {
+        let mut pointer = "default";
         loop {
             crossterm::execute!(term.backend_mut(), BeginSynchronizedUpdate)?;
             term.draw(|f| tergi::ui::draw::draw(&mut app, f))?;
             crossterm::execute!(term.backend_mut(), EndSynchronizedUpdate)?;
+            let shape = app.pointer_shape();
+            if shape != pointer {
+                terminal::set_pointer(shape);
+                pointer = shape;
+            }
 
             let Some(ev) = app.recv() else { break };
             app.handle(ev);
@@ -87,6 +93,7 @@ fn run(path: &Path) -> Result<()> {
                 };
                 terminal::resume(&mut term)?;
                 input.resume();
+                pointer = "default";
                 if let Err(e) = r {
                     app.show_error("Couldn't run the editor", &e);
                 }

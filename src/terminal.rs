@@ -54,6 +54,7 @@ fn enter() -> Result<()> {
 
 pub fn restore() {
     let mut out = stdout();
+    set_pointer("default");
     if KEYBOARD_ENHANCED.swap(false, Ordering::Relaxed) {
         let _ = execute!(out, PopKeyboardEnhancementFlags);
     }
@@ -88,6 +89,12 @@ pub fn install_panic_hook() {
 
 /// Write an escape sequence straight to the terminal, for things ratatui
 /// doesn't cover, like OSC 52 clipboard writes.
+/// Set the mouse pointer shape with OSC 22, using CSS cursor names.
+/// Terminals that don't know the sequence ignore it.
+pub fn set_pointer(shape: &str) {
+    write_raw(&format!("\x1b]22;{shape}\x1b\\"));
+}
+
 pub fn write_raw(s: &str) {
     let mut out = stdout();
     let _ = out.write_all(s.as_bytes());

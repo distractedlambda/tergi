@@ -362,6 +362,16 @@ impl App {
         }
     }
 
+    /// The mouse pointer shape for whatever is under the mouse.
+    pub fn pointer_shape(&self) -> &'static str {
+        match self.target_at(self.mouse.0, self.mouse.1) {
+            Some(Target::Splitter(_)) => "ew-resize",
+            Some(Target::Button(_) | Target::MenuItem(_) | Target::PaletteItem(_) | Target::PlannerAction(_)) => "pointer",
+            Some(Target::InputText | Target::Message) => "text",
+            _ => "default",
+        }
+    }
+
     fn target_at(&self, x: u16, y: u16) -> Option<Target> {
         self.hits
             .iter()
