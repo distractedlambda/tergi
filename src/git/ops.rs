@@ -3,7 +3,7 @@
 use anyhow::{Result, bail};
 
 use super::cli::{Git, RunOpts};
-use super::diff::FileDiff;
+use super::diff::{FileDiff, LineKind};
 use super::patch::build_patch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +28,13 @@ pub fn apply_lines(
         bail!("No changed lines are selected.");
     };
     let mut args = vec!["apply", "--recount", "--whitespace=nowarn"];
+    // Without context lines, `git apply` can't check where a hunk belongs,
+    // so it refuses the patch unless we say that this is expected. A diff
+    // has no context lines at all when `context_lines` is 0.
+    let has_context = file.hunks.iter().flat_map(|h| &h.lines).any(|l| l.kind == LineKind::Context);
+    if !has_context {
+        args.push("--unidiff-zero");
+    }
     match mode {
         ApplyMode::Stage => args.push("--cached"),
         ApplyMode::Unstage => args.extend(["--cached", "--reverse"]),

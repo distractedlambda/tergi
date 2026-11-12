@@ -218,3 +218,83 @@ fn every_single_line_of_a_mixed_hunk() {
         assert_eq!(idx.lines().count(), old.lines().count() + usize::from(line.kind == LineKind::Add) - usize::from(line.kind == LineKind::Del));
     }
 }
+
+/// What a file should contain after applying only the selected changes.
+/// Going forward, the result is the old file plus the selected changes. In
+/// reverse, it's the new file minus them.
+fn expected(f: &FileDiff, base: &str, selected: &dyn Fn(usize, usize) -> bool, reverse: bool) -> String {
+    let base: Vec<&str> = base.lines().collect();
+    let mut out: Vec<&str> = Vec::new();
+    let mut pos = 0;
+    for (hi, h) in f.hunks.iter().enumerate() {
+        let (start, len) = if reverse { (h.new_start, h.new_len) } else { (h.old_start, h.old_len) };
+        // For an empty range the header gives the line before it.
+        let first = if len == 0 { start as usize } else { start as usize - 1 };
+        out.extend(&base[pos..first]);
+        pos = first + len as usize;
+        for (li, line) in h.lines.iter().enumerate() {
+            let keep = match (line.kind, reverse) {
+                (LineKind::Context, _) => true,
+                (LineKind::Add, false) | (LineKind::Del, true) => selected(hi, li),
+                (LineKind::Del, false) | (LineKind::Add, true) => !selected(hi, li),
+            };
+            if keep {
+                out.push(&line.text);
+            }
+        }
+    }
+    out.extend(&base[pos..]);
+    out.iter().map(|l| format!("{l}\n")).collect()
+}
+
+#[test]
+fn every_selection_with_every_context_size() {
+    // Repeated lines make it matter exactly where a hunk is applied, most of
+    // all without context lines.
+    let cases = [
+        ("1\n2\n3\n4\n5\n6\n7\n8\n9\n", "1\nA\n3\n4\n6\n7\nB\nC\n8\n9\n"),
+        ("x\nx\nx\nx\nx\nx\n", "x\nx\ny\nx\nx\nx\nx\nz\n"),
+        ("a\nb\na\nb\na\nb\n", "b\na\nb\nc\na\n"),
+        ("a\nb\nc\n", "new\na\nb\n"),
+    ];
+    for (old, new) in cases {
+        let s = Scratch::new();
+        s.write("f.txt", old);
+        s.commit_all("init");
+        for context in [0, 1, 3] {
+            s.write("f.txt", new);
+            s.sh(&["reset", "-q"]);
+            let load = || Workdir::load(&s.git, context, 100_000).expect("load");
+            let f = load().unstaged.remove(0);
+            let changed: Vec<(usize, usize)> = f
+                .hunks
+                .iter()
+                .enumerate()
+                .flat_map(|(h, hunk)| hunk.changed_lines().map(move |l| (h, l)))
+                .collect();
+            assert!(changed.len() <= 7, "too many subsets to try");
+            s.sh(&["add", "f.txt"]);
+            let staged = load().staged.remove(0);
+            assert_eq!(staged, f);
+            for mask in 1u32..(1 << changed.len()) {
+                let sel = |h: usize, l: usize| {
+                    changed.iter().position(|&c| c == (h, l)).is_some_and(|i| mask & (1 << i) != 0)
+                };
+                let what = format!("{old:?} to {new:?}, context {context}, selection {mask:b}");
+
+                s.sh(&["reset", "-q"]);
+                apply_lines(&s.git, &f, ApplyMode::Stage, &sel).unwrap_or_else(|e| panic!("stage {what}: {e:#}"));
+                assert_eq!(s.index("f.txt"), expected(&f, old, &sel, false), "stage {what}");
+
+                s.sh(&["add", "f.txt"]);
+                apply_lines(&s.git, &f, ApplyMode::Unstage, &sel).unwrap_or_else(|e| panic!("unstage {what}: {e:#}"));
+                assert_eq!(s.index("f.txt"), expected(&f, new, &sel, true), "unstage {what}");
+
+                s.sh(&["reset", "-q"]);
+                apply_lines(&s.git, &f, ApplyMode::Discard, &sel).unwrap_or_else(|e| panic!("discard {what}: {e:#}"));
+                assert_eq!(s.read("f.txt"), expected(&f, new, &sel, true), "discard {what}");
+                s.write("f.txt", new);
+            }
+        }
+    }
+}

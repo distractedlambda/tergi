@@ -69,19 +69,21 @@ pub fn build_patch(
         }
         let old_count = body.iter().filter(|(t, _, _)| *t != '+').count() as i64;
         let new_count = body.iter().filter(|(t, _, _)| *t != '-').count() as i64;
-        let (old_start, new_start) = if reverse {
-            let new_start = i64::from(h.new_start);
-            (new_start - delta, new_start)
+        // Where the hunk begins on the side we apply the patch to, and where
+        // it begins on the other side once the earlier hunks are applied.
+        let (old_first, new_first) = if reverse {
+            let new_first = first_line(h.new_start, h.new_len);
+            (new_first - delta, new_first)
         } else {
-            let old_start = i64::from(h.old_start);
-            (old_start, old_start + delta)
+            let old_first = first_line(h.old_start, h.old_len);
+            (old_first, old_first + delta)
         };
         delta += new_count - old_count;
         out.push_str(&format!(
             "@@ -{},{} +{},{} @@\n",
-            old_start.max(0),
+            range_start(old_first, old_count),
             old_count,
-            new_start.max(0),
+            range_start(new_first, new_count),
             new_count
         ));
         for (tag, text, no_eol) in body {
@@ -94,6 +96,19 @@ pub fn build_patch(
         }
     }
     Ok(Some(out))
+}
+
+/// The number of the first line a hunk covers. For an empty range, a hunk
+/// header gives the line before it instead.
+fn first_line(start: u32, len: u32) -> i64 {
+    if len == 0 { i64::from(start) + 1 } else { i64::from(start) }
+}
+
+/// The start to write in a hunk header for a range that begins at line
+/// `first`. `git apply` only needs this to be exact for patches without
+/// context lines, where it has nothing else to find the place by.
+fn range_start(first: i64, count: i64) -> i64 {
+    if count == 0 { (first - 1).max(0) } else { first.max(0) }
 }
 
 fn header(file: &FileDiff, full: bool, reverse: bool) -> String {
