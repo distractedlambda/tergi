@@ -18,10 +18,10 @@ Known problems that nobody has fixed yet.
 
 - Background threads are detached. `std::thread::spawn` and
   `Builder::spawn(...).ok()` drop the `JoinHandle`, so nothing notices
-  when a thread panics or exits early. Release builds abort on panic, so
-  there a panic still ends the process. Debug builds and tests unwind,
-  and a panicked worker leaves flags like `refs_inflight` or `busy` set
-  forever. The threads are spawned in `src/app/mod.rs`,
-  `src/terminal.rs`, `src/highlight.rs`, `src/watch.rs`, `src/askpass.rs`,
-  and the stdin writer in `Git::run` in `src/git/cli.rs`. They should be
-  kept and joined, or scoped, so a panic reaches the main thread.
+  when a thread panics or exits early. The app aborts on panic, so there
+  a panic still ends the process. Tests unwind, though, and a panicked
+  worker leaves flags like `refs_inflight` or `busy` set forever. The
+  threads are spawned in `src/app/mod.rs`, `src/terminal.rs`,
+  `src/highlight.rs`, `src/watch.rs`, `src/askpass.rs`, and the stdin
+  writer in `Git::run` in `src/git/cli.rs`. They should be kept and
+  joined, or scoped, so a panic reaches the main thread.
