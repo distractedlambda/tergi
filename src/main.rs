@@ -105,11 +105,7 @@ fn run(path: &Path) -> Result<()> {
 
 /// Open a file in the user's editor, as configured for git.
 fn edit(repo: &Repo, file: &Path) -> Result<()> {
-    let editor = repo
-        .git
-        .read_text(&["var", "GIT_EDITOR"])
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "vi".into());
+    let editor = repo.git.editor().unwrap_or_else(|_| "vi".into());
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(format!("{editor} \"$@\""))

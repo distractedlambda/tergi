@@ -96,6 +96,15 @@ impl Git {
         Ok(self.read(args)?.text())
     }
 
+    /// The user's editor, as git would pick it. We set `GIT_EDITOR` on every
+    /// command we run, so asking git with that in place would just return
+    /// our own setting.
+    pub fn editor(&self) -> Result<String> {
+        let mut cmd = self.base_command();
+        cmd.env_remove("GIT_EDITOR");
+        Ok(self.exec(cmd, &["var", "GIT_EDITOR"], &RunOpts::default(), false)?.text().trim().to_string())
+    }
+
     /// Run a command that may change the repository. It is recorded in the
     /// command log whether it succeeds or not.
     pub fn run<S: AsRef<str>>(&self, args: &[S]) -> Result<Output> {
