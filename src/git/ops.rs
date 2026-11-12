@@ -117,7 +117,11 @@ pub fn commit(git: &Git, message: &str, amend: bool) -> Result<String> {
             ..Default::default()
         },
     )?;
-    Ok(out.text())
+    // Hooks can print anything, but git's own summary line looks like
+    // "[main 1147b8e] Subject", and it's the one worth showing.
+    let text = out.text();
+    let summary = text.lines().find(|l| l.starts_with('[')).unwrap_or("Committed");
+    Ok(summary.to_string())
 }
 
 /// The full message of a commit, for amending and rewording.
