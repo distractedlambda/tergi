@@ -42,3 +42,4 @@ semicolon_if_nothing_returned = "warn"
 
 [profile.release]
 lto = "fat"
+codegen-units = 1
