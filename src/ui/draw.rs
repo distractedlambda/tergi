@@ -166,11 +166,16 @@ fn button(app: &App, buf: &mut Buffer, hits: &mut Hits, x: u16, y: u16, label: &
     w
 }
 
-/// Draw buttons right-aligned so the last one ends at `right`. Returns the
-/// x where the group starts.
-fn buttons_right(app: &App, buf: &mut Buffer, hits: &mut Hits, right: u16, y: u16, items: Vec<(&str, Cmd, Option<Color>)>) -> u16 {
-    let total: u16 = items.iter().map(|(l, _, _)| width(l, 4) as u16 + 3).sum();
-    let mut x = right.saturating_sub(total);
+/// Draw buttons right-aligned so the last one ends at `right`. Buttons are
+/// dropped from the end until the group fits right of `left`, so the first
+/// one should be the most important. Returns the x where the group starts.
+#[allow(clippy::too_many_arguments)]
+fn buttons_right(app: &App, buf: &mut Buffer, hits: &mut Hits, left: u16, right: u16, y: u16, mut items: Vec<(&str, Cmd, Option<Color>)>) -> u16 {
+    let total = |items: &[(&str, Cmd, Option<Color>)]| -> u16 { items.iter().map(|(l, _, _)| width(l, 4) as u16 + 3).sum() };
+    while !items.is_empty() && right.saturating_sub(total(&items)) < left {
+        items.pop();
+    }
+    let mut x = right.saturating_sub(total(&items));
     let start = x;
     for (label, cmd, accent) in items {
         x += button(app, buf, hits, x, y, label, cmd, accent) + 1;
@@ -237,7 +242,7 @@ fn draw_topbar(app: &App, buf: &mut Buffer, r: Rect, hits: &mut Hits) {
         ("Stash", Cmd::StashPush, None),
         ("⌘ Commands", Cmd::Palette, None),
     ];
-    let start = buttons_right(app, buf, hits, r.right().saturating_sub(1), r.y, buttons);
+    let start = buttons_right(app, buf, hits, x + 2, r.right().saturating_sub(1), r.y, buttons);
 
     // Activity goes in the middle.
     let spin = SPINNER[(app.busy.as_ref().map_or_else(std::time::Instant::now, |b| b.since).elapsed().as_millis() / 120) as usize % SPINNER.len()];
@@ -292,7 +297,7 @@ fn draw_banner(app: &App, buf: &mut Buffer, r: Rect, hits: &mut Hits) {
         items.push(("Skip", Cmd::SkipOp, None));
     }
     items.push(("Abort", Cmd::AbortOp, Some(t.error)));
-    let start = buttons_right(app, buf, hits, r.right().saturating_sub(1), r.y, items);
+    let start = buttons_right(app, buf, hits, r.x + 20, r.right().saturating_sub(1), r.y, items);
     put(buf, r.x + 1, r.y, &text, start.saturating_sub(r.x + 2), style.add_modifier(Modifier::BOLD));
 }
 
@@ -497,6 +502,7 @@ fn draw_detail(app: &App, buf: &mut Buffer, hits: &mut Hits) {
             app,
             buf,
             hits,
+            d.x + 1,
             d.right().saturating_sub(1),
             label_y,
             vec![
@@ -571,7 +577,7 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 fill(buf, rr, bg);
                 let count = app.section_files(*sec).len();
                 let arrow = if det.collapsed_sections.contains(sec) { '▸' } else { '▾' };
-                put(buf, a.x + 1, y, &format!("{arrow} {} ({count})", sec.title()), a.width / 2, Style::default().bg(bg).fg(t.fg).add_modifier(Modifier::BOLD));
+                let label_end = put(buf, a.x + 1, y, &format!("{arrow} {} ({count})", sec.title()), a.width, Style::default().bg(bg).fg(t.fg).add_modifier(Modifier::BOLD));
                 let items = match sec {
                     Section::Staged => vec![("Unstage all", Cmd::Unstage(Unit::Section(*sec)), None)],
                     Section::Conflicted => vec![],
@@ -580,7 +586,7 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                         ("Discard all", Cmd::Discard(Unit::Section(*sec)), None),
                     ],
                 };
-                buttons_right(app, buf, hits, a.right().saturating_sub(1), y, items);
+                buttons_right(app, buf, hits, label_end + 2, a.right().saturating_sub(1), y, items);
             }
             Row::File { sec, file } => {
                 let Some(f) = app.section_files(*sec).get(*file) else { continue };
@@ -610,8 +616,10 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 } else {
                     Vec::new()
                 };
-                let bx = buttons_right(app, buf, hits, a.right().saturating_sub(1), y, items);
+                // Keep room for the counts and the start of the path.
                 let counts = format!("+{adds} −{dels}");
+                let room = width(&counts, 4) as u16 + 2 + (width(&f.display_path(), 4) as u16).min(16);
+                let bx = buttons_right(app, buf, hits, x + 2 + room, a.right().saturating_sub(1), y, items);
                 let cw = width(&counts, 4) as u16;
                 let cx = bx.saturating_sub(cw + 2);
                 if !f.binary {
@@ -648,8 +656,10 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 } else {
                     Vec::new()
                 };
-                let bx = buttons_right(app, buf, hits, a.right().saturating_sub(1), y, items);
-                put(buf, a.x + 1, y, &h.header(), bx.saturating_sub(a.x + 2), Style::default().bg(bg).fg(t.dim));
+                let header = h.header();
+                let room = (width(&header, 4) as u16).min(18);
+                let bx = buttons_right(app, buf, hits, a.x + 2 + room, a.right().saturating_sub(1), y, items);
+                put(buf, a.x + 1, y, &header, bx.saturating_sub(a.x + 2), Style::default().bg(bg).fg(t.dim));
             }
             Row::Line { sec, file, hunk, line } => {
                 let Some(f) = app.section_files(*sec).get(*file) else { continue };
@@ -836,6 +846,7 @@ fn draw_planner(app: &App, buf: &mut Buffer, hits: &mut Hits) {
         app,
         buf,
         hits,
+        a.x + 1,
         a.right().saturating_sub(1),
         by,
         vec![("Cancel", Cmd::PlanCancel, None), ("Start rebase", Cmd::PlanStart, Some(t.badge_head))],
