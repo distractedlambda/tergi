@@ -285,6 +285,8 @@ impl TextArea {
 
     /// Draw the text and return where the terminal cursor should go.
     pub fn render(&mut self, buf: &mut Buffer, area: Rect, style: Style, placeholder_style: Style) -> Position {
+        // The area can be off screen when the window is very small.
+        let area = area.intersection(buf.area);
         if area.width == 0 || area.height == 0 {
             return Position::new(area.x, area.y);
         }

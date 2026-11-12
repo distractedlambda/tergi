@@ -282,3 +282,57 @@ fn folds_do_not_carry_over_to_other_commits() {
     ui.select_commit(1);
     assert_eq!(hunks(&ui), 1);
 }
+
+#[test]
+fn draws_at_any_size() {
+    let s = repo_with_change();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    let sizes: Vec<(u16, u16)> = [1, 2, 3, 4, 7, 12, 24, 39, 40, 70, 100, 140]
+        .into_iter()
+        .flat_map(|w| (1..=12).chain([24, 36]).map(move |h| (w, h)))
+        .collect();
+    let draw_all = |ui: &mut Ui, what: &str| {
+        for &(w, h) in &sizes {
+            ui.term = Terminal::new(TestBackend::new(w, h)).expect("terminal");
+            let app = &mut ui.app;
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                ui.term.draw(|f| draw(app, f)).expect("draw");
+            }));
+            assert!(r.is_ok(), "drawing {what} at {w}x{h} panicked");
+        }
+        ui.term = Terminal::new(TestBackend::new(140, 36)).expect("terminal");
+        ui.draw();
+    };
+
+    draw_all(&mut ui, "the working directory");
+    ui.key(KeyCode::Char('t'));
+    draw_all(&mut ui, "the side-by-side diff");
+    ui.app.sidebar_visible = Some(true);
+    ui.select_commit(1);
+    draw_all(&mut ui, "a commit");
+
+    ui.key(KeyCode::Char('?'));
+    draw_all(&mut ui, "the help menu");
+    ui.key(KeyCode::Esc);
+    ui.key(KeyCode::Char('S'));
+    draw_all(&mut ui, "an input box");
+    ui.key(KeyCode::Esc);
+    ui.app.run_cmd(Cmd::Palette);
+    draw_all(&mut ui, "the palette");
+    ui.key(KeyCode::Esc);
+    ui.key(KeyCode::Char('@'));
+    draw_all(&mut ui, "the command log");
+    ui.key(KeyCode::Esc);
+    ui.app.run_cmd(Cmd::Drop(ui.app.history.commits[0].id));
+    draw_all(&mut ui, "a confirmation");
+    ui.key(KeyCode::Esc);
+    ui.app.show_error("Something failed", &anyhow::anyhow!("a long explanation\nover two lines"));
+    draw_all(&mut ui, "an error");
+    ui.key(KeyCode::Esc);
+
+    ui.key(KeyCode::Char('2'));
+    ui.key(KeyCode::Char('i'));
+    assert!(ui.app.planner.is_some());
+    draw_all(&mut ui, "the planner");
+}

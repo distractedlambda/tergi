@@ -133,8 +133,11 @@ fn layout(app: &mut App, area: Rect) {
     }
 }
 
+/// Write a string and return the x just past it. In a very small window
+/// parts of the layout end up outside the buffer, and writing there would
+/// panic, so those writes are dropped.
 fn put(buf: &mut Buffer, x: u16, y: u16, s: &str, max: u16, style: Style) -> u16 {
-    if max == 0 {
+    if max == 0 || !buf.area.contains(Position::new(x, y)) {
         return x;
     }
     buf.set_stringn(x, y, s, usize::from(max), style).0
@@ -166,7 +169,7 @@ fn button(app: &App, buf: &mut Buffer, hits: &mut Hits, x: u16, y: u16, label: &
         (false, None) => t.button,
     };
     let fg = if accent.is_some() { t.badge_fg } else { t.fg };
-    buf.set_stringn(x, y, format!(" {label} "), usize::from(w), Style::default().bg(bg).fg(fg));
+    put(buf, x, y, &format!(" {label} "), w, Style::default().bg(bg).fg(fg));
     hits.push((r, Target::Button(cmd)));
     w
 }
@@ -573,7 +576,9 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
             Row::Meta(m) => {
                 let bg = if is_cursor { t.sel_unfocused } else { t.bg };
                 fill(buf, rr, bg);
-                if let Some(ml) = det.meta.get(*m) {
+                if let Some(ml) = det.meta.get(*m)
+                    && buf.area.contains(Position::new(a.x + 2, y))
+                {
                     buf.set_line(a.x + 2, y, &ml.line, a.width.saturating_sub(3));
                 }
             }
@@ -828,7 +833,7 @@ fn draw_planner(app: &App, buf: &mut Buffer, hits: &mut Hits) {
             PlanAction::Edit => t.badge_local,
         };
         let ar = Rect::new(a.x + 1, y, 9, 1);
-        buf.set_stringn(ar.x, y, format!(" {:<7} ", r.action.name()), 9, Style::default().bg(color).fg(t.badge_fg));
+        put(buf, ar.x, y, &format!(" {:<7} ", r.action.name()), 9, Style::default().bg(color).fg(t.badge_fg));
         hits.push((rr, Target::PlannerRow(i)));
         hits.push((ar, Target::PlannerAction(i)));
         let st = Style::default().bg(bg).fg(t.fg);
@@ -969,7 +974,7 @@ fn draw_overlays(app: &mut App, buf: &mut Buffer, area: Rect, hits: &mut Hits) -
                 m.scroll = m.scroll.min(m.items.len().saturating_sub(visible));
                 for (i, a) in m.items.iter().enumerate().skip(m.scroll).take(visible) {
                     let iy = r.y + 1 + (i - m.scroll) as u16;
-                    let ir = Rect::new(r.x + 1, iy, w - 2, 1);
+                    let ir = Rect::new(r.x + 1, iy, w.saturating_sub(2), 1);
                     let bg = if i == m.selected { t.sel } else if hover(ir) && a.enabled { t.hover } else { t.panel };
                     fill(buf, ir, bg);
                     let fg = if a.enabled { t.fg } else { t.faint };
@@ -1044,7 +1049,7 @@ fn draw_overlays(app: &mut App, buf: &mut Buffer, area: Rect, hits: &mut Hits) -
                 for (row, &idx) in filtered.iter().enumerate().skip(skip).take(usize::from(list_h)) {
                     let a = &items[idx];
                     let iy = r.y + 3 + (row - skip) as u16;
-                    let ir = Rect::new(r.x + 1, iy, r.width - 2, 1);
+                    let ir = Rect::new(r.x + 1, iy, r.width.saturating_sub(2), 1);
                     let bg = if row == sel { t.sel } else if hover(ir) { t.hover } else { t.panel };
                     fill(buf, ir, bg);
                     put(buf, ir.x + 1, iy, &a.label, ir.width.saturating_sub(14), Style::default().bg(bg).fg(t.fg));
@@ -1118,7 +1123,7 @@ fn draw_dialog_buttons(t: &Theme, mouse: (u16, u16), buf: &mut Buffer, hits: &mu
         let hov = mouse.0 >= r.x && mouse.0 < r.right() && mouse.1 == y;
         let bg = if hov { t.button_hover } else { accent.unwrap_or(t.button) };
         let fg = if accent.is_some() { t.badge_fg } else { t.fg };
-        buf.set_stringn(x, y, format!(" {label} "), usize::from(w), Style::default().bg(bg).fg(fg));
+        put(buf, x, y, &format!(" {label} "), w, Style::default().bg(bg).fg(fg));
         if active {
             hits.push((r, Target::Button(cmd)));
         }

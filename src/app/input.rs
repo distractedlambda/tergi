@@ -625,7 +625,9 @@ impl App {
     fn drag_to(&mut self, x: u16, y: u16) {
         match self.drag.clone() {
             Some(Drag::Splitter(Splitter::Sidebar)) => {
-                self.sidebar_width = x.saturating_sub(self.areas.body.x).clamp(12, self.size.0 / 2);
+                // `clamp` panics when the upper bound is below the lower one.
+                let max = (self.size.0 / 2).max(12);
+                self.sidebar_width = x.saturating_sub(self.areas.body.x).clamp(12, max);
             }
             Some(Drag::Splitter(Splitter::History)) => {
                 let b = self.areas.body;
