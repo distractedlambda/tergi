@@ -711,7 +711,6 @@ impl App {
         }
         let load = source.commit_id();
         self.detail.set_source(source);
-        self.highlighter.set_generation(self.detail.generation);
         if let Some(id) = load {
             self.detail.loading = true;
             self.detail.request += 1;
@@ -732,6 +731,8 @@ impl App {
     }
 
     pub fn rebuild_doc(&mut self) {
+        // Highlighting requested for files as they were before is wasted.
+        self.highlighter.set_generation(self.detail.generation);
         let workdir = self.workdir.as_ref();
         self.detail.rebuild(workdir, &self.labels, &self.theme, self.split_diff, &self.cfg);
     }
