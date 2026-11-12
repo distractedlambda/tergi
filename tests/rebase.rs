@@ -167,3 +167,21 @@ fn refuses_merges_in_range() {
     let _ = base;
     assert!(rebase::plan_from(&s.git, id(main_commit.trim())).is_err());
 }
+
+#[test]
+fn refuses_to_start_during_another_rebase() {
+    let (s, ids) = four();
+    let r = rebase::single(&s.git, &exe(), id(&ids[1]), Action::Edit).expect("edit");
+    assert_eq!(r, Outcome::Stopped);
+    let head = s.sh(&["rev-parse", "HEAD"]);
+
+    // A second rebase can't start, and saying it "stopped" would be wrong.
+    assert!(rebase::single(&s.git, &exe(), id(&ids[0]), Action::Edit).is_err());
+    assert!(rebase::rebase_onto(&s.git, "main").is_err());
+    // This one would otherwise leave a fixup commit behind.
+    s.write("one.txt", "one more\n");
+    s.sh(&["add", "-A"]);
+    assert!(rebase::fixup_staged_into(&s.git, id(&ids[0])).is_err());
+    assert_eq!(s.sh(&["rev-parse", "HEAD"]), head);
+    assert_eq!(s.sh(&["diff", "--cached", "--name-only"]).trim(), "one.txt");
+}

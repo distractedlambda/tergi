@@ -143,12 +143,27 @@ fn scratch_dir(git: &Git) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Fail if a rebase, merge, cherry-pick or revert is unfinished. Git would
+/// refuse to start a rebase then anyway, but `finish` would see the old
+/// operation and report that the new rebase stopped.
+fn ensure_idle(git: &Git) -> Result<()> {
+    let what = match state(git) {
+        RepoState::Clean => return Ok(()),
+        RepoState::Rebase { .. } => "rebase",
+        RepoState::Merge => "merge",
+        RepoState::CherryPick => "cherry-pick",
+        RepoState::Revert => "revert",
+    };
+    bail!("A {what} is in progress. Continue or abort it first.");
+}
+
 /// Run the rebase described by `plan`. `exe` is the tergi executable, used
 /// as the sequence editor.
 pub fn run(git: &Git, plan: &Plan, exe: &Path) -> Result<Outcome> {
     if plan.steps.is_empty() {
         return Ok(Outcome::Done);
     }
+    ensure_idle(git)?;
     let dir = scratch_dir(git)?;
     let todo = build_todo(plan, &dir)?;
     let todo_file = dir.join("todo");
@@ -233,6 +248,7 @@ pub fn abort_rebase(git: &Git) -> Result<()> {
 
 /// Rebase the current branch onto another commit.
 pub fn rebase_onto(git: &Git, upstream: &str) -> Result<Outcome> {
+    ensure_idle(git)?;
     let r = git.run(&["rebase", "--autostash", upstream]).map(|_| ());
     finish(git, r)
 }
@@ -243,8 +259,10 @@ pub fn fixup_staged_into(git: &Git, target: ObjectId) -> Result<Outcome> {
     if !super::ops::is_ancestor(git, &t, "HEAD") {
         bail!("That commit isn't part of the current branch.");
     }
+    ensure_idle(git)?;
     let plan = plan_from(git, target)?;
     git.run(&["commit", "--no-verify", &format!("--fixup={t}")])?;
+    let fixup = git.read_text(&["rev-parse", "HEAD"])?;
     let base = plan.base.map(|b| b.to_string());
     let mut args = vec!["rebase", "-i", "--autosquash", "--autostash"];
     match &base {
@@ -260,6 +278,14 @@ pub fn fixup_staged_into(git: &Git, target: ObjectId) -> Result<Outcome> {
             },
         )
         .map(|_| ());
+    if r.is_err()
+        && state(git) == RepoState::Clean
+        && git.read_text(&["rev-parse", "HEAD"]).is_ok_and(|head| head == fixup)
+    {
+        // The rebase never started. Take the fixup commit off again, so the
+        // changes are staged as they were.
+        let _ = git.run(&["reset", "--soft", "HEAD~1"]);
+    }
     finish(git, r)
 }
 
