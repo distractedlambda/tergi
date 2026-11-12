@@ -205,7 +205,12 @@ pub fn load_full_diff(git: &Git, file: &FileDiff, staged: bool, context: u32) ->
     if staged {
         args.push("--cached");
     }
-    args.extend(["--", path]);
+    let spec = super::ops::pathspec(file.path());
+    args.extend(["--", &spec]);
     let out = git.read_opts(&args, &RunOpts::default())?;
-    Ok(parse_unified(&out.text(), usize::MAX).into_iter().next())
+    // A file that changed type shows up twice under the same path, once
+    // deleted and once added.
+    Ok(parse_unified(&out.text(), usize::MAX)
+        .into_iter()
+        .find(|d| d.old_path == file.old_path && d.new_path == file.new_path))
 }

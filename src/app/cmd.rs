@@ -1245,11 +1245,11 @@ impl App {
         if !f.too_large {
             return;
         }
-        let path = f.path().to_string();
         let ctx = self.cfg.context_lines;
+        let git = &self.repo.git;
         match sec {
             Section::Unstaged | Section::Staged => {
-                match crate::git::workdir::load_full_diff(&self.repo.git, &path, sec == Section::Staged, ctx) {
+                match crate::git::workdir::load_full_diff(git, f, sec == Section::Staged, ctx) {
                     Ok(Some(full)) => {
                         if let Some(w) = &mut self.workdir {
                             let list = if sec == Section::Staged { &mut w.staged } else { &mut w.unstaged };
@@ -1264,6 +1264,17 @@ impl App {
                     Err(e) => self.show_error("Loading the diff failed", &e),
                 }
             }
+            Section::Untracked => {
+                let (full, texts) = crate::git::workdir::load_full_untracked(git, f.path(), ctx);
+                if let Some(w) = &mut self.workdir
+                    && let (Some(slot), Some(text_slot)) = (w.untracked.get_mut(fi), w.untracked_texts.get_mut(fi))
+                {
+                    *slot = full;
+                    *text_slot = texts;
+                }
+                self.detail.reset_for_reload();
+                self.rebuild_doc();
+            }
             Section::Commit => {
                 if let Some(c) = &self.detail.commit {
                     let repo = self.repo.gix.to_thread_local();
@@ -1276,7 +1287,7 @@ impl App {
                     }
                 }
             }
-            _ => {}
+            Section::Conflicted => {}
         }
     }
 }
