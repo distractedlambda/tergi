@@ -586,7 +586,14 @@ impl App {
     /// Actions for the focused pane followed by the global ones.
     pub fn all_actions(&self) -> Vec<ActionDef> {
         let mut v = self.actions(self.context());
-        v.extend(self.global_actions());
+        for g in self.global_actions() {
+            // A pane can offer a global command too, often without its key.
+            // List it once, with the key.
+            match v.iter_mut().find(|p| p.cmd == g.cmd) {
+                Some(p) if p.key.is_none() || p.key == g.key => p.key = g.key,
+                _ => v.push(g),
+            }
+        }
         v
     }
 
