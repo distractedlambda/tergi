@@ -41,4 +41,4 @@ redundant_clone = "warn"
 semicolon_if_nothing_returned = "warn"
 
 [profile.release]
-lto = "thin"
+lto = "fat"
