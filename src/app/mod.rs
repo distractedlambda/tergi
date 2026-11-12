@@ -49,7 +49,19 @@ pub struct Repo {
 
 impl Repo {
     pub fn open(path: &std::path::Path) -> Result<Repo> {
-        let repo = gix::discover(path).context("not inside a git repository")?;
+        if !path.exists() {
+            anyhow::bail!("{} doesn't exist", path.display());
+        }
+        let repo = gix::discover(path).map_err(|e| {
+            // gix's not-found message repeats the path and ends in an error
+            // class name, so say it more plainly.
+            if e.to_string().starts_with("Could not find a git repository") {
+                let shown = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+                anyhow::anyhow!("{} is not inside a git repository", shown.display())
+            } else {
+                anyhow::anyhow!("could not open the repository: {e}")
+            }
+        })?;
         let workdir = repo
             .workdir()
             .context("bare repositories aren't supported")?
