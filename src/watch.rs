@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossbeam_channel::{RecvTimeoutError, unbounded};
+use notify::event::ModifyKind;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 pub const WORKTREE: u8 = 1;
@@ -115,16 +116,17 @@ pub fn start(
                         if matches!(ev.kind, EventKind::Access(_)) {
                             continue;
                         }
+                        // A directory can also appear by being moved in.
+                        let appeared = matches!(
+                            ev.kind,
+                            EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
+                        );
                         for p in &ev.paths {
                             let flags = classify(&roots, p, &ignored_dirs);
                             if flags == 0 {
                                 continue;
                             }
-                            if cfg!(target_os = "linux")
-                                && flags == WORKTREE
-                                && matches!(ev.kind, EventKind::Create(_))
-                                && p.is_dir()
-                            {
+                            if cfg!(target_os = "linux") && flags == WORKTREE && appeared && p.is_dir() {
                                 new_dirs.insert(p.clone());
                             }
                             pending |= flags;
@@ -254,6 +256,42 @@ fn classify_git(rel: &Path) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Watch a new scratch repository and collect the flags it reports.
+    fn watched() -> (tempfile::TempDir, Handle, crossbeam_channel::Receiver<u8>) {
+        let dir = tempfile::tempdir().unwrap();
+        let init = std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["init", "-q"])
+            .status()
+            .unwrap();
+        assert!(init.success());
+        let (tx, rx) = unbounded();
+        let git_dir = dir.path().join(".git");
+        let handle = start(dir.path(), &git_dir, &git_dir, move |e| {
+            if let Event::Changed(flags) = e {
+                let _ = tx.send(flags);
+            }
+        })
+        .unwrap();
+        (dir, handle, rx)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn watches_a_directory_that_is_moved_in() {
+        let (dir, _handle, rx) = watched();
+        // Next to the repository, so the move stays on one file system.
+        let outside = tempfile::tempdir_in(dir.path().parent().unwrap()).unwrap();
+        std::fs::create_dir(outside.path().join("sub")).unwrap();
+        std::fs::rename(outside.path().join("sub"), dir.path().join("sub")).unwrap();
+        let moved = rx.recv_timeout(Duration::from_secs(5));
+        assert_eq!(moved.map(|f| f & WORKTREE), Ok(WORKTREE));
+        // The directory got its watch before the move was reported.
+        std::fs::write(dir.path().join("sub/file.txt"), "x").unwrap();
+        let written = rx.recv_timeout(Duration::from_secs(5));
+        assert_eq!(written.map(|f| f & WORKTREE), Ok(WORKTREE));
+    }
 
     #[test]
     fn git_paths() {
