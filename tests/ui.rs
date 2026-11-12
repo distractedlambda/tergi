@@ -166,3 +166,18 @@ fn clicks_behind_a_dialog_are_ignored() {
     ui.click(MouseButton::Left, stash);
     assert_eq!(ui.app.overlays.len(), 1);
 }
+
+#[test]
+fn first_load_starts_at_the_top() {
+    // An empty repository, so the detail pane has only a few rows.
+    let s = Scratch::new();
+    s.write("a.txt", "hi\n");
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(0);
+    ui.key(KeyCode::Char('3'));
+    assert_eq!(ui.app.detail.cursor, 0);
+    ui.key(KeyCode::Char('j'));
+    assert_eq!(ui.app.detail.cursor, 1);
+    ui.key(KeyCode::Char(' '));
+    ui.wait("a.txt to be staged", |u| u.screen().contains("Staged changes (1)"));
+}

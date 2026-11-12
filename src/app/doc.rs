@@ -339,7 +339,9 @@ impl Detail {
         let find = |key: &RowKey, rows: &[Row]| -> Option<usize> {
             (0..rows.len()).find(|&i| row_key(rows, i, &paths) == *key)
         };
-        let mut pos = find(&old_key, &self.rows);
+        // Blank and placeholder rows all share one key, so looking one up
+        // would just find the first blank row.
+        let mut pos = if old_key == RowKey::Other { None } else { find(&old_key, &self.rows) };
         if pos.is_none() {
             let fallback = match &old_key {
                 RowKey::Line(s, p, h, _) => Some(RowKey::Hunk(*s, p.clone(), *h)),
