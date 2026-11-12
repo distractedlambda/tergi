@@ -215,6 +215,53 @@ fn buttons_under_a_dialog_do_not_light_up() {
 }
 
 #[test]
+fn right_click_selects_without_activating() {
+    let s = repo_with_change();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    let hunks = |u: &Ui| u.app.detail.rows.iter().filter(|r| matches!(r, Row::Hunk { .. })).count();
+    assert_eq!(hunks(&ui), 1);
+
+    // On a file header, the menu opens and the file stays unfolded.
+    let file = ui.doc_row(|r| matches!(r, Row::File { .. }));
+    ui.click(MouseButton::Right, file);
+    assert!(matches!(ui.app.overlays.last(), Some(Overlay::Menu(_))));
+    assert_eq!(hunks(&ui), 1);
+    ui.key(KeyCode::Esc);
+
+    // Buttons only react to the left button.
+    let stash = ui.find_hit(|t| matches!(t, Target::Button(Cmd::StashPush)));
+    ui.click(MouseButton::Right, stash);
+    assert!(ui.app.overlays.is_empty());
+    let stage = ui.find_hit(|t| matches!(t, Target::Button(Cmd::Stage(Unit::File(..)))));
+    ui.click(MouseButton::Right, stage);
+    ui.wait("things to settle", |u| u.app.busy.is_none());
+    assert_eq!(s.sh(&["diff", "--cached", "--name-only"]).trim(), "");
+
+    // A right-click outside a dialog leaves it open, like a left-click.
+    ui.key(KeyCode::Char('S'));
+    ui.click(MouseButton::Right, Rect::new(0, 35, 1, 1));
+    assert!(matches!(ui.app.overlays.last(), Some(Overlay::Input(_))));
+}
+
+#[test]
+fn right_click_in_the_planner_opens_one_menu() {
+    let s = repo_with_change();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    // Plan from the oldest commit, so there are two rows.
+    ui.app.select_history(2);
+    ui.key(KeyCode::Char('2'));
+    ui.key(KeyCode::Char('i'));
+    assert!(ui.app.planner.is_some());
+    ui.draw();
+    let action = ui.find_hit(|t| matches!(t, Target::PlannerAction(1)));
+    ui.click(MouseButton::Right, action);
+    assert_eq!(ui.app.overlays.len(), 1);
+    assert_eq!(ui.app.planner.as_ref().map(|p| p.selected), Some(1));
+}
+
+#[test]
 fn folds_do_not_carry_over_to_other_commits() {
     let s = Scratch::new();
     s.write("big.txt", "start\n");

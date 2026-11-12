@@ -394,26 +394,7 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Right) => {
                 let target = self.target_at(x, y);
-                if !self.overlays.is_empty() {
-                    if target.is_none() {
-                        self.overlays.pop();
-                    }
-                    return;
-                }
-                let keep_selection = matches!(target, Some(Target::DocRow(i))
-                    if self.detail.selection().is_some_and(|(a, b)| (a..=b).contains(&i)));
-                if !keep_selection {
-                    self.click(target.clone(), x, y, false, false);
-                    self.drag = None;
-                }
-                if let Some(Target::PlannerRow(_) | Target::PlannerAction(_)) = target {
-                    self.open_plan_action_menu(x, y);
-                } else if matches!(
-                    target,
-                    Some(Target::SidebarRow(_) | Target::HistoryRow(_) | Target::DocRow(_))
-                ) {
-                    self.open_context_menu(Some((x, y)));
-                }
+                self.right_click(target.as_ref(), x, y);
             }
             MouseEventKind::Drag(MouseButton::Left) => self.drag_to(x, y),
             MouseEventKind::Up(_) => self.drag = None,
@@ -574,6 +555,48 @@ impl App {
             }
             Target::Overlay => {}
         }
+    }
+
+    /// Select the row under the mouse and open its menu. Unlike a left
+    /// click, this doesn't fold anything, follow links or press buttons.
+    fn right_click(&mut self, target: Option<&Target>, x: u16, y: u16) {
+        if !self.overlays.is_empty() {
+            // Outside the top dialog, both buttons do the same.
+            if target.is_none() {
+                self.click(None, x, y, false, false);
+            }
+            return;
+        }
+        match target {
+            Some(&(Target::PlannerRow(i) | Target::PlannerAction(i))) => {
+                if let Some(p) = &mut self.planner {
+                    p.selected = i;
+                }
+                self.open_plan_action_menu(x, y);
+                return;
+            }
+            // The panes behind the planner have no menu while it's open.
+            _ if self.planner.is_some() => return,
+            Some(&Target::SidebarRow(i)) => {
+                self.focus = Focus::Sidebar;
+                self.sidebar_select(i);
+            }
+            Some(&Target::HistoryRow(i)) => {
+                self.focus = Focus::History;
+                self.select_history(i);
+            }
+            Some(&Target::DocRow(i)) => {
+                self.focus = Focus::Detail;
+                // A click inside the selected lines is about those lines.
+                let in_selection = self.detail.selection().is_some_and(|(a, b)| (a..=b).contains(&i));
+                if !in_selection {
+                    self.detail.cursor = i;
+                    self.detail.anchor = None;
+                }
+            }
+            _ => return,
+        }
+        self.open_context_menu(Some((x, y)));
     }
 
     fn open_plan_action_menu(&mut self, x: u16, y: u16) {
