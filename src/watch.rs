@@ -79,6 +79,7 @@ pub fn start(
             }
         }
     }
+    let mut reflogs_watched = watch_reflogs(&watcher, &roots.common_dir);
 
     let ignored_dirs = if cfg!(target_os = "linux") {
         Vec::new()
@@ -135,6 +136,11 @@ pub fn start(
                     }
                     Ok(Err(_)) => {}
                     Err(RecvTimeoutError::Timeout) => {
+                        // A fresh repository has no reflogs until its first
+                        // commit, which also changes a ref.
+                        if !reflogs_watched && pending & REFS != 0 {
+                            reflogs_watched = watch_reflogs(&w2, &roots.common_dir);
+                        }
                         for d in new_dirs.drain() {
                             if !is_ignored(&roots.workdir, &d) {
                                 let _ = watch_tree(&w2, &roots.workdir, &d);
@@ -153,6 +159,19 @@ pub fn start(
         .context("could not start watcher thread")?;
 
     Ok(Handle { _watcher: watcher })
+}
+
+/// Watch the folder that holds the stash reflog. Dropping a stash other
+/// than the newest one doesn't change what `refs/stash` points at, and
+/// tools built on libgit2 only rewrite the reflog. The stash is shared
+/// between worktrees, so its reflog is in the common directory. Returns
+/// whether the folder exists and is watched.
+fn watch_reflogs(watcher: &Arc<Mutex<RecommendedWatcher>>, common_dir: &Path) -> bool {
+    let dir = common_dir.join("logs/refs");
+    dir.is_dir()
+        && watcher
+            .lock()
+            .is_ok_and(|mut w| w.watch(&dir, RecursiveMode::NonRecursive).is_ok())
 }
 
 /// Watch `start` and every directory under it that git doesn't ignore.
@@ -247,6 +266,8 @@ fn classify_git(rel: &Path) -> u8 {
         "HEAD" | "ORIG_HEAD" | "FETCH_HEAD" | "packed-refs" | "refs" => REFS | INDEX,
         // Remotes and upstreams live in the config.
         "config" => REFS,
+        // The other reflogs only change along with their refs.
+        "logs" if s == "logs/refs/stash" => REFS,
         "rebase-merge" | "rebase-apply" | "MERGE_HEAD" | "CHERRY_PICK_HEAD" | "REVERT_HEAD"
         | "sequencer" => STATE | REFS | INDEX,
         _ => 0,
@@ -294,6 +315,37 @@ mod tests {
     }
 
     #[test]
+    fn notices_a_dropped_stash_below_the_top() {
+        let (dir, _handle, rx) = watched();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .current_dir(dir.path())
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        std::fs::write(dir.path().join("a"), "1").unwrap();
+        git(&["add", "a"]);
+        git(&["commit", "-qm", "a"]);
+        // Let the watcher pick up the new reflog folder before stashing.
+        while rx.recv_timeout(Duration::from_secs(1)).is_ok() {}
+        for n in ["2", "3"] {
+            std::fs::write(dir.path().join("a"), n).unwrap();
+            git(&["stash", "-q"]);
+        }
+        while rx.recv_timeout(Duration::from_secs(1)).is_ok() {}
+        // `git stash drop` also rewrites `refs/stash`, so it would be noticed
+        // anyway. Other tools, such as anything built on libgit2, only
+        // rewrite the reflog, like this does.
+        git(&["reflog", "delete", "stash@{1}"]);
+        let dropped = rx.recv_timeout(Duration::from_secs(5));
+        assert_eq!(dropped.map(|f| f & REFS), Ok(REFS));
+    }
+
+    #[test]
     fn git_paths() {
         assert_eq!(classify_git(Path::new("index")), INDEX);
         assert_eq!(classify_git(Path::new("index.lock")), 0);
@@ -302,6 +354,9 @@ mod tests {
         assert_eq!(classify_git(Path::new("objects/ab/cdef")), 0);
         assert_eq!(classify_git(Path::new("rebase-merge/msgnum")), STATE | REFS | INDEX);
         assert_eq!(classify_git(Path::new("logs/HEAD")), 0);
+        assert_eq!(classify_git(Path::new("logs/refs/heads/main")), 0);
+        assert_eq!(classify_git(Path::new("logs/refs/stash")), REFS);
+        assert_eq!(classify_git(Path::new("logs/refs/stash.lock")), 0);
         assert_eq!(classify_git(Path::new("config")), REFS);
     }
 

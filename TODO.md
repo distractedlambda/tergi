@@ -15,7 +15,3 @@ Known problems that nobody has fixed yet.
 
 - The history selection can briefly point at the wrong commit while a
   reload is in flight.
-
-- Dropping a stash other than the top one from another terminal doesn't
-  trigger a refresh. That only rewrites `.git/logs/refs/stash`, and
-  `classify_git` in `src/watch.rs` ignores everything under `logs`.
