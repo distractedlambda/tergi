@@ -144,7 +144,12 @@ fn fill(buf: &mut Buffer, r: Rect, bg: Color) {
     buf.set_style(r, Style::default().bg(bg));
 }
 
+/// Whether the mouse is over `r` in the panes. While an overlay is open
+/// nothing under it reacts to the mouse, so nothing there shows hover.
 fn hovered(app: &App, r: Rect) -> bool {
+    if !app.overlays.is_empty() {
+        return false;
+    }
     let (x, y) = app.mouse;
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
@@ -304,7 +309,7 @@ fn draw_banner(app: &App, buf: &mut Buffer, r: Rect, hits: &mut Hits) {
 fn row_bg(app: &App, selected: bool, focused: bool, r: Rect, base: Color) -> Color {
     if selected {
         if focused { app.theme.sel } else { app.theme.sel_unfocused }
-    } else if hovered(app, r) && app.drag.is_none() && app.overlays.is_empty() {
+    } else if hovered(app, r) && app.drag.is_none() {
         app.theme.hover
     } else {
         base

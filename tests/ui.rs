@@ -181,3 +181,23 @@ fn first_load_starts_at_the_top() {
     ui.key(KeyCode::Char(' '));
     ui.wait("a.txt to be staged", |u| u.screen().contains("Staged changes (1)"));
 }
+
+#[test]
+fn buttons_under_a_dialog_do_not_light_up() {
+    let s = repo_with_change();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    let stash = ui.find_hit(|t| matches!(t, Target::Button(Cmd::StashPush)));
+    let bg = |u: &Ui| u.term.backend().buffer()[(stash.x, stash.y)].bg;
+    let normal = bg(&ui);
+
+    // Hovering the button normally changes its color.
+    ui.mouse(MouseEventKind::Moved, stash.x, stash.y);
+    assert_ne!(bg(&ui), normal);
+
+    // With a dialog open, it stays as it was.
+    ui.mouse(MouseEventKind::Moved, 0, 35);
+    ui.key(KeyCode::Char('S'));
+    ui.mouse(MouseEventKind::Moved, stash.x, stash.y);
+    assert_eq!(bg(&ui), normal);
+}
