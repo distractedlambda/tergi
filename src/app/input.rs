@@ -385,7 +385,7 @@ impl App {
             MouseEventKind::Down(MouseButton::Right) => {
                 let target = self.target_at(x, y);
                 if !self.overlays.is_empty() {
-                    if !matches!(target, Some(Target::MenuItem(_) | Target::Overlay | Target::InputText | Target::PaletteItem(_))) {
+                    if target.is_none() {
                         self.overlays.pop();
                     }
                     return;
@@ -430,20 +430,14 @@ impl App {
     }
 
     fn click(&mut self, target: Option<Target>, x: u16, y: u16, double: bool, shift: bool) {
-        // Clicking outside a menu closes it. Other dialogs stay open.
-        if let Some(top) = self.overlays.last() {
-            let inside = matches!(
-                target,
-                Some(Target::MenuItem(_) | Target::Overlay | Target::InputText | Target::PaletteItem(_) | Target::Button(_))
-            );
-            if !inside {
-                if matches!(top, Overlay::Menu(_) | Overlay::Palette { .. } | Overlay::Log { .. }) {
-                    self.overlays.pop();
-                }
-                return;
+        // Clicking outside a menu closes it. Other dialogs stay open. The hit
+        // map only holds the top overlay's targets, so any hit is inside it.
+        let Some(target) = target else {
+            if matches!(self.overlays.last(), Some(Overlay::Menu(_) | Overlay::Palette { .. } | Overlay::Log { .. })) {
+                self.overlays.pop();
             }
-        }
-        let Some(target) = target else { return };
+            return;
+        };
         match target {
             Target::Splitter(s) => self.drag = Some(Drag::Splitter(s)),
             Target::SidebarRow(i) => {

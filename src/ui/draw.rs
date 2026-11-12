@@ -907,6 +907,11 @@ fn draw_overlays(app: &mut App, buf: &mut Buffer, area: Rect, hits: &mut Hits) -
     let n = app.overlays.len();
     for (oi, ov) in app.overlays.iter_mut().enumerate() {
         let top = oi + 1 == n;
+        if top {
+            // Only the topmost overlay takes clicks. Everything under it,
+            // including the top bar buttons, is out of reach while it's open.
+            hits.clear();
+        }
         match ov {
             Overlay::Menu(m) => {
                 let label_w = m.items.iter().map(|a| width(&a.label, 4) + a.key.map_or(0, |k| k.label().len() + 3)).max().unwrap_or(10);
