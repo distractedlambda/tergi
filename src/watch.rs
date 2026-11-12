@@ -7,7 +7,9 @@
 //! directories get watches as they appear.
 //!
 //! On macOS, FSEvents watches a whole tree cheaply, so we watch the root and
-//! drop events from ignored directories.
+//! drop events from ignored directories. Before reporting a change, we ask
+//! git whether the changed paths are ignored, because the list of ignored
+//! directories can go out of date.
 //!
 //! Events are collected for a short while and then reported as a set of
 //! flags saying what needs to be reloaded.
@@ -91,7 +93,7 @@ pub fn start(
     }
     let mut reflogs_watched = watch_reflogs(&watcher, &roots.common_dir);
 
-    let ignored_dirs = if cfg!(target_os = "linux") {
+    let mut ignored_dirs = if cfg!(target_os = "linux") {
         Vec::new()
     } else {
         ignored_directories(&roots.workdir)
@@ -117,6 +119,7 @@ pub fn start(
         let mut pending: u8 = 0;
         let mut first: Option<Instant> = None;
         let mut new_dirs: HashSet<PathBuf> = HashSet::new();
+        let mut changed: HashSet<PathBuf> = HashSet::new();
         loop {
             let timeout = match first {
                 Some(t) => QUIET.min(MAX_DELAY.saturating_sub(t.elapsed())),
@@ -137,10 +140,20 @@ pub fn start(
                         if flags == 0 {
                             continue;
                         }
-                        if cfg!(target_os = "linux") && flags == WORKTREE && appeared && p.is_dir() {
-                            new_dirs.insert(p.clone());
+                        if flags == WORKTREE && !cfg!(target_os = "linux") {
+                            // Whether this counts depends on whether git
+                            // ignores it, which we check in one go below.
+                            changed.insert(p.clone());
+                        } else {
+                            if cfg!(target_os = "linux")
+                                && flags == WORKTREE
+                                && appeared
+                                && p.is_dir()
+                            {
+                                new_dirs.insert(p.clone());
+                            }
+                            pending |= flags;
                         }
-                        pending |= flags;
                         first.get_or_insert_with(Instant::now);
                     }
                 }
@@ -152,20 +165,28 @@ pub fn start(
                     let common_dir = roots.common_dir.clone();
                     let workdir = roots.workdir.clone();
                     let dirs: Vec<PathBuf> = new_dirs.drain().collect();
+                    let paths: Vec<PathBuf> = changed.drain().collect();
                     // A fresh repository has no reflogs until its first
                     // commit, which also changes a ref.
                     let check_reflogs = !reflogs_watched && pending & REFS != 0;
-                    let now_watched = crate::util::blocking(move || {
-                        let watched = check_reflogs && watch_reflogs(&w, &common_dir);
-                        for d in dirs {
-                            if !is_ignored(&workdir, &d) {
-                                let _ = watch_tree(&w, &workdir, &d);
+                    let (now_watched, (worktree_changed, new_ignored)) =
+                        crate::util::blocking(move || {
+                            let watched = check_reflogs && watch_reflogs(&w, &common_dir);
+                            for d in dirs {
+                                if !is_ignored(&workdir, &d) {
+                                    let _ = watch_tree(&w, &workdir, &d);
+                                }
                             }
-                        }
-                        watched
-                    })
-                    .await;
+                            (watched, check_changes(&workdir, &paths))
+                        })
+                        .await;
                     reflogs_watched |= now_watched;
+                    if worktree_changed {
+                        pending |= WORKTREE;
+                    }
+                    if let Some(dirs) = new_ignored {
+                        ignored_dirs = dirs;
+                    }
                     if pending != 0 {
                         report(Event::Changed(pending));
                     }
@@ -254,6 +275,72 @@ fn ignored_directories(workdir: &Path) -> Vec<PathBuf> {
         .filter(|s| s.ends_with('/'))
         .map(|s| workdir.join(s.trim_end_matches('/')))
         .collect()
+}
+
+/// Look at the working tree paths that changed in one batch, on platforms
+/// where we watch the whole tree. Returns whether any of them is not
+/// ignored, and a fresh list of ignored directories if the old one may be
+/// out of date.
+fn check_changes(workdir: &Path, paths: &[PathBuf]) -> (bool, Option<Vec<PathBuf>>) {
+    if paths.is_empty() {
+        return (false, None);
+    }
+    let ignored = count_ignored(workdir, paths);
+    // An ignored path that isn't in a directory we already skip usually
+    // means that an ignored directory appeared, or that a directory became
+    // ignored. Editing a .gitignore can also make a directory stop being
+    // ignored. Sometimes the path is just an ignored file and the new list
+    // comes out the same, but that is still cheaper than a refresh.
+    let rules_changed = paths
+        .iter()
+        .any(|p| p.file_name().is_some_and(|n| n == ".gitignore"));
+    let dirs = (rules_changed || ignored > 0).then(|| ignored_directories(workdir));
+    (ignored < paths.len(), dirs)
+}
+
+/// Count how many of `paths` git ignores. If git fails, we count none.
+fn count_ignored(workdir: &Path, paths: &[PathBuf]) -> usize {
+    use std::io::Write as _;
+    let mut input = Vec::new();
+    for p in paths {
+        let rel = p.strip_prefix(workdir).unwrap_or(p).as_os_str();
+        // Git rejects an empty path. The working directory itself is never
+        // ignored anyway.
+        if !rel.is_empty() {
+            input.extend_from_slice(rel.as_encoded_bytes());
+            input.push(0);
+        }
+    }
+    let Ok(mut child) = std::process::Command::new("git")
+        .current_dir(workdir)
+        .args(["check-ignore", "--stdin", "-z"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return 0;
+    };
+    // Git answers each path as soon as it reads it. If we wrote everything
+    // before reading, a long list would fill both pipes and we would wait
+    // on each other forever.
+    let stdin = child.stdin.take();
+    let writer = std::thread::spawn(move || {
+        if let Some(mut stdin) = stdin {
+            let _ = stdin.write_all(&input);
+        }
+    });
+    let out = child.wait_with_output();
+    let _ = writer.join();
+    match out {
+        // Git exits with 1 when nothing is ignored.
+        Ok(out) if matches!(out.status.code(), Some(0 | 1)) => out
+            .stdout
+            .split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .count(),
+        _ => 0,
+    }
 }
 
 fn classify(roots: &Roots, path: &Path, ignored_dirs: &[PathBuf]) -> u8 {
@@ -424,6 +511,48 @@ mod tests {
         assert_eq!(classify_git(Path::new("reftable/tables.list")), REFS | INDEX);
         assert_eq!(classify_git(Path::new("reftable/tables.list.lock")), 0);
         assert_eq!(classify_git(Path::new("reftable/0x01-0x01-1a2b3c4d.ref")), 0);
+    }
+
+    #[test]
+    fn checks_changes_against_current_ignore_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert!(git(root, &["init", "-q"]));
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        let src = root.join("src/a.rs");
+        let built = root.join("target/debug/a.o");
+        assert_eq!(check_changes(root, std::slice::from_ref(&src)), (true, None));
+        // The build folder appears after the watcher started.
+        std::fs::create_dir_all(root.join("target/debug")).unwrap();
+        assert_eq!(
+            check_changes(root, std::slice::from_ref(&built)),
+            (false, Some(vec![root.join("target")]))
+        );
+        assert_eq!(
+            check_changes(root, &[src, built.clone()]),
+            (true, Some(vec![root.join("target")]))
+        );
+        // Stop ignoring it.
+        std::fs::write(root.join(".gitignore"), "").unwrap();
+        assert_eq!(
+            check_changes(root, &[root.join(".gitignore")]),
+            (true, Some(vec![]))
+        );
+        assert_eq!(check_changes(root, &[built]), (true, None));
+        assert_eq!(check_changes(root, &[root.to_path_buf()]), (true, None));
+    }
+
+    #[test]
+    fn counts_many_ignored_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert!(git(root, &["init", "-q"]));
+        std::fs::write(root.join(".gitignore"), "*.o\n").unwrap();
+        // Enough output to fill a pipe.
+        let paths: Vec<PathBuf> = (0..20_000)
+            .map(|i| root.join(format!("some/fairly/long/directory/name/file{i}.o")))
+            .collect();
+        assert_eq!(count_ignored(root, &paths), paths.len());
     }
 
     #[test]

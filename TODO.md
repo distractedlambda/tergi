@@ -6,10 +6,6 @@ Known problems that nobody has fixed yet.
   diff text is converted lossily. `Git::read` in `src/git/cli.rs` does the
   conversion, so the patch we build no longer matches the file.
 
-- On macOS the list of ignored directories for the watcher is computed
-  once at startup, in `ignored_directories` in `src/watch.rs`. A directory
-  that becomes ignored later still causes refreshes.
-
 - Combining characters are overwritten when drawing code lines, in
   `draw_code` in `src/ui/draw.rs`.
 
