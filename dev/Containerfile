@@ -1,0 +1,26 @@
+# An image for building and testing tergi.
+#
+#     podman build -t localhost/tergi-dev dev
+#     podman run --rm -v tergi-cargo:/usr/local/cargo/registry \
+#         -v "$PWD:$PWD" -w "$PWD" localhost/tergi-dev cargo test
+#
+# Some tests need git 2.45 or newer, which can create repositories in the
+# reftable format. Older versions skip those tests, so use a Debian release
+# that ships a new enough git.
+
+FROM docker.io/library/rust:1.99.1-slim-trixie
+
+# tmux is for running the app by hand in a terminal we can script.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git tmux pkg-config locales \
+    && rm -rf /var/lib/apt/lists/* \
+    && sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen \
+    && locale-gen
+ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+
+RUN rustup component add clippy rustfmt
+
+# The tests make commits in scratch repositories.
+RUN git config --system user.name "Test User" \
+    && git config --system user.email "test@example.com" \
+    && git config --system init.defaultBranch main
