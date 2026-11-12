@@ -154,6 +154,8 @@ pub struct History {
     /// The new walk replaces the list when its first batch arrives, so the
     /// old list stays on screen until then.
     pub replace_on_next: bool,
+    /// Why the last walk failed, if it did.
+    pub error: Option<String>,
 }
 
 impl History {
@@ -496,7 +498,7 @@ impl App {
             AppEvent::HistoryError(generation, e) => {
                 if generation == self.history.generation {
                     self.history.loading = false;
-                    self.set_status(format!("Reading history failed: {e}"), Level::Error);
+                    self.history.error = Some(e);
                 }
             }
             AppEvent::Refs(generation, r) => {
@@ -621,6 +623,7 @@ impl App {
         let h = &mut self.history;
         if h.replace_on_next {
             h.replace_on_next = false;
+            h.error = None;
             h.commits.clear();
             h.rows.clear();
             h.index.clear();

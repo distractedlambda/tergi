@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, BorderType, Clear, Widget};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget, Wrap};
 
 use crate::app::cmd::{ActionDef, Cmd, Overlay, SideRow, Unit};
 use crate::app::doc::{Row, Section, Source};
@@ -466,6 +466,16 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
             let date = short_date(c.time, now);
             let dx = a.right().saturating_sub(date_w);
             put(buf, dx, y, &truncate(&date, usize::from(date_w - 1)), date_w, st.fg(t.dim));
+        }
+    }
+    if let Some(err) = &h.error {
+        let y = a.y + (end - start) as u16 + 1;
+        if y < a.bottom() {
+            let r = Rect::new(a.x + 1, y, a.width.saturating_sub(2), a.bottom() - y);
+            Paragraph::new(format!("Couldn't read the history: {err}"))
+                .style(Style::default().fg(t.error))
+                .wrap(Wrap { trim: true })
+                .render(r, buf);
         }
     }
 }
