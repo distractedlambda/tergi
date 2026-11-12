@@ -7,45 +7,45 @@ use gix::ObjectId;
 use tergi::git::ops::{self, ApplyMode, apply_lines};
 use tergi::git::workdir::Workdir;
 
-#[test]
-fn message_lines_starting_with_hash() {
+#[tokio::test]
+async fn message_lines_starting_with_hash() {
     let s = Scratch::new();
     s.write("f.txt", "a\n");
     s.sh(&["add", "-A"]);
-    ops::commit(&s.git, "#42 fix it\n\n# Heading\ntext\n", false).expect("commit");
+    ops::commit(&s.git, "#42 fix it\n\n# Heading\ntext\n", false).await.expect("commit");
     assert_eq!(s.sh(&["log", "-1", "--format=%B"]).trim(), "#42 fix it\n\n# Heading\ntext");
 }
 
-#[test]
-fn paths_that_look_like_patterns() {
+#[tokio::test]
+async fn paths_that_look_like_patterns() {
     let s = Scratch::new();
     s.write("a.txt", "a\n");
     s.write("[ab].txt", "x\n");
     s.commit_all("init");
     s.write("a.txt", "a2\n");
     s.write("[ab].txt", "x2\n");
-    ops::stage_paths(&s.git, &["[ab].txt"]).expect("stage");
+    ops::stage_paths(&s.git, &["[ab].txt"]).await.expect("stage");
     assert_eq!(s.sh(&["diff", "--cached", "--name-only"]).trim(), "[ab].txt");
-    ops::unstage_paths(&s.git, &["[ab].txt"], true).expect("unstage");
+    ops::unstage_paths(&s.git, &["[ab].txt"], true).await.expect("unstage");
     assert_eq!(s.sh(&["diff", "--cached", "--name-only"]).trim(), "");
-    ops::discard_paths(&s.git, &["[ab].txt"]).expect("discard");
+    ops::discard_paths(&s.git, &["[ab].txt"]).await.expect("discard");
     assert_eq!(s.read("a.txt"), "a2\n");
     assert_eq!(s.read("[ab].txt"), "x\n");
 
     s.write("b.txt", "new\n");
     s.write("[b].txt", "new\n");
-    ops::delete_untracked(&s.git, &["[b].txt"]).expect("clean");
+    ops::delete_untracked(&s.git, &["[b].txt"]).await.expect("clean");
     assert!(s.file("b.txt").exists());
     assert!(!s.file("[b].txt").exists());
 
     s.write(":colon", "new\n");
-    ops::stage_paths(&s.git, &[":colon"]).expect("stage colon");
+    ops::stage_paths(&s.git, &[":colon"]).await.expect("stage colon");
     assert!(s.sh(&["diff", "--cached", "--name-only"]).contains(":colon"));
 }
 
 #[cfg(unix)]
-#[test]
-fn untracked_executable_and_symlink() {
+#[tokio::test]
+async fn untracked_executable_and_symlink() {
     use std::os::unix::fs::PermissionsExt;
     let s = Scratch::new();
     s.write("base", "x\n");
@@ -53,9 +53,9 @@ fn untracked_executable_and_symlink() {
     s.write("run.sh", "#!/bin/sh\necho hi\n");
     std::fs::set_permissions(s.file("run.sh"), std::fs::Permissions::from_mode(0o755)).expect("chmod");
     std::os::unix::fs::symlink("base", s.file("link")).expect("symlink");
-    let wd = Workdir::load(&s.git, 3, 100_000).expect("load");
+    let wd = Workdir::load(&s.git, 3, 100_000).await.expect("load");
     for f in &wd.untracked {
-        apply_lines(&s.git, f, ApplyMode::Stage, &|_, _| true).expect("stage");
+        apply_lines(&s.git, f, ApplyMode::Stage, &|_, _| true).await.expect("stage");
     }
     let ls = s.sh(&["ls-files", "-s"]);
     assert!(ls.lines().any(|l| l.starts_with("100755") && l.ends_with("run.sh")), "{ls}");
@@ -63,8 +63,8 @@ fn untracked_executable_and_symlink() {
     assert_eq!(s.sh(&["status", "--porcelain"]).trim(), "A  link\nA  run.sh");
 }
 
-#[test]
-fn take_side_when_one_side_deleted() {
+#[tokio::test]
+async fn take_side_when_one_side_deleted() {
     let s = Scratch::new();
     s.write("f.txt", "a\n");
     s.write("g.txt", "a\n");
@@ -77,31 +77,31 @@ fn take_side_when_one_side_deleted() {
     s.write("f.txt", "ours\n");
     s.sh(&["rm", "-q", "g.txt"]);
     s.commit_all("change f");
-    assert!(s.git.run(&["merge", "other"]).is_err());
+    assert!(s.git.run(&["merge", "other"]).await.is_err());
     // f.txt: we changed it, they deleted it. g.txt is the other way round.
-    ops::take_side(&s.git, "f.txt", false).expect("theirs deletes f");
+    ops::take_side(&s.git, "f.txt", false).await.expect("theirs deletes f");
     assert!(!s.file("f.txt").exists());
-    ops::take_side(&s.git, "g.txt", false).expect("theirs keeps g");
+    ops::take_side(&s.git, "g.txt", false).await.expect("theirs keeps g");
     assert_eq!(s.read("g.txt"), "theirs\n");
     assert_eq!(s.sh(&["status", "--porcelain"]).trim(), "D  f.txt\nA  g.txt");
 }
 
-#[test]
-fn staged_files_before_the_first_commit() {
+#[tokio::test]
+async fn staged_files_before_the_first_commit() {
     let s = Scratch::new();
     s.write("a.txt", "one\ntwo\n");
     s.sh(&["add", "-A"]);
-    let wd = Workdir::load(&s.git, 3, 100_000).expect("load");
+    let wd = Workdir::load(&s.git, 3, 100_000).await.expect("load");
     assert_eq!(wd.staged.len(), 1);
     assert_eq!(wd.staged[0].line_count(), 2);
-    apply_lines(&s.git, &wd.staged[0], ApplyMode::Unstage, &|_, l| l == 1).expect("unstage");
+    apply_lines(&s.git, &wd.staged[0], ApplyMode::Unstage, &|_, l| l == 1).await.expect("unstage");
     assert_eq!(s.index("a.txt"), "one\n");
-    ops::unstage_paths(&s.git, &["a.txt"], false).expect("unstage");
+    ops::unstage_paths(&s.git, &["a.txt"], false).await.expect("unstage");
     assert_eq!(s.sh(&["status", "--porcelain"]).trim(), "?? a.txt");
 }
 
-#[test]
-fn stash_actions_follow_the_stash_when_others_are_added() {
+#[tokio::test]
+async fn stash_actions_follow_the_stash_when_others_are_added() {
     let s = Scratch::new();
     s.write("f.txt", "a\n");
     s.commit_all("init");
@@ -115,13 +115,13 @@ fn stash_actions_follow_the_stash_when_others_are_added() {
     s.write("f.txt", "three\n");
     s.sh(&["stash", "push", "-m", "three"]);
 
-    ops::stash_apply(&s.git, one, false).expect("apply");
+    ops::stash_apply(&s.git, one, false).await.expect("apply");
     assert_eq!(s.read("f.txt"), "one\n");
     s.sh(&["checkout", "--", "f.txt"]);
 
-    ops::stash_drop(&s.git, one).expect("drop");
+    ops::stash_drop(&s.git, one).await.expect("drop");
     let left = s.sh(&["stash", "list", "--format=%gs"]);
     assert_eq!(left.lines().collect::<Vec<_>>(), ["On main: three", "On main: two"]);
 
-    assert!(ops::stash_drop(&s.git, one).is_err());
+    assert!(ops::stash_drop(&s.git, one).await.is_err());
 }

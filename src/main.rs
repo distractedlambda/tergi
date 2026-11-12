@@ -130,7 +130,7 @@ async fn run(path: &Path) -> Result<()> {
 
 /// Open a file in the user's editor, as configured for git.
 async fn edit(repo: &Repo, file: &Path) -> Result<()> {
-    let editor = repo.git.editor().unwrap_or_else(|_| "vi".into());
+    let editor = repo.git.editor().await.unwrap_or_else(|_| "vi".into());
     let status = tokio::process::Command::new("sh")
         .arg("-c")
         .arg(format!("{editor} \"$@\""))

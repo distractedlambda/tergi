@@ -146,7 +146,6 @@ impl Planner {
 
 impl App {
     pub fn planner_set(&mut self, action: PlanAction) {
-        let git = self.repo.git.clone();
         let Some(p) = &mut self.planner else { return };
         let i = p.selected;
         let n = p.rows.len();
@@ -164,26 +163,43 @@ impl App {
             p.rows[i].message = None;
         }
         p.rows[i].action = action;
-        match action {
-            PlanAction::Reword => {
-                let current = p.rows[i]
-                    .message
-                    .clone()
-                    .unwrap_or_else(|| ops::commit_message(&git, &p.rows[i].id.to_string()).unwrap_or_default());
-                self.open_planner_input("Reword commit", &current, i);
-            }
-            PlanAction::Squash => {
-                let below = &p.rows[i + 1];
-                let below_msg = below
-                    .message
-                    .clone()
-                    .unwrap_or_else(|| ops::commit_message(&git, &below.id.to_string()).unwrap_or_default());
-                let this = ops::commit_message(&git, &p.rows[i].id.to_string()).unwrap_or_default();
-                let initial = p.rows[i].message.clone().unwrap_or(format!("{below_msg}\n\n{this}"));
-                self.open_planner_input("Message for the squashed commit", &initial, i);
-            }
-            _ => {}
+        let title = match action {
+            PlanAction::Reword => "Reword commit",
+            PlanAction::Squash => "Message for the squashed commit",
+            _ => return,
+        };
+        let id = p.rows[i].id;
+        if let Some(m) = p.rows[i].message.clone() {
+            self.open_planner_input(title, &m, i);
+            return;
         }
+        let below = p.rows.get(i + 1).map(|b| (b.id, b.message.clone()));
+        self.query(
+            move |r| async move {
+                let this = ops::commit_message(&r.git, &id.to_string()).await.unwrap_or_default();
+                match (action, below) {
+                    (PlanAction::Squash, Some((below_id, below_msg))) => {
+                        let below_msg = match below_msg {
+                            Some(m) => m,
+                            None => ops::commit_message(&r.git, &below_id.to_string()).await.unwrap_or_default(),
+                        };
+                        format!("{below_msg}\n\n{this}")
+                    }
+                    _ => this,
+                }
+            },
+            move |app, initial| {
+                // The user may have changed the plan while we loaded.
+                let unchanged = app
+                    .planner
+                    .as_ref()
+                    .and_then(|p| p.rows.get(i))
+                    .is_some_and(|r| r.id == id && r.action == action && r.message.is_none());
+                if unchanged {
+                    app.open_planner_input(title, &initial, i);
+                }
+            },
+        );
     }
 
     fn open_planner_input(&mut self, title: &str, initial: &str, row: usize) {
@@ -206,8 +222,8 @@ impl App {
         };
         let exe = self.repo.exe.clone();
         self.planner = None;
-        self.spawn_op("Rebase", super::After::Nothing, move |r, _| {
-            Ok(match rebase::run(&r.git, &plan, &exe)? {
+        self.spawn_op("Rebase", super::After::Nothing, move |r, _| async move {
+            Ok(match rebase::run(&r.git, &plan, &exe).await? {
                 rebase::Outcome::Done => "Rebase finished".to_string(),
                 rebase::Outcome::Stopped => "Rebase stopped. Make your changes, then Continue (alt+c).".to_string(),
             })

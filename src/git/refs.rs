@@ -81,7 +81,7 @@ pub struct Refs {
 }
 
 impl Refs {
-    pub fn load(git: &Git) -> Result<Refs> {
+    pub async fn load(git: &Git) -> Result<Refs> {
         let mut refs = Refs::default();
         let out = git.read_text(&[
             "for-each-ref",
@@ -89,7 +89,7 @@ impl Refs {
             "refs/heads",
             "refs/remotes",
             "refs/tags",
-        ])?;
+        ]).await?;
         for line in out.lines() {
             let f: Vec<&str> = line.split('\0').collect();
             if f.len() < 6 {
@@ -134,16 +134,18 @@ impl Refs {
             }
         }
         refs.remotes = git
-            .read_text(&["remote"])?
+            .read_text(&["remote"])
+            .await?
             .lines()
             .map(str::to_string)
             .filter(|s| !s.is_empty())
             .collect();
         refs.head = git
             .read(&["rev-parse", "--verify", "-q", "HEAD"])
+            .await
             .ok()
             .and_then(|o| ObjectId::from_hex(o.text().trim().as_bytes()).ok());
-        refs.stashes = load_stashes(git).unwrap_or_default();
+        refs.stashes = load_stashes(git).await.unwrap_or_default();
         Ok(refs)
     }
 
@@ -210,8 +212,8 @@ fn parse_track(s: &str) -> (u32, u32, bool) {
     (ahead, behind, false)
 }
 
-fn load_stashes(git: &Git) -> Result<Vec<Stash>> {
-    let out = git.read_text(&["stash", "list", "--format=%H%x00%gs"])?;
+async fn load_stashes(git: &Git) -> Result<Vec<Stash>> {
+    let out = git.read_text(&["stash", "list", "--format=%H%x00%gs"]).await?;
     Ok(out
         .lines()
         .enumerate()

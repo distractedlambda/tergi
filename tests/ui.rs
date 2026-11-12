@@ -133,7 +133,7 @@ impl Ui {
     /// Wait until the running operation is done. The reloads it causes
     /// may still be on their way.
     fn settle(&mut self) {
-        self.wait("the operation to finish", |u| u.app.busy.is_none());
+        self.wait("the operation to finish", |u| u.app.is_idle());
     }
 }
 
@@ -263,7 +263,7 @@ fn right_click_selects_without_activating() {
     assert!(ui.app.overlays.is_empty());
     let stage = ui.find_hit(|t| matches!(t, Target::Button(Cmd::Stage(Unit::File(..)))));
     ui.click(MouseButton::Right, stage);
-    ui.wait("things to settle", |u| u.app.busy.is_none());
+    ui.wait("things to settle", |u| u.app.is_idle());
     assert_eq!(s.sh(&["diff", "--cached", "--name-only"]).trim(), "");
 
     // A right-click outside a dialog leaves it open, like a left-click.
@@ -281,7 +281,7 @@ fn right_click_in_the_planner_opens_one_menu() {
     ui.app.select_history(2);
     ui.key(KeyCode::Char('2'));
     ui.key(KeyCode::Char('i'));
-    assert!(ui.app.planner.is_some());
+    ui.wait("the planner", |u| u.app.planner.is_some());
     ui.draw();
     let action = ui.find_hit(|t| matches!(t, Target::PlannerAction(1)));
     ui.click(MouseButton::Right, action);
@@ -361,7 +361,7 @@ fn draws_at_any_size() {
 
     ui.key(KeyCode::Char('2'));
     ui.key(KeyCode::Char('i'));
-    assert!(ui.app.planner.is_some());
+    ui.wait("the planner", |u| u.app.planner.is_some());
     draw_all(&mut ui, "the planner");
 }
 
@@ -384,7 +384,7 @@ fn commits_and_amends_from_the_message_box() {
     // Amend only the message.
     ui.key(KeyCode::Char('3'));
     ui.key(KeyCode::Char('A'));
-    assert_eq!(ui.app.message.text(), "#3 Use a digit");
+    ui.wait("HEAD's message", |u| u.app.message.text() == "#3 Use a digit");
     ui.key(KeyCode::Char('c'));
     ui.type_text("!");
     ui.key_with(KeyCode::Char('s'), KeyModifiers::CONTROL);
@@ -405,7 +405,7 @@ fn rewords_a_commit_and_runs_a_plan() {
     // Reword the oldest commit.
     ui.app.select_history(3);
     ui.key(KeyCode::Char('r'));
-    assert!(matches!(ui.app.overlays.last(), Some(Overlay::Input(_))), "{}", ui.screen());
+    ui.wait("the message box", |u| matches!(u.app.overlays.last(), Some(Overlay::Input(_))));
     ui.type_text(" file");
     ui.key_with(KeyCode::Enter, KeyModifiers::CONTROL);
     ui.settle();
@@ -416,10 +416,12 @@ fn rewords_a_commit_and_runs_a_plan() {
     // Plan: fix up the newest into the middle one, and reword the middle.
     ui.app.select_history(3);
     ui.key(KeyCode::Char('i'));
+    ui.wait("the planner", |u| u.app.planner.is_some());
     assert_eq!(ui.app.planner.as_ref().map(|p| p.rows.len()), Some(3));
     ui.key(KeyCode::Char('f'));
     ui.key(KeyCode::Char('j'));
     ui.key(KeyCode::Char('r'));
+    ui.wait("the message box", |u| matches!(u.app.overlays.last(), Some(Overlay::Input(_))));
     ui.type_text("!");
     ui.key_with(KeyCode::Enter, KeyModifiers::CONTROL);
     assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
@@ -558,6 +560,9 @@ fn a_panic_in_the_background_reaches_the_caller() {
     let s = repo_with_change();
     let mut ui = Ui::open(&s);
     ui.wait_loaded(2);
-    ui.app.spawn_op("Explode", After::Nothing, |_, _| panic!("the operation blew up"));
+    async fn explode() -> anyhow::Result<String> {
+        panic!("the operation blew up")
+    }
+    ui.app.spawn_op("Explode", After::Nothing, |_, _| explode());
     ui.wait("the operation", |u| u.app.busy.is_none());
 }

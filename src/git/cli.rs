@@ -3,13 +3,14 @@
 //! Every write goes through here so that hooks, signing, credential helpers and
 //! the user's config behave exactly as they do on the command line.
 
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::Command;
 
 /// One entry in the command log view.
 #[derive(Debug, Clone)]
@@ -82,41 +83,49 @@ impl Git {
     /// Run a read-only command. These are not logged, and they don't take
     /// optional locks, so `git status` won't rewrite the index and wake up our
     /// own file watcher.
-    pub fn read<S: AsRef<str>>(&self, args: &[S]) -> Result<Output> {
-        self.read_opts(args, &RunOpts::default())
+    pub async fn read<S: AsRef<str>>(&self, args: &[S]) -> Result<Output> {
+        self.read_opts(args, &RunOpts::default()).await
     }
 
-    pub fn read_opts<S: AsRef<str>>(&self, args: &[S], opts: &RunOpts) -> Result<Output> {
+    pub async fn read_opts<S: AsRef<str>>(&self, args: &[S], opts: &RunOpts) -> Result<Output> {
         let mut cmd = self.base_command();
-        cmd.env("GIT_OPTIONAL_LOCKS", "0");
-        self.exec(cmd, args, opts, false)
+        // Nobody wants the answer once the task asking for it is gone. Commands
+        // that change the repository are left to finish, so they don't stop
+        // halfway through.
+        cmd.env("GIT_OPTIONAL_LOCKS", "0").kill_on_drop(true);
+        self.exec(cmd, args, opts, false).await
     }
 
-    pub fn read_text<S: AsRef<str>>(&self, args: &[S]) -> Result<String> {
-        Ok(self.read(args)?.text())
+    pub async fn read_text<S: AsRef<str>>(&self, args: &[S]) -> Result<String> {
+        Ok(self.read(args).await?.text())
     }
 
     /// The user's editor, as git would pick it. We set `GIT_EDITOR` on every
     /// command we run, so asking git with that in place would just return
     /// our own setting.
-    pub fn editor(&self) -> Result<String> {
+    pub async fn editor(&self) -> Result<String> {
         let mut cmd = self.base_command();
         cmd.env_remove("GIT_EDITOR");
-        Ok(self.exec(cmd, &["var", "GIT_EDITOR"], &RunOpts::default(), false)?.text().trim().to_string())
+        Ok(self
+            .exec(cmd, &["var", "GIT_EDITOR"], &RunOpts::default(), false)
+            .await?
+            .text()
+            .trim()
+            .to_string())
     }
 
     /// Run a command that may change the repository. It is recorded in the
     /// command log whether it succeeds or not.
-    pub fn run<S: AsRef<str>>(&self, args: &[S]) -> Result<Output> {
-        self.run_opts(args, &RunOpts::default())
+    pub async fn run<S: AsRef<str>>(&self, args: &[S]) -> Result<Output> {
+        self.run_opts(args, &RunOpts::default()).await
     }
 
-    pub fn run_opts<S: AsRef<str>>(&self, args: &[S], opts: &RunOpts) -> Result<Output> {
+    pub async fn run_opts<S: AsRef<str>>(&self, args: &[S], opts: &RunOpts) -> Result<Output> {
         let cmd = self.base_command();
-        self.exec(cmd, args, opts, true)
+        self.exec(cmd, args, opts, true).await
     }
 
-    fn exec<S: AsRef<str>>(
+    async fn exec<S: AsRef<str>>(
         &self,
         mut cmd: Command,
         args: &[S],
@@ -133,16 +142,17 @@ impl Git {
             cmd.stdin(Stdio::piped());
         }
         let mut child = cmd.spawn().context("could not run git")?;
-        if let Some(input) = &opts.stdin {
-            let mut stdin = child.stdin.take().context("no stdin")?;
-            // Write from a separate thread so a large patch can't deadlock
-            // against git filling up its stdout pipe.
-            let input = input.clone();
-            std::thread::spawn(move || {
-                let _ = stdin.write_all(&input);
-            });
-        }
-        let out = child.wait_with_output().context("git did not finish")?;
+        let stdin = child.stdin.take();
+        // Write the input while reading the output, so a large patch can't
+        // deadlock against git filling up its stdout pipe.
+        let write = async {
+            if let (Some(mut stdin), Some(input)) = (stdin, &opts.stdin) {
+                let _ = stdin.write_all(input).await;
+                // Dropping stdin here closes it, so git sees the end.
+            }
+        };
+        let ((), out) = tokio::join!(write, child.wait_with_output());
+        let out = out.context("git did not finish")?;
         let code = out.status.code().unwrap_or(-1);
         let ok = out.status.success() || opts.ok_codes.contains(&code);
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -173,7 +183,7 @@ impl Git {
     /// Run a long command such as fetch or push. Progress lines from stderr
     /// are passed to `progress` as they arrive. Git separates progress updates
     /// with carriage returns, so both `\r` and `\n` end a line.
-    pub fn run_streaming<S: AsRef<str>>(
+    pub async fn run_streaming<S: AsRef<str>>(
         &self,
         args: &[S],
         opts: &RunOpts,
@@ -188,34 +198,37 @@ impl Git {
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = cmd.spawn().context("could not run git")?;
         let mut stdout = child.stdout.take().context("no stdout")?;
-        let stdout_thread = std::thread::spawn(move || {
+        let read_stdout = async {
             let mut buf = Vec::new();
-            let _ = stdout.read_to_end(&mut buf);
+            let _ = stdout.read_to_end(&mut buf).await;
             buf
-        });
+        };
         let mut stderr = child.stderr.take().context("no stderr")?;
-        let mut all_err = Vec::new();
-        let mut line = Vec::new();
-        let mut chunk = [0u8; 4096];
-        loop {
-            let n = stderr.read(&mut chunk).unwrap_or(0);
-            if n == 0 {
-                break;
-            }
-            for &b in &chunk[..n] {
-                all_err.push(b);
-                if b == b'\r' || b == b'\n' {
-                    if !line.is_empty() {
-                        progress(String::from_utf8_lossy(&line).trim());
-                        line.clear();
+        let read_stderr = async {
+            let mut all_err = Vec::new();
+            let mut line = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = stderr.read(&mut chunk).await.unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                for &b in &chunk[..n] {
+                    all_err.push(b);
+                    if b == b'\r' || b == b'\n' {
+                        if !line.is_empty() {
+                            progress(String::from_utf8_lossy(&line).trim());
+                            line.clear();
+                        }
+                    } else {
+                        line.push(b);
                     }
-                } else {
-                    line.push(b);
                 }
             }
-        }
-        let status = child.wait().context("git did not finish")?;
-        let stdout = stdout_thread.join().unwrap_or_default();
+            all_err
+        };
+        let (stdout, all_err) = tokio::join!(read_stdout, read_stderr);
+        let status = child.wait().await.context("git did not finish")?;
         let stderr = clean_progress(&String::from_utf8_lossy(&all_err));
         let ok = status.success();
         let mut output = String::from_utf8_lossy(&stdout).into_owned();

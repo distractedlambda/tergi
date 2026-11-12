@@ -745,13 +745,13 @@ impl App {
 
             Cmd::Fetch => {
                 let env = self.repo.remote_env();
-                self.spawn_op("Fetch", After::Nothing, move |r, progress| {
+                self.spawn_op("Fetch", After::Nothing, move |r, progress| async move {
                     r.git
                         .run_streaming(
                             &["fetch", "--all", "--prune", "--progress"],
                             &crate::git::cli::RunOpts { env, ..Default::default() },
                             |l| progress(l.to_string()),
-                        )
+                        ).await
                         .map(|_| "Fetched".to_string())
                 });
             }
@@ -766,7 +766,7 @@ impl App {
             }
             Cmd::Pull(mode) => {
                 let env = self.repo.remote_env();
-                self.spawn_op("Pull", After::Nothing, move |r, progress| {
+                self.spawn_op("Pull", After::Nothing, move |r, progress| async move {
                     let mut args = vec!["pull", "--progress"];
                     match mode {
                         PullMode::Default => {}
@@ -777,7 +777,7 @@ impl App {
                     r.git
                         .run_streaming(&args, &crate::git::cli::RunOpts { env, ..Default::default() }, |l| {
                             progress(l.to_string());
-                        })
+                        }).await
                         .map(|_| "Pulled".to_string())
                 });
             }
@@ -804,7 +804,7 @@ impl App {
                     return;
                 };
                 let env = self.repo.remote_env();
-                self.spawn_op("Push", After::Nothing, move |r, progress| {
+                self.spawn_op("Push", After::Nothing, move |r, progress| async move {
                     let mut args = vec!["push".to_string(), "--progress".to_string()];
                     if force {
                         args.push("--force-with-lease".into());
@@ -815,41 +815,47 @@ impl App {
                     r.git
                         .run_streaming(&args, &crate::git::cli::RunOpts { env, ..Default::default() }, |l| {
                             progress(l.to_string());
-                        })
+                        }).await
                         .map(|_| "Pushed".to_string())
                 });
             }
 
-            Cmd::Reword(id) => {
-                let msg = ops::commit_message(&self.repo.git, &id.to_string()).unwrap_or_default();
-                self.open_input("Reword commit", "Ctrl+Enter to save", true, &msg, Purpose::Reword(id));
-            }
-            Cmd::Squash(id) => {
-                let git = &self.repo.git;
-                let this = ops::commit_message(git, &id.to_string()).unwrap_or_default();
-                let parent = ops::commit_message(git, &format!("{id}^")).unwrap_or_default();
-                self.open_input(
-                    "Squash into parent",
-                    "Message for the combined commit. Ctrl+Enter to save.",
-                    true,
-                    &format!("{parent}\n\n{this}"),
-                    Purpose::Squash(id),
-                );
-            }
-            Cmd::Fixup(id) => self.rebase_op("Fixup", move |r| rebase::single(&r.git, &exe, id, Action::Fixup)),
-            Cmd::Drop(id) => self.rebase_op("Drop commit", move |r| rebase::single(&r.git, &exe, id, Action::Drop)),
-            Cmd::Edit(id) => self.rebase_op("Edit commit", move |r| rebase::single(&r.git, &exe, id, Action::Edit)),
-            Cmd::Move(id, newer) => self.rebase_op("Move commit", move |r| rebase::move_commit(&r.git, &exe, id, newer)),
-            Cmd::Planner(id) => match rebase::plan_from(&self.repo.git, id) {
-                Ok(plan) => {
-                    self.planner = Some(Planner::new(plan));
-                }
-                Err(e) => self.show_error("Can't edit history here", &e),
-            },
+            Cmd::Reword(id) => self.query(
+                move |r| async move { ops::commit_message(&r.git, &id.to_string()).await.unwrap_or_default() },
+                move |app, msg| app.open_input("Reword commit", "Ctrl+Enter to save", true, &msg, Purpose::Reword(id)),
+            ),
+            Cmd::Squash(id) => self.query(
+                move |r| async move {
+                    let (this, parent) = (id.to_string(), format!("{id}^"));
+                    let (this, parent) =
+                        tokio::join!(ops::commit_message(&r.git, &this), ops::commit_message(&r.git, &parent));
+                    format!("{}\n\n{}", parent.unwrap_or_default(), this.unwrap_or_default())
+                },
+                move |app, msg| {
+                    app.open_input(
+                        "Squash into parent",
+                        "Message for the combined commit. Ctrl+Enter to save.",
+                        true,
+                        &msg,
+                        Purpose::Squash(id),
+                    );
+                },
+            ),
+            Cmd::Fixup(id) => self.rebase_op("Fixup", move |r| async move { rebase::single(&r.git, &exe, id, Action::Fixup).await }),
+            Cmd::Drop(id) => self.rebase_op("Drop commit", move |r| async move { rebase::single(&r.git, &exe, id, Action::Drop).await }),
+            Cmd::Edit(id) => self.rebase_op("Edit commit", move |r| async move { rebase::single(&r.git, &exe, id, Action::Edit).await }),
+            Cmd::Move(id, newer) => self.rebase_op("Move commit", move |r| async move { rebase::move_commit(&r.git, &exe, id, newer).await }),
+            Cmd::Planner(id) => self.query(
+                move |r| async move { rebase::plan_from(&r.git, id).await },
+                |app, plan| match plan {
+                    Ok(plan) => app.planner = Some(Planner::new(plan)),
+                    Err(e) => app.show_error("Can't edit history here", &e),
+                },
+            ),
             Cmd::CheckoutCommit(id) => {
                 let s = id.to_string();
-                self.spawn_op("Checkout", After::Nothing, move |r, _| {
-                    ops::checkout(&r.git, &s).map(|()| "Checked out (detached HEAD)".into())
+                self.spawn_op("Checkout", After::Nothing, move |r, _| async move {
+                    ops::checkout(&r.git, &s).await.map(|()| "Checked out (detached HEAD)".into())
                 });
             }
             Cmd::NewBranch(at) => {
@@ -858,13 +864,13 @@ impl App {
             Cmd::NewTag(id) => self.open_input("New tag", &format!("At {}", short(&id)), false, "", Purpose::NewTag(id)),
             Cmd::CherryPick(id) => {
                 let s = id.to_string();
-                self.spawn_op("Cherry-pick", After::Nothing, move |r, _| {
-                    ops::cherry_pick(&r.git, &s).map(|()| "Cherry-picked".into())
+                self.spawn_op("Cherry-pick", After::Nothing, move |r, _| async move {
+                    ops::cherry_pick(&r.git, &s).await.map(|()| "Cherry-picked".into())
                 });
             }
             Cmd::Revert(id) => {
                 let s = id.to_string();
-                self.spawn_op("Revert", After::Nothing, move |r, _| ops::revert(&r.git, &s).map(|()| "Reverted".into()));
+                self.spawn_op("Revert", After::Nothing, move |r, _| async move { ops::revert(&r.git, &s).await.map(|()| "Reverted".into()) });
             }
             Cmd::ResetMenu(id) => {
                 let items = vec![
@@ -876,10 +882,10 @@ impl App {
             }
             Cmd::Reset(id, mode) => {
                 let s = id.to_string();
-                self.spawn_op("Reset", After::Nothing, move |r, _| ops::reset(&r.git, &s, mode).map(|()| "Reset".into()));
+                self.spawn_op("Reset", After::Nothing, move |r, _| async move { ops::reset(&r.git, &s, mode).await.map(|()| "Reset".into()) });
             }
             Cmd::CopyHash(id) => self.copy_to_clipboard(&id.to_string()),
-            Cmd::AmendInto(id) => self.rebase_op("Amend into commit", move |r| rebase::fixup_staged_into(&r.git, id)),
+            Cmd::AmendInto(id) => self.rebase_op("Amend into commit", move |r| async move { rebase::fixup_staged_into(&r.git, id).await }),
             Cmd::JumpTo(id) => {
                 if !self.jump_to(id) {
                     self.set_status("That commit isn't loaded in the history yet", Level::Info);
@@ -890,9 +896,9 @@ impl App {
             Cmd::Stage(u) => self.apply_unit(u, ApplyMode::Stage, has_head),
             Cmd::Unstage(u) => self.apply_unit(u, ApplyMode::Unstage, has_head),
             Cmd::Discard(u) => self.apply_unit(u, ApplyMode::Discard, has_head),
-            Cmd::StageAll => self.spawn_op("Stage all", After::Nothing, |r, _| ops::stage_all(&r.git).map(|()| "Staged everything".into())),
-            Cmd::UnstageAll => self.spawn_op("Unstage all", After::Nothing, move |r, _| {
-                ops::unstage_all(&r.git, has_head).map(|()| "Unstaged everything".into())
+            Cmd::StageAll => self.spawn_op("Stage all", After::Nothing, move |r, _| async move { ops::stage_all(&r.git).await.map(|()| "Staged everything".into()) }),
+            Cmd::UnstageAll => self.spawn_op("Unstage all", After::Nothing, move |r, _| async move {
+                ops::unstage_all(&r.git, has_head).await.map(|()| "Unstaged everything".into())
             }),
             Cmd::Commit | Cmd::CommitAll => {
                 let all = cmd == Cmd::CommitAll;
@@ -905,28 +911,25 @@ impl App {
                     }
                     return;
                 }
+                if all || self.amend || self.workdir.as_ref().is_some_and(|w| w.status.has_staged()) {
+                    self.commit_now(msg, all);
+                    return;
+                }
                 // The status we have may be from before the last stage, since
                 // it reloads in the background. So before saying that nothing
                 // is staged, ask git. It exits with 1 when something is.
-                let staged = self.workdir.as_ref().is_some_and(|w| w.status.has_staged())
-                    || self.repo.git.read(&["diff", "--cached", "--quiet"]).is_err();
-                if !staged && !self.amend && !all {
-                    let any = self.workdir.as_ref().is_some_and(|w| !w.status.is_clean());
-                    if any {
-                        self.run_cmd(Cmd::CommitAll);
-                    } else {
-                        self.set_status("There's nothing to commit", Level::Warn);
-                    }
-                    return;
-                }
-                let amend = self.amend;
-                self.focus = Focus::Detail;
-                self.spawn_op(if amend { "Amend" } else { "Commit" }, After::ClearMessage, move |r, _| {
-                    if all {
-                        ops::stage_all(&r.git)?;
-                    }
-                    ops::commit(&r.git, &msg, amend)
-                });
+                self.query(
+                    |r| async move { r.git.read(&["diff", "--cached", "--quiet"]).await.is_err() },
+                    move |app, staged| {
+                        if staged || app.amend {
+                            app.commit_now(msg, false);
+                        } else if app.workdir.as_ref().is_some_and(|w| !w.status.is_clean()) {
+                            app.run_cmd(Cmd::CommitAll);
+                        } else {
+                            app.set_status("There's nothing to commit", Level::Warn);
+                        }
+                    },
+                );
             }
             Cmd::ToggleAmend => self.toggle_amend(),
             Cmd::StashPush => self.open_input("Stash changes", "Optional message. Untracked files are included.", false, "", Purpose::StashPush),
@@ -934,11 +937,11 @@ impl App {
             Cmd::FoldAll => self.fold_all(),
             Cmd::LoadFull => self.load_full(),
             Cmd::OpenInEditor(p) => self.suspend = Some(Suspend::Edit(self.repo.workdir.join(p))),
-            Cmd::TakeSide(p, ours) => self.spawn_op("Resolve", After::Nothing, move |r, _| {
-                ops::take_side(&r.git, &p, ours).map(|()| format!("Resolved {p}"))
+            Cmd::TakeSide(p, ours) => self.spawn_op("Resolve", After::Nothing, move |r, _| async move {
+                ops::take_side(&r.git, &p, ours).await.map(|()| format!("Resolved {p}"))
             }),
-            Cmd::MarkResolved(p) => self.spawn_op("Mark resolved", After::Nothing, move |r, _| {
-                ops::stage_paths(&r.git, &[&p]).map(|()| format!("Marked {p} as resolved"))
+            Cmd::MarkResolved(p) => self.spawn_op("Mark resolved", After::Nothing, move |r, _| async move {
+                ops::stage_paths(&r.git, &[&p]).await.map(|()| format!("Marked {p} as resolved"))
             }),
             Cmd::StartSelect => {
                 self.detail.anchor = match self.detail.anchor {
@@ -955,19 +958,19 @@ impl App {
                 self.detail.jump(fwd, |r| matches!(r, Row::File { .. }));
             }
 
-            Cmd::Checkout(b) => self.spawn_op("Checkout", After::Nothing, move |r, _| {
-                ops::checkout(&r.git, &b).map(|()| format!("Switched to {b}"))
+            Cmd::Checkout(b) => self.spawn_op("Checkout", After::Nothing, move |r, _| async move {
+                ops::checkout(&r.git, &b).await.map(|()| format!("Switched to {b}"))
             }),
             Cmd::CheckoutRemote(full) => {
                 let local = full.split_once('/').map_or(full.as_str(), |(_, b)| b).to_string();
                 let exists = self.refs.branches.iter().any(|b| b.name == local);
-                self.spawn_op("Checkout", After::Nothing, move |r, _| {
-                    ops::checkout_remote(&r.git, &full, exists).map(|()| format!("Switched to {local}"))
+                self.spawn_op("Checkout", After::Nothing, move |r, _| async move {
+                    ops::checkout_remote(&r.git, &full, exists).await.map(|()| format!("Switched to {local}"))
                 });
             }
             Cmd::RenameBranch(b) => self.open_input("Rename branch", &format!("New name for {b}"), false, &b.clone(), Purpose::RenameBranch(b)),
-            Cmd::DeleteBranch(b, force) => self.spawn_op("Delete branch", After::Nothing, move |r, _| {
-                match ops::delete_branch(&r.git, &b, force) {
+            Cmd::DeleteBranch(b, force) => self.spawn_op("Delete branch", After::Nothing, move |r, _| async move {
+                match ops::delete_branch(&r.git, &b, force).await {
                     Ok(()) => Ok(format!("Deleted {b}")),
                     Err(e) if !force && format!("{e:#}").contains("not fully merged") => Err(anyhow::anyhow!(
                         "{b} isn't fully merged. Merge it first, or use Force delete (D) if you're sure.\n\n{e:#}"
@@ -977,9 +980,9 @@ impl App {
             }),
             Cmd::DeleteRemoteBranch(remote, name) => {
                 let env = self.repo.remote_env();
-                self.spawn_op("Delete remote branch", After::Nothing, move |r, _| {
+                self.spawn_op("Delete remote branch", After::Nothing, move |r, _| async move {
                     r.git
-                        .run_opts(&["push", &remote, "--delete", &name], &crate::git::cli::RunOpts { env, ..Default::default() })
+                        .run_opts(&["push", &remote, "--delete", &name], &crate::git::cli::RunOpts { env, ..Default::default() }).await
                         .map(|_| format!("Deleted {name} on {remote}"))
                 });
             }
@@ -987,23 +990,23 @@ impl App {
                 let guess = format!("{}/{b}", self.refs.remotes.first().map_or("origin", String::as_str));
                 self.open_input("Set upstream", &format!("Remote branch for {b} to track"), false, &guess, Purpose::SetUpstream(b));
             }
-            Cmd::Merge(b) => self.spawn_op("Merge", After::Nothing, move |r, _| ops::merge(&r.git, &b).map(|()| format!("Merged {b}"))),
-            Cmd::RebaseOnto(b) => self.rebase_op("Rebase", move |r| rebase::rebase_onto(&r.git, &b)),
-            Cmd::DeleteTag(t) => self.spawn_op("Delete tag", After::Nothing, move |r, _| ops::delete_tag(&r.git, &t).map(|()| format!("Deleted tag {t}"))),
+            Cmd::Merge(b) => self.spawn_op("Merge", After::Nothing, move |r, _| async move { ops::merge(&r.git, &b).await.map(|()| format!("Merged {b}")) }),
+            Cmd::RebaseOnto(b) => self.rebase_op("Rebase", move |r| async move { rebase::rebase_onto(&r.git, &b).await }),
+            Cmd::DeleteTag(t) => self.spawn_op("Delete tag", After::Nothing, move |r, _| async move { ops::delete_tag(&r.git, &t).await.map(|()| format!("Deleted tag {t}")) }),
             Cmd::PushTag(t) => {
                 let remote = self.refs.remotes.first().cloned().unwrap_or_else(|| "origin".into());
                 let env = self.repo.remote_env();
-                self.spawn_op("Push tag", After::Nothing, move |r, p| {
+                self.spawn_op("Push tag", After::Nothing, move |r, p| async move {
                     r.git
-                        .run_streaming(&["push", "--progress", &remote, &format!("refs/tags/{t}")], &crate::git::cli::RunOpts { env, ..Default::default() }, |l| p(l.to_string()))
+                        .run_streaming(&["push", "--progress", &remote, &format!("refs/tags/{t}")], &crate::git::cli::RunOpts { env, ..Default::default() }, |l| p(l.to_string())).await
                         .map(|_| format!("Pushed {t}"))
                 });
             }
-            Cmd::StashApply(id, pop) => self.spawn_op(if pop { "Pop stash" } else { "Apply stash" }, After::Nothing, move |r, _| {
-                ops::stash_apply(&r.git, id, pop).map(|()| if pop { "Popped stash" } else { "Applied stash" }.into())
+            Cmd::StashApply(id, pop) => self.spawn_op(if pop { "Pop stash" } else { "Apply stash" }, After::Nothing, move |r, _| async move {
+                ops::stash_apply(&r.git, id, pop).await.map(|()| if pop { "Popped stash" } else { "Applied stash" }.into())
             }),
-            Cmd::StashDrop(id) => self.spawn_op("Drop stash", After::Nothing, move |r, _| {
-                ops::stash_drop(&r.git, id).map(|()| "Dropped stash".into())
+            Cmd::StashDrop(id) => self.spawn_op("Drop stash", After::Nothing, move |r, _| async move {
+                ops::stash_drop(&r.git, id).await.map(|()| "Dropped stash".into())
             }),
             Cmd::ToggleSideSection(key) => {
                 if !self.sidebar.collapsed.remove(&key) {
@@ -1014,15 +1017,15 @@ impl App {
 
             Cmd::ContinueOp => {
                 let st = self.repo_state.clone();
-                self.rebase_op("Continue", move |r| rebase::continue_op(&r.git, &st));
+                self.rebase_op("Continue", move |r| async move { rebase::continue_op(&r.git, &st).await });
             }
             Cmd::AbortOp => {
                 let st = self.repo_state.clone();
-                self.spawn_op("Abort", After::Nothing, move |r, _| rebase::abort_op(&r.git, &st).map(|()| "Aborted".into()));
+                self.spawn_op("Abort", After::Nothing, move |r, _| async move { rebase::abort_op(&r.git, &st).await.map(|()| "Aborted".into()) });
             }
             Cmd::SkipOp => {
                 let st = self.repo_state.clone();
-                self.rebase_op("Skip", move |r| rebase::skip_op(&r.git, &st));
+                self.rebase_op("Skip", move |r| async move { rebase::skip_op(&r.git, &st).await });
             }
 
             Cmd::PlanSet(a) => self.planner_set(a),
@@ -1036,9 +1039,23 @@ impl App {
         }
     }
 
-    fn rebase_op(&mut self, label: &str, f: impl FnOnce(&super::Repo) -> anyhow::Result<Outcome> + Send + 'static) {
-        self.spawn_op(label, After::Nothing, move |r, _| {
-            Ok(match f(r)? {
+    fn commit_now(&mut self, msg: String, all: bool) {
+        let amend = self.amend;
+        self.focus = Focus::Detail;
+        self.spawn_op(if amend { "Amend" } else { "Commit" }, After::ClearMessage, move |r, _| async move {
+            if all {
+                ops::stage_all(&r.git).await?;
+            }
+            ops::commit(&r.git, &msg, amend).await
+        });
+    }
+
+    fn rebase_op<F>(&mut self, label: &str, f: impl FnOnce(std::sync::Arc<super::Repo>) -> F + Send + 'static)
+    where
+        F: Future<Output = anyhow::Result<Outcome>> + Send + 'static,
+    {
+        self.spawn_op(label, After::Nothing, move |r, _| async move {
+            Ok(match f(r).await? {
                 Outcome::Done => "Done".to_string(),
                 Outcome::Stopped => "Stopped. Make your changes, then Continue (alt+c).".to_string(),
             })
@@ -1109,22 +1126,22 @@ impl App {
                 self.set_status("Nothing entered", Level::Warn);
                 self.cancel_input(b);
             }
-            Purpose::NewBranch { at } => self.spawn_op("New branch", After::Nothing, move |r, _| {
-                ops::create_branch(&r.git, &name, &at, true).map(|()| format!("Created and switched to {name}"))
+            Purpose::NewBranch { at } => self.spawn_op("New branch", After::Nothing, move |r, _| async move {
+                ops::create_branch(&r.git, &name, &at, true).await.map(|()| format!("Created and switched to {name}"))
             }),
-            Purpose::RenameBranch(old) => self.spawn_op("Rename branch", After::Nothing, move |r, _| {
-                ops::rename_branch(&r.git, &old, &name).map(|()| format!("Renamed {old} to {name}"))
+            Purpose::RenameBranch(old) => self.spawn_op("Rename branch", After::Nothing, move |r, _| async move {
+                ops::rename_branch(&r.git, &old, &name).await.map(|()| format!("Renamed {old} to {name}"))
             }),
-            Purpose::NewTag(id) => self.spawn_op("New tag", After::Nothing, move |r, _| {
-                ops::create_tag(&r.git, &name, &id.to_string(), None).map(|()| format!("Created tag {name}"))
+            Purpose::NewTag(id) => self.spawn_op("New tag", After::Nothing, move |r, _| async move {
+                ops::create_tag(&r.git, &name, &id.to_string(), None).await.map(|()| format!("Created tag {name}"))
             }),
-            Purpose::SetUpstream(branch) => self.spawn_op("Set upstream", After::Nothing, move |r, _| {
-                ops::set_upstream(&r.git, &branch, &name).map(|()| format!("{branch} now tracks {name}"))
+            Purpose::SetUpstream(branch) => self.spawn_op("Set upstream", After::Nothing, move |r, _| async move {
+                ops::set_upstream(&r.git, &branch, &name).await.map(|()| format!("{branch} now tracks {name}"))
             }),
-            Purpose::Reword(id) => self.rebase_op("Reword", move |r| rebase::reword(&r.git, &exe, id, &text)),
-            Purpose::Squash(id) => self.rebase_op("Squash", move |r| rebase::single(&r.git, &exe, id, Action::Squash(text))),
-            Purpose::StashPush => self.spawn_op("Stash", After::Nothing, move |r, _| {
-                ops::stash_push(&r.git, &name, true, false).map(|()| "Stashed changes".into())
+            Purpose::Reword(id) => self.rebase_op("Reword", move |r| async move { rebase::reword(&r.git, &exe, id, &text).await }),
+            Purpose::Squash(id) => self.rebase_op("Squash", move |r| async move { rebase::single(&r.git, &exe, id, Action::Squash(text)).await }),
+            Purpose::StashPush => self.spawn_op("Stash", After::Nothing, move |r, _| async move {
+                ops::stash_push(&r.git, &name, true, false).await.map(|()| "Stashed changes".into())
             }),
             Purpose::PlannerMessage(row) => {
                 if let Some(p) = &mut self.planner
@@ -1174,28 +1191,28 @@ impl App {
             _ => None,
         };
         self.detail.anchor = None;
-        self.spawn_op(label, After::Nothing, move |r, _| {
+        self.spawn_op(label, After::Nothing, move |r, _| async move {
             let git = &r.git;
             let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
             match (&unit, mode) {
-                (Unit::Section(Section::Staged), ApplyMode::Unstage) => ops::unstage_all(git, has_head)?,
-                (Unit::Section(_) | Unit::File(..), ApplyMode::Stage) => ops::stage_paths(git, &refs)?,
-                (Unit::Section(_) | Unit::File(..), ApplyMode::Unstage) => ops::unstage_paths(git, &refs, has_head)?,
+                (Unit::Section(Section::Staged), ApplyMode::Unstage) => ops::unstage_all(git, has_head).await?,
+                (Unit::Section(_) | Unit::File(..), ApplyMode::Stage) => ops::stage_paths(git, &refs).await?,
+                (Unit::Section(_) | Unit::File(..), ApplyMode::Unstage) => ops::unstage_paths(git, &refs, has_head).await?,
                 (Unit::Section(s) | Unit::File(s, _), ApplyMode::Discard) => {
                     if *s == Section::Untracked {
-                        ops::delete_untracked(git, &refs)?;
+                        ops::delete_untracked(git, &refs).await?;
                     } else {
-                        ops::discard_paths(git, &refs)?;
+                        ops::discard_paths(git, &refs).await?;
                     }
                 }
                 (Unit::Hunk(_, _, h), _) => {
                     let f = file.as_ref().ok_or_else(|| anyhow::anyhow!("file is gone"))?;
                     let h = *h;
-                    ops::apply_lines(git, f, mode, &|hh, _| hh == h)?;
+                    ops::apply_lines(git, f, mode, &|hh, _| hh == h).await?;
                 }
                 (Unit::Lines(_, _, set), _) => {
                     let f = file.as_ref().ok_or_else(|| anyhow::anyhow!("file is gone"))?;
-                    ops::apply_lines(git, f, mode, &|h, l| set.contains(&(h, l)))?;
+                    ops::apply_lines(git, f, mode, &|h, l| set.contains(&(h, l))).await?;
                 }
             }
             Ok(done)
@@ -1260,45 +1277,80 @@ impl App {
             return;
         }
         let ctx = self.cfg.context_lines;
-        let git = &self.repo.git;
+        let path = f.path().to_string();
+        // Only use the result if the file is still there and still cut off.
+        let still_wanted = move |app: &App, path: &str| {
+            app.section_files(sec).get(fi).is_some_and(|f| f.path() == path && f.too_large)
+        };
         match sec {
             Section::Unstaged | Section::Staged => {
-                match crate::git::workdir::load_full_diff(git, f, sec == Section::Staged, ctx) {
-                    Ok(Some(full)) => {
-                        if let Some(w) = &mut self.workdir {
-                            let list = if sec == Section::Staged { &mut w.staged } else { &mut w.unstaged };
-                            if let Some(slot) = list.get_mut(fi) {
-                                *slot = full;
-                            }
+                let f = f.clone();
+                let staged = sec == Section::Staged;
+                self.query(
+                    move |r| async move { crate::git::workdir::load_full_diff(&r.git, &f, staged, ctx).await },
+                    move |app, full| {
+                        if !still_wanted(app, &path) {
+                            return;
                         }
-                        self.detail.reset_for_reload();
-                        self.rebuild_doc();
-                    }
-                    Ok(None) => {}
-                    Err(e) => self.show_error("Loading the diff failed", &e),
-                }
+                        match full {
+                            Ok(Some(full)) => {
+                                if let Some(w) = &mut app.workdir {
+                                    let list = if staged { &mut w.staged } else { &mut w.unstaged };
+                                    if let Some(slot) = list.get_mut(fi) {
+                                        *slot = full;
+                                    }
+                                }
+                                app.detail.reset_for_reload();
+                                app.rebuild_doc();
+                            }
+                            Ok(None) => {}
+                            Err(e) => app.show_error("Loading the diff failed", &e),
+                        }
+                    },
+                );
             }
             Section::Untracked => {
-                let (full, texts) = crate::git::workdir::load_full_untracked(git, f.path(), ctx);
-                if let Some(w) = &mut self.workdir
-                    && let (Some(slot), Some(text_slot)) = (w.untracked.get_mut(fi), w.untracked_texts.get_mut(fi))
-                {
-                    *slot = full;
-                    *text_slot = texts;
-                }
-                self.detail.reset_for_reload();
-                self.rebuild_doc();
+                let p = path.clone();
+                self.query(
+                    move |r| async move { crate::git::workdir::load_full_untracked(&r.git, &p, ctx).await },
+                    move |app, (full, texts)| {
+                        if !still_wanted(app, &path) {
+                            return;
+                        }
+                        if let Some(w) = &mut app.workdir
+                            && let (Some(slot), Some(text_slot)) = (w.untracked.get_mut(fi), w.untracked_texts.get_mut(fi))
+                        {
+                            *slot = full;
+                            *text_slot = texts;
+                        }
+                        app.detail.reset_for_reload();
+                        app.rebuild_doc();
+                    },
+                );
             }
             Section::Commit => {
                 if let Some(c) = &self.detail.commit {
-                    let repo = self.repo.gix.to_thread_local();
-                    match crate::git::commit::load(&repo, c.id, ctx, usize::MAX) {
-                        Ok(full) => {
-                            self.detail.set_commit(std::sync::Arc::new(full));
-                            self.rebuild_doc();
-                        }
-                        Err(e) => self.show_error("Loading the diff failed", &e),
-                    }
+                    let id = c.id;
+                    self.query(
+                        move |r| {
+                            crate::util::blocking(move || {
+                                let repo = r.gix.to_thread_local();
+                                crate::git::commit::load(&repo, id, ctx, usize::MAX)
+                            })
+                        },
+                        move |app, full| {
+                            if !app.detail.commit.as_ref().is_some_and(|c| c.id == id) {
+                                return;
+                            }
+                            match full {
+                                Ok(full) => {
+                                    app.detail.set_commit(std::sync::Arc::new(full));
+                                    app.rebuild_doc();
+                                }
+                                Err(e) => app.show_error("Loading the diff failed", &e),
+                            }
+                        },
+                    );
                 }
             }
             Section::Conflicted => {}

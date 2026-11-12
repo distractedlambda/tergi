@@ -67,14 +67,14 @@ pub enum Outcome {
 }
 
 /// The commits from `oldest` up to HEAD, which must be a straight line.
-pub fn plan_from(git: &Git, oldest: ObjectId) -> Result<Plan> {
+pub async fn plan_from(git: &Git, oldest: ObjectId) -> Result<Plan> {
     let oldest_hex = oldest.to_string();
-    let parents = git.read_text(&["rev-list", "--parents", "-n1", &oldest_hex])?;
+    let parents = git.read_text(&["rev-list", "--parents", "-n1", &oldest_hex]).await?;
     let parent_ids: Vec<&str> = parents.split_whitespace().skip(1).collect();
     if parent_ids.len() > 1 {
         bail!("Editing merge commits isn't supported.");
     }
-    if !super::ops::is_ancestor(git, &oldest_hex, "HEAD") {
+    if !super::ops::is_ancestor(git, &oldest_hex, "HEAD").await {
         bail!("That commit isn't part of the current branch.");
     }
     let base = parent_ids
@@ -86,7 +86,7 @@ pub fn plan_from(git: &Git, oldest: ObjectId) -> Result<Plan> {
         Some(b) => format!("{b}..HEAD"),
         None => "HEAD".to_string(),
     };
-    let out = git.read_text(&["rev-list", "--reverse", "--topo-order", "--parents", "--format=%s", &range])?;
+    let out = git.read_text(&["rev-list", "--reverse", "--topo-order", "--parents", "--format=%s", &range]).await?;
     let mut steps = Vec::new();
     let mut lines = out.lines();
     while let Some(header) = lines.next() {
@@ -136,18 +136,18 @@ pub fn build_todo(plan: &Plan, dir: &Path) -> Result<String> {
     Ok(todo)
 }
 
-fn scratch_dir(git: &Git) -> Result<PathBuf> {
-    let git_dir = git.read_text(&["rev-parse", "--absolute-git-dir"])?;
+async fn scratch_dir(git: &Git) -> Result<PathBuf> {
+    let git_dir = git.read_text(&["rev-parse", "--absolute-git-dir"]).await?;
     let dir = PathBuf::from(git_dir.trim()).join("tergi");
-    std::fs::create_dir_all(&dir).context("could not create scratch dir")?;
+    tokio::fs::create_dir_all(&dir).await.context("could not create scratch dir")?;
     Ok(dir)
 }
 
 /// Fail if a rebase, merge, cherry-pick or revert is unfinished. Git would
 /// refuse to start a rebase then anyway, but `finish` would see the old
 /// operation and report that the new rebase stopped.
-fn ensure_idle(git: &Git) -> Result<()> {
-    let what = match state(git) {
+async fn ensure_idle(git: &Git) -> Result<()> {
+    let what = match state(git).await {
         RepoState::Clean => return Ok(()),
         RepoState::Rebase { .. } => "rebase",
         RepoState::Merge => "merge",
@@ -159,15 +159,15 @@ fn ensure_idle(git: &Git) -> Result<()> {
 
 /// Run the rebase described by `plan`. `exe` is the tergi executable, used
 /// as the sequence editor.
-pub fn run(git: &Git, plan: &Plan, exe: &Path) -> Result<Outcome> {
+pub async fn run(git: &Git, plan: &Plan, exe: &Path) -> Result<Outcome> {
     if plan.steps.is_empty() {
         return Ok(Outcome::Done);
     }
-    ensure_idle(git)?;
-    let dir = scratch_dir(git)?;
+    ensure_idle(git).await?;
+    let dir = scratch_dir(git).await?;
     let todo = build_todo(plan, &dir)?;
     let todo_file = dir.join("todo");
-    std::fs::write(&todo_file, todo).context("could not write todo")?;
+    tokio::fs::write(&todo_file, todo).await.context("could not write todo")?;
     let editor = format!(
         "{} __seq-editor {}",
         shell_quote(&exe.to_string_lossy()),
@@ -185,12 +185,12 @@ pub fn run(git: &Git, plan: &Plan, exe: &Path) -> Result<Outcome> {
             env: vec![("GIT_SEQUENCE_EDITOR".into(), editor)],
             ..Default::default()
         },
-    );
-    finish(git, result.map(|_| ()))
+    ).await;
+    finish(git, result.map(|_| ())).await
 }
 
-fn finish(git: &Git, result: Result<()>) -> Result<Outcome> {
-    let stopped = matches!(state(git), RepoState::Rebase { .. });
+async fn finish(git: &Git, result: Result<()>) -> Result<Outcome> {
+    let stopped = matches!(state(git).await, RepoState::Rebase { .. });
     match result {
         Ok(()) if stopped => Ok(Outcome::Stopped),
         Ok(()) => Ok(Outcome::Done),
@@ -231,38 +231,38 @@ pub fn seq_editor_main(prepared: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn continue_rebase(git: &Git) -> Result<Outcome> {
-    let r = git.run(&["rebase", "--continue"]).map(|_| ());
-    finish(git, r)
+pub async fn continue_rebase(git: &Git) -> Result<Outcome> {
+    let r = git.run(&["rebase", "--continue"]).await.map(|_| ());
+    finish(git, r).await
 }
 
-pub fn skip_rebase(git: &Git) -> Result<Outcome> {
-    let r = git.run(&["rebase", "--skip"]).map(|_| ());
-    finish(git, r)
+pub async fn skip_rebase(git: &Git) -> Result<Outcome> {
+    let r = git.run(&["rebase", "--skip"]).await.map(|_| ());
+    finish(git, r).await
 }
 
-pub fn abort_rebase(git: &Git) -> Result<()> {
-    git.run(&["rebase", "--abort"])?;
+pub async fn abort_rebase(git: &Git) -> Result<()> {
+    git.run(&["rebase", "--abort"]).await?;
     Ok(())
 }
 
 /// Rebase the current branch onto another commit.
-pub fn rebase_onto(git: &Git, upstream: &str) -> Result<Outcome> {
-    ensure_idle(git)?;
-    let r = git.run(&["rebase", "--autostash", upstream]).map(|_| ());
-    finish(git, r)
+pub async fn rebase_onto(git: &Git, upstream: &str) -> Result<Outcome> {
+    ensure_idle(git).await?;
+    let r = git.run(&["rebase", "--autostash", upstream]).await.map(|_| ());
+    finish(git, r).await
 }
 
 /// Commit the staged changes as a fixup of `target` and squash them in.
-pub fn fixup_staged_into(git: &Git, target: ObjectId) -> Result<Outcome> {
+pub async fn fixup_staged_into(git: &Git, target: ObjectId) -> Result<Outcome> {
     let t = target.to_string();
-    if !super::ops::is_ancestor(git, &t, "HEAD") {
+    if !super::ops::is_ancestor(git, &t, "HEAD").await {
         bail!("That commit isn't part of the current branch.");
     }
-    ensure_idle(git)?;
-    let plan = plan_from(git, target)?;
-    git.run(&["commit", "--no-verify", &format!("--fixup={t}")])?;
-    let fixup = git.read_text(&["rev-parse", "HEAD"])?;
+    ensure_idle(git).await?;
+    let plan = plan_from(git, target).await?;
+    git.run(&["commit", "--no-verify", &format!("--fixup={t}")]).await?;
+    let fixup = git.read_text(&["rev-parse", "HEAD"]).await?;
     let base = plan.base.map(|b| b.to_string());
     let mut args = vec!["rebase", "-i", "--autosquash", "--autostash"];
     match &base {
@@ -276,22 +276,22 @@ pub fn fixup_staged_into(git: &Git, target: ObjectId) -> Result<Outcome> {
                 env: vec![("GIT_SEQUENCE_EDITOR".into(), "true".into())],
                 ..Default::default()
             },
-        )
+        ).await
         .map(|_| ());
     if r.is_err()
-        && state(git) == RepoState::Clean
-        && git.read_text(&["rev-parse", "HEAD"]).is_ok_and(|head| head == fixup)
+        && state(git).await == RepoState::Clean
+        && git.read_text(&["rev-parse", "HEAD"]).await.is_ok_and(|head| head == fixup)
     {
         // The rebase never started. Take the fixup commit off again, so the
         // changes are staged as they were.
-        let _ = git.run(&["reset", "--soft", "HEAD~1"]);
+        let _ = git.run(&["reset", "--soft", "HEAD~1"]).await;
     }
-    finish(git, r)
+    finish(git, r).await
 }
 
 /// Change the message of a single commit.
-pub fn reword(git: &Git, exe: &Path, id: ObjectId, message: &str) -> Result<Outcome> {
-    let head = git.read_text(&["rev-parse", "HEAD"])?;
+pub async fn reword(git: &Git, exe: &Path, id: ObjectId, message: &str) -> Result<Outcome> {
+    let head = git.read_text(&["rev-parse", "HEAD"]).await?;
     if ObjectId::from_hex(head.trim().as_bytes()).ok() == Some(id) {
         git.run_opts(
             &["commit", "--amend", "--only", "--allow-empty", "--cleanup=whitespace", "-F", "-"],
@@ -299,23 +299,23 @@ pub fn reword(git: &Git, exe: &Path, id: ObjectId, message: &str) -> Result<Outc
                 stdin: Some(message.as_bytes().to_vec()),
                 ..Default::default()
             },
-        )?;
+        ).await?;
         return Ok(Outcome::Done);
     }
-    let mut plan = plan_from(git, id)?;
+    let mut plan = plan_from(git, id).await?;
     plan.steps[0].action = Action::Reword(message.to_string());
-    run(git, &plan, exe)
+    run(git, &plan, exe).await
 }
 
 /// Apply one action to a single commit, keeping everything else.
-pub fn single(git: &Git, exe: &Path, id: ObjectId, action: Action) -> Result<Outcome> {
+pub async fn single(git: &Git, exe: &Path, id: ObjectId, action: Action) -> Result<Outcome> {
     let mut plan = if action.melds() {
         // Meld into the parent, so the range has to start one earlier.
-        let parent = git.read_text(&["rev-parse", &format!("{id}^")])?;
+        let parent = git.read_text(&["rev-parse", &format!("{id}^")]).await?;
         let parent = ObjectId::from_hex(parent.trim().as_bytes()).context("commit has no parent")?;
-        plan_from(git, parent)?
+        plan_from(git, parent).await?
     } else {
-        plan_from(git, id)?
+        plan_from(git, id).await?
     };
     let step = plan
         .steps
@@ -323,25 +323,25 @@ pub fn single(git: &Git, exe: &Path, id: ObjectId, action: Action) -> Result<Out
         .find(|s| s.id == id)
         .context("commit not found in range")?;
     step.action = action;
-    run(git, &plan, exe)
+    run(git, &plan, exe).await
 }
 
 /// Move a commit one step towards HEAD (`newer`) or away from it.
-pub fn move_commit(git: &Git, exe: &Path, id: ObjectId, newer: bool) -> Result<Outcome> {
+pub async fn move_commit(git: &Git, exe: &Path, id: ObjectId, newer: bool) -> Result<Outcome> {
     let start = if newer {
         id
     } else {
-        let parent = git.read_text(&["rev-parse", &format!("{id}^")])?;
+        let parent = git.read_text(&["rev-parse", &format!("{id}^")]).await?;
         ObjectId::from_hex(parent.trim().as_bytes()).context("commit has no parent")?
     };
-    let mut plan = plan_from(git, start)?;
+    let mut plan = plan_from(git, start).await?;
     let pos = plan.steps.iter().position(|s| s.id == id).context("commit not found")?;
     let other = if newer { pos + 1 } else { pos.wrapping_sub(1) };
     if other >= plan.steps.len() {
         bail!("Can't move the commit any further.");
     }
     plan.steps.swap(pos, other);
-    run(git, &plan, exe)
+    run(git, &plan, exe).await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,8 +359,8 @@ pub enum RepoState {
     Revert,
 }
 
-pub fn state(git: &Git) -> RepoState {
-    let Ok(dir) = git.read_text(&["rev-parse", "--absolute-git-dir"]) else {
+pub async fn state(git: &Git) -> RepoState {
+    let Ok(dir) = git.read_text(&["rev-parse", "--absolute-git-dir"]).await else {
         return RepoState::Clean;
     };
     state_in(Path::new(dir.trim()))
@@ -400,44 +400,44 @@ pub fn state_in(git_dir: &Path) -> RepoState {
     }
 }
 
-pub fn continue_op(git: &Git, state: &RepoState) -> Result<Outcome> {
+pub async fn continue_op(git: &Git, state: &RepoState) -> Result<Outcome> {
     match state {
-        RepoState::Rebase { .. } => continue_rebase(git),
+        RepoState::Rebase { .. } => continue_rebase(git).await,
         RepoState::Merge => {
-            git.run(&["merge", "--continue"])?;
+            git.run(&["merge", "--continue"]).await?;
             Ok(Outcome::Done)
         }
         RepoState::CherryPick => {
-            git.run(&["cherry-pick", "--continue"])?;
+            git.run(&["cherry-pick", "--continue"]).await?;
             Ok(Outcome::Done)
         }
         RepoState::Revert => {
-            git.run(&["revert", "--continue"])?;
+            git.run(&["revert", "--continue"]).await?;
             Ok(Outcome::Done)
         }
         RepoState::Clean => Ok(Outcome::Done),
     }
 }
 
-pub fn abort_op(git: &Git, state: &RepoState) -> Result<()> {
+pub async fn abort_op(git: &Git, state: &RepoState) -> Result<()> {
     match state {
-        RepoState::Rebase { .. } => abort_rebase(git),
-        RepoState::Merge => git.run(&["merge", "--abort"]).map(|_| ()),
-        RepoState::CherryPick => git.run(&["cherry-pick", "--abort"]).map(|_| ()),
-        RepoState::Revert => git.run(&["revert", "--abort"]).map(|_| ()),
+        RepoState::Rebase { .. } => abort_rebase(git).await,
+        RepoState::Merge => git.run(&["merge", "--abort"]).await.map(|_| ()),
+        RepoState::CherryPick => git.run(&["cherry-pick", "--abort"]).await.map(|_| ()),
+        RepoState::Revert => git.run(&["revert", "--abort"]).await.map(|_| ()),
         RepoState::Clean => Ok(()),
     }
 }
 
-pub fn skip_op(git: &Git, state: &RepoState) -> Result<Outcome> {
+pub async fn skip_op(git: &Git, state: &RepoState) -> Result<Outcome> {
     match state {
-        RepoState::Rebase { .. } => skip_rebase(git),
+        RepoState::Rebase { .. } => skip_rebase(git).await,
         RepoState::CherryPick => {
-            git.run(&["cherry-pick", "--skip"])?;
+            git.run(&["cherry-pick", "--skip"]).await?;
             Ok(Outcome::Done)
         }
         RepoState::Revert => {
-            git.run(&["revert", "--skip"])?;
+            git.run(&["revert", "--skip"]).await?;
             Ok(Outcome::Done)
         }
         _ => Ok(Outcome::Done),

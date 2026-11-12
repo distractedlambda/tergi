@@ -25,84 +25,94 @@ pub struct Workdir {
 const MAX_UNTRACKED_DIFFS: usize = 200;
 
 impl Workdir {
-    pub fn load(git: &Git, context: u32, line_limit: usize) -> Result<Workdir> {
-        let status = Status::load(git)?;
+    pub async fn load(git: &Git, context: u32, line_limit: usize) -> Result<Workdir> {
+        let status = Status::load(git).await?;
         let u = format!("-U{context}");
-        let mut unstaged = if status.unstaged().next().is_some() {
-            let out = git.read(&["diff", "--no-ext-diff", "--no-color", "--no-renames", &u])?;
-            parse_unified(&out.text(), line_limit)
+        let unstaged_diff = if status.unstaged().next().is_some() {
+            let out = git.read(&["diff", "--no-ext-diff", "--no-color", "--no-renames", &u]).await?;
+            Some(out.text())
         } else {
-            Vec::new()
+            None
         };
-        let staged = if status.has_staged() {
+        let staged_diff = if status.has_staged() {
             let mut args = vec!["diff", "--cached", "--no-ext-diff", "--no-color", "--no-renames", &u];
             if status.head_oid.is_none() {
                 // There is no HEAD to compare against yet.
                 args.push("--root");
             }
-            let out = git.read(&args)?;
-            parse_unified(&out.text(), line_limit)
+            Some(git.read(&args).await?.text())
         } else {
-            Vec::new()
+            None
         };
 
-        let mut conflicted = Vec::new();
+        let mut conflicted_files = Vec::new();
         for e in status.conflicted() {
-            let mut f = FileDiff::new(
-                FileStatus::Conflicted,
-                Some(e.path().to_string()),
-                Some(e.path().to_string()),
-            );
-            // `git diff` lists conflicted files as "unmerged" with a combined
-            // diff. We show them separately, so drop them from `unstaged`.
-            unstaged.retain(|u| u.path() != e.path());
-            if let Ok(text) = std::fs::read(git.workdir().join(e.path())) {
-                if is_binary(&text) {
-                    f.binary = true;
-                } else {
-                    let text = String::from_utf8_lossy(&text);
-                    f.hunks = diff_texts("", &text, context);
-                    f.old_path = Some(e.path().to_string());
-                }
-            }
-            conflicted.push(f);
+            let data = tokio::fs::read(git.workdir().join(e.path())).await.ok();
+            conflicted_files.push((e.path().to_string(), data));
         }
 
-        let unstaged_texts = unstaged
-            .iter()
-            .map(|f| FileTexts {
-                old: None,
-                new: f
-                    .new_path
-                    .as_ref()
-                    .and_then(|p| read_text(&git.workdir().join(p))),
-            })
-            .collect();
-
-        let mut untracked = Vec::new();
-        let mut untracked_texts = Vec::new();
+        let mut untracked_files = Vec::new();
         let mut modes = FileModes::new(git);
         for (i, e) in status.untracked().enumerate() {
-            let (f, texts) = if i < MAX_UNTRACKED_DIFFS {
-                untracked_file(&mut modes, e.path(), context, line_limit, MAX_BLOB)
+            untracked_files.push(if i < MAX_UNTRACKED_DIFFS {
+                read_untracked(&mut modes, e.path(), MAX_BLOB).await
             } else {
                 let mut f = FileDiff::new(FileStatus::Untracked, None, Some(e.path().to_string()));
                 f.too_large = true;
-                (f, FileTexts::default())
-            };
-            untracked.push(f);
-            untracked_texts.push(texts);
+                Untracked { f, data: None }
+            });
         }
 
-        Ok(Workdir {
-            status,
-            unstaged,
-            staged,
-            untracked,
-            conflicted,
-            unstaged_texts,
-            untracked_texts,
+        // Parsing and diffing can take a while for big changes, so do it
+        // off the async threads.
+        let mut wd = crate::util::blocking(move || {
+            let mut unstaged = unstaged_diff.map_or_else(Vec::new, |d| parse_unified(&d, line_limit));
+            let staged = staged_diff.map_or_else(Vec::new, |d| parse_unified(&d, line_limit));
+
+            let mut conflicted = Vec::new();
+            for (path, data) in conflicted_files {
+                let mut f = FileDiff::new(FileStatus::Conflicted, Some(path.clone()), Some(path.clone()));
+                // `git diff` lists conflicted files as "unmerged" with a
+                // combined diff. We show them separately, so drop them from
+                // `unstaged`.
+                unstaged.retain(|u| u.path() != path);
+                if let Some(text) = data {
+                    if is_binary(&text) {
+                        f.binary = true;
+                    } else {
+                        let text = String::from_utf8_lossy(&text);
+                        f.hunks = diff_texts("", &text, context);
+                        f.old_path = Some(path);
+                    }
+                }
+                conflicted.push(f);
+            }
+
+            let (untracked, untracked_texts) = untracked_files
+                .into_iter()
+                .map(|u| diff_untracked(u, context, line_limit))
+                .unzip();
+
+            Workdir {
+                status,
+                unstaged,
+                staged,
+                untracked,
+                conflicted,
+                unstaged_texts: Vec::new(),
+                untracked_texts,
+            }
         })
+        .await;
+
+        for f in &wd.unstaged {
+            let new = match &f.new_path {
+                Some(p) => read_text(&git.workdir().join(p)).await,
+                None => None,
+            };
+            wd.unstaged_texts.push(FileTexts { old: None, new });
+        }
+        Ok(wd)
     }
 
     pub fn change_count(&self) -> usize {
@@ -112,8 +122,8 @@ impl Workdir {
     }
 }
 
-fn read_text(path: &std::path::Path) -> Option<std::sync::Arc<str>> {
-    let data = std::fs::read(path).ok()?;
+async fn read_text(path: &std::path::Path) -> Option<std::sync::Arc<str>> {
+    let data = tokio::fs::read(path).await.ok()?;
     if data.len() > MAX_BLOB || is_binary(&data) {
         return None;
     }
@@ -133,50 +143,67 @@ impl<'a> FileModes<'a> {
         FileModes { git, trust_executable: None }
     }
 
-    fn regular(&mut self, meta: &std::fs::Metadata) -> &'static str {
+    async fn regular(&mut self, meta: &std::fs::Metadata) -> &'static str {
         use std::os::unix::fs::PermissionsExt;
         if meta.permissions().mode() & 0o100 == 0 {
             return "100644";
         }
-        let git = self.git;
-        let trust = *self.trust_executable.get_or_insert_with(|| {
-            git.read_text(&["config", "--type=bool", "core.fileMode"])
-                .map_or(true, |v| v.trim() != "false")
-        });
+        let trust = match self.trust_executable {
+            Some(t) => t,
+            None => {
+                let t = self
+                    .git
+                    .read_text(&["config", "--type=bool", "core.fileMode"])
+                    .await
+                    .map_or(true, |v| v.trim() != "false");
+                self.trust_executable = Some(t);
+                t
+            }
+        };
         if trust { "100755" } else { "100644" }
     }
 }
 
-/// The diff for an untracked file, which adds every line, and its text.
-/// Files bigger than `size_limit` bytes or with more than `line_limit`
-/// lines are marked `too_large` instead.
-fn untracked_file(
-    modes: &mut FileModes<'_>,
-    rel: &str,
-    context: u32,
-    line_limit: usize,
-    size_limit: usize,
-) -> (FileDiff, FileTexts) {
+/// An untracked file with its mode filled in, and its contents if they
+/// are small enough to show.
+struct Untracked {
+    f: FileDiff,
+    data: Option<Vec<u8>>,
+}
+
+/// Read an untracked file. Files bigger than `size_limit` bytes are marked
+/// `too_large` and not read.
+async fn read_untracked(modes: &mut FileModes<'_>, rel: &str, size_limit: usize) -> Untracked {
     let mut f = FileDiff::new(FileStatus::Untracked, None, Some(rel.to_string()));
-    let mut texts = FileTexts::default();
     let path = modes.git.workdir().join(rel);
-    let Ok(meta) = std::fs::symlink_metadata(&path) else {
-        return (f, texts);
+    let Ok(meta) = tokio::fs::symlink_metadata(&path).await else {
+        return Untracked { f, data: None };
     };
     let data = if meta.is_symlink() {
         // Git stores a symlink as a file that holds the path it points at.
         f.new_mode = Some("120000".into());
-        std::fs::read_link(&path).ok().map(|t| t.into_os_string().into_encoded_bytes())
+        tokio::fs::read_link(&path)
+            .await
+            .ok()
+            .map(|t| t.into_os_string().into_encoded_bytes())
     } else if meta.is_file() {
-        f.new_mode = Some(modes.regular(&meta).into());
+        f.new_mode = Some(modes.regular(&meta).await.into());
         if meta.len() > size_limit as u64 {
             f.too_large = true;
-            return (f, texts);
+            return Untracked { f, data: None };
         }
-        std::fs::read(&path).ok()
+        tokio::fs::read(&path).await.ok()
     } else {
         None
     };
+    Untracked { f, data }
+}
+
+/// The diff for an untracked file, which adds every line, and its text.
+/// Files with more than `line_limit` lines are marked `too_large` instead.
+fn diff_untracked(u: Untracked, context: u32, line_limit: usize) -> (FileDiff, FileTexts) {
+    let Untracked { mut f, data } = u;
+    let mut texts = FileTexts::default();
     match data {
         Some(data) if is_binary(&data) => f.binary = true,
         Some(data) => {
@@ -194,12 +221,13 @@ fn untracked_file(
 }
 
 /// Load an untracked file's diff without the size limits, for "show anyway".
-pub fn load_full_untracked(git: &Git, path: &str, context: u32) -> (FileDiff, FileTexts) {
-    untracked_file(&mut FileModes::new(git), path, context, usize::MAX, usize::MAX)
+pub async fn load_full_untracked(git: &Git, path: &str, context: u32) -> (FileDiff, FileTexts) {
+    let u = read_untracked(&mut FileModes::new(git), path, usize::MAX).await;
+    crate::util::blocking(move || diff_untracked(u, context, usize::MAX)).await
 }
 
 /// Load the diff of `file` again without the size limit, for "show anyway".
-pub fn load_full_diff(git: &Git, file: &FileDiff, staged: bool, context: u32) -> Result<Option<FileDiff>> {
+pub async fn load_full_diff(git: &Git, file: &FileDiff, staged: bool, context: u32) -> Result<Option<FileDiff>> {
     let u = format!("-U{context}");
     let mut args = vec!["diff", "--no-ext-diff", "--no-color", "--no-renames", &u];
     if staged {
@@ -207,10 +235,14 @@ pub fn load_full_diff(git: &Git, file: &FileDiff, staged: bool, context: u32) ->
     }
     let spec = super::ops::pathspec(file.path());
     args.extend(["--", &spec]);
-    let out = git.read_opts(&args, &RunOpts::default())?;
+    let out = git.read_opts(&args, &RunOpts::default()).await?;
+    let (old_path, new_path) = (file.old_path.clone(), file.new_path.clone());
     // A file that changed type shows up twice under the same path, once
     // deleted and once added.
-    Ok(parse_unified(&out.text(), usize::MAX)
-        .into_iter()
-        .find(|d| d.old_path == file.old_path && d.new_path == file.new_path))
+    Ok(crate::util::blocking(move || {
+        parse_unified(&out.text(), usize::MAX)
+            .into_iter()
+            .find(|d| d.old_path == old_path && d.new_path == new_path)
+    })
+    .await)
 }

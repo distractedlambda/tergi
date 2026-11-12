@@ -70,7 +70,7 @@ pub struct Status {
 }
 
 impl Status {
-    pub fn load(git: &Git) -> Result<Status> {
+    pub async fn load(git: &Git) -> Result<Status> {
         let out = git.read(&[
             "status",
             "--porcelain=v2",
@@ -78,7 +78,7 @@ impl Status {
             "-z",
             "--untracked-files=all",
             "--ignore-submodules=dirty",
-        ])?;
+        ]).await?;
         Ok(parse(&out.text()))
     }
 

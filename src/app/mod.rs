@@ -110,8 +110,14 @@ pub enum AppEvent {
     Progress(String),
     Watch(watch::Event),
     AskPass(String, oneshot::Sender<Option<String>>),
+    /// Finish something that had to wait for a background task. See
+    /// `App::query`.
+    Then(Box<dyn FnOnce(&mut App) + Send>),
     Tick,
 }
+
+/// Reports progress lines from a running operation.
+pub type Progress = Arc<dyn Fn(String) + Send + Sync>;
 
 pub struct OpResult {
     pub label: String,
@@ -259,6 +265,8 @@ pub struct App {
     pub history_frac: f32,
 
     pub busy: Option<Busy>,
+    /// How many `query` results haven't come back yet.
+    queries: usize,
     pub status: Option<(String, Level, Instant)>,
     pub animating: Arc<AtomicBool>,
 
@@ -361,6 +369,7 @@ impl App {
             sidebar_width: 28,
             history_frac: 0.45,
             busy: None,
+            queries: 0,
             status: None,
             animating: Arc::new(AtomicBool::new(false)),
             areas: Areas::default(),
@@ -497,7 +506,7 @@ impl App {
         let repo = self.repo.clone();
         let tx = self.tx.clone();
         self.spawn(async move {
-            let r = crate::util::blocking(move || Refs::load(&repo.git)).await;
+            let r = Refs::load(&repo.git).await;
             let _ = tx.send(AppEvent::Refs(generation, r));
         });
     }
@@ -510,7 +519,7 @@ impl App {
         let tx = self.tx.clone();
         let ctx = self.cfg.context_lines;
         self.spawn(async move {
-            let r = crate::util::blocking(move || Workdir::load(&repo.git, ctx, DEFAULT_LINE_LIMIT)).await;
+            let r = Workdir::load(&repo.git, ctx, DEFAULT_LINE_LIMIT).await;
             let _ = tx.send(AppEvent::Workdir(generation, Box::new(r)));
         });
     }
@@ -634,6 +643,10 @@ impl App {
                     text,
                     purpose: cmd::Purpose::AskPass(reply),
                 }));
+            }
+            AppEvent::Then(f) => {
+                self.queries -= 1;
+                f(self);
             }
             AppEvent::Tick => {
                 if let Some((_, level, t)) = &self.status {
@@ -787,12 +800,10 @@ impl App {
     // ----- Operations -----
 
     /// Run an operation that changes the repository in the background.
-    pub fn spawn_op(
-        &mut self,
-        label: impl Into<String>,
-        after: After,
-        f: impl FnOnce(&Repo, &dyn Fn(String)) -> Result<String> + Send + 'static,
-    ) {
+    pub fn spawn_op<F>(&mut self, label: impl Into<String>, after: After, f: impl FnOnce(Arc<Repo>, Progress) -> F)
+    where
+        F: Future<Output = Result<String>> + Send + 'static,
+    {
         let label = label.into();
         if let Some(b) = &self.busy {
             self.set_status(format!("Please wait: {} is still running", b.label), Level::Warn);
@@ -806,14 +817,35 @@ impl App {
         self.update_animating();
         let repo = self.repo.clone();
         let tx = self.tx.clone();
-        self.spawn(crate::util::blocking(move || {
-            let tx2 = tx.clone();
-            let progress = move |s: String| {
-                let _ = tx2.send(AppEvent::Progress(s));
-            };
-            let result = f(&repo, &progress);
+        let tx2 = tx.clone();
+        let progress: Progress = Arc::new(move |s: String| {
+            let _ = tx2.send(AppEvent::Progress(s));
+        });
+        let op = f(repo, progress);
+        self.spawn(async move {
+            let result = op.await;
             let _ = tx.send(AppEvent::OpDone(OpResult { label, result, after }));
-        }));
+        });
+    }
+
+    /// Run `fut` in the background, then pass its result to `then` back on
+    /// the UI side. By then the user may have moved on, so `then` should
+    /// check that what it's about to change still makes sense.
+    pub fn query<T, F>(
+        &mut self,
+        fut: impl FnOnce(Arc<Repo>) -> F,
+        then: impl FnOnce(&mut App, T) + Send + 'static,
+    ) where
+        T: Send + 'static,
+        F: Future<Output = T> + Send + 'static,
+    {
+        let fut = fut(self.repo.clone());
+        let tx = self.tx.clone();
+        self.queries += 1;
+        self.spawn(async move {
+            let value = fut.await;
+            let _ = tx.send(AppEvent::Then(Box::new(move |app| then(app, value))));
+        });
     }
 
     fn on_op_done(&mut self, r: OpResult) {
@@ -847,6 +879,12 @@ impl App {
         self.refresh(REFRESH_ALL);
     }
 
+    /// Whether no operation is running and no `query` is waiting for its
+    /// result.
+    pub fn is_idle(&self) -> bool {
+        self.busy.is_none() && self.queries == 0
+    }
+
     pub fn sidebar_shown(&self) -> bool {
         self.sidebar_visible.unwrap_or(self.size.0 >= 100)
     }
@@ -854,11 +892,21 @@ impl App {
     pub fn toggle_amend(&mut self) {
         self.amend = !self.amend;
         if self.amend {
-            if self.message.is_empty()
-                && let Ok(msg) = crate::git::ops::commit_message(&self.repo.git, "HEAD")
-            {
-                self.message_before_amend = Some(self.message.text());
-                self.message.set_text(&msg);
+            if self.message.is_empty() {
+                self.query(
+                    |r| async move { crate::git::ops::commit_message(&r.git, "HEAD").await },
+                    |app, msg| {
+                        // Only fill in the message if amend is still on and
+                        // nothing was typed in the meantime.
+                        if let Ok(msg) = msg
+                            && app.amend
+                            && app.message.is_empty()
+                        {
+                            app.message_before_amend = Some(app.message.text());
+                            app.message.set_text(&msg);
+                        }
+                    },
+                );
             }
         } else if let Some(prev) = self.message_before_amend.take() {
             self.message.set_text(&prev);
