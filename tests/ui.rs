@@ -12,6 +12,7 @@ use ratatui::layout::Rect;
 
 use common::Scratch;
 use tergi::app::cmd::{Cmd, Overlay, Unit};
+use tergi::app::doc::Row;
 use tergi::app::input::Target;
 use tergi::app::{App, AppEvent, Repo};
 use tergi::config::Config;
@@ -29,6 +30,17 @@ impl Ui {
         app.start();
         let term = Terminal::new(TestBackend::new(140, 36)).expect("terminal");
         Ui { app, term }
+    }
+
+    /// Select a row in the history and wait for its commit to load.
+    fn select_commit(&mut self, row: usize) {
+        self.app.select_history(row);
+        self.wait("the commit to load", |u| u.app.detail.commit.is_some());
+    }
+
+    fn doc_row(&self, f: impl Fn(&Row) -> bool) -> Rect {
+        let i = self.app.detail.rows.iter().position(f).expect("row in the detail pane");
+        self.find_hit(|t| *t == Target::DocRow(i))
     }
 
     fn draw(&mut self) {
@@ -200,4 +212,26 @@ fn buttons_under_a_dialog_do_not_light_up() {
     ui.key(KeyCode::Char('S'));
     ui.mouse(MouseEventKind::Moved, stash.x, stash.y);
     assert_eq!(bg(&ui), normal);
+}
+
+#[test]
+fn folds_do_not_carry_over_to_other_commits() {
+    let s = Scratch::new();
+    s.write("big.txt", "start\n");
+    s.commit_all("Start");
+    let many: String = (0..500).map(|i| format!("line {i}\n")).collect();
+    s.write("big.txt", &many);
+    s.commit_all("Add a lot");
+    s.write("big.txt", &many.replace("line 7\n", "line seven\n"));
+    s.commit_all("Change one line");
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(3);
+    let hunks = |u: &Ui| u.app.detail.rows.iter().filter(|r| matches!(r, Row::Hunk { .. })).count();
+
+    // The big diff starts out folded.
+    ui.select_commit(2);
+    assert_eq!(hunks(&ui), 0);
+    // The small diff of the same file in another commit doesn't.
+    ui.select_commit(1);
+    assert_eq!(hunks(&ui), 1);
 }

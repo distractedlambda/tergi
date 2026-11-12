@@ -231,6 +231,12 @@ impl Detail {
         self.anchor = None;
         self.scroll = 0;
         self.hscroll = 0;
+        // Folds are remembered by path. That's right for the working
+        // directory, where the same files stay around. In commits, a file
+        // that was folded in one commit would stay folded in every other
+        // commit that touches it.
+        self.collapsed.retain(|(sec, _)| *sec != Section::Commit);
+        self.seen.retain(|(sec, _)| *sec != Section::Commit);
         self.reset_for_reload();
     }
 
