@@ -42,6 +42,26 @@ fn paths_that_look_like_patterns() {
     assert!(s.sh(&["diff", "--cached", "--name-only"]).contains(":colon"));
 }
 
+#[cfg(unix)]
+#[test]
+fn untracked_executable_and_symlink() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Scratch::new();
+    s.write("base", "x\n");
+    s.commit_all("init");
+    s.write("run.sh", "#!/bin/sh\necho hi\n");
+    std::fs::set_permissions(s.file("run.sh"), std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::os::unix::fs::symlink("base", s.file("link")).expect("symlink");
+    let wd = Workdir::load(&s.git, 3, 100_000).expect("load");
+    for f in &wd.untracked {
+        apply_lines(&s.git, f, ApplyMode::Stage, &|_, _| true).expect("stage");
+    }
+    let ls = s.sh(&["ls-files", "-s"]);
+    assert!(ls.lines().any(|l| l.starts_with("100755") && l.ends_with("run.sh")), "{ls}");
+    assert!(ls.lines().any(|l| l.starts_with("120000") && l.ends_with("link")), "{ls}");
+    assert_eq!(s.sh(&["status", "--porcelain"]).trim(), "A  link\nA  run.sh");
+}
+
 #[test]
 fn take_side_when_one_side_deleted() {
     let s = Scratch::new();

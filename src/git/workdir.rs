@@ -81,31 +81,15 @@ impl Workdir {
 
         let mut untracked = Vec::new();
         let mut untracked_texts = Vec::new();
+        let mut modes = FileModes::new(git);
         for (i, e) in status.untracked().enumerate() {
-            let mut f = FileDiff::new(FileStatus::Untracked, None, Some(e.path().to_string()));
-            let mut texts = FileTexts::default();
-            if i < MAX_UNTRACKED_DIFFS {
-                let path = git.workdir().join(e.path());
-                match std::fs::metadata(&path) {
-                    Ok(m) if m.len() as usize > MAX_BLOB => f.too_large = true,
-                    Ok(m) if m.is_file() => match std::fs::read(&path) {
-                        Ok(data) if is_binary(&data) => f.binary = true,
-                        Ok(data) => {
-                            let text: std::sync::Arc<str> = String::from_utf8_lossy(&data).into();
-                            f.hunks = diff_texts("", &text, context);
-                            if f.line_count() > line_limit {
-                                f.too_large = true;
-                                f.hunks.clear();
-                            }
-                            texts.new = Some(text);
-                        }
-                        Err(_) => {}
-                    },
-                    _ => {}
-                }
+            let (f, texts) = if i < MAX_UNTRACKED_DIFFS {
+                untracked_file(&mut modes, e.path(), context, line_limit, MAX_BLOB)
             } else {
+                let mut f = FileDiff::new(FileStatus::Untracked, None, Some(e.path().to_string()));
                 f.too_large = true;
-            }
+                (f, FileTexts::default())
+            };
             untracked.push(f);
             untracked_texts.push(texts);
         }
@@ -136,8 +120,86 @@ fn read_text(path: &std::path::Path) -> Option<std::sync::Arc<str>> {
     Some(String::from_utf8_lossy(&data).into())
 }
 
-/// Load one file's diff without the size limit, for "show anyway".
-pub fn load_full_diff(git: &Git, path: &str, staged: bool, context: u32) -> Result<Option<FileDiff>> {
+/// Works out the mode git would record for a new file.
+struct FileModes<'a> {
+    git: &'a Git,
+    /// Whether git looks at the executable bit, from `core.fileMode`. We
+    /// only ask once we find an executable file.
+    trust_executable: Option<bool>,
+}
+
+impl<'a> FileModes<'a> {
+    fn new(git: &'a Git) -> Self {
+        FileModes { git, trust_executable: None }
+    }
+
+    fn regular(&mut self, meta: &std::fs::Metadata) -> &'static str {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o100 == 0 {
+            return "100644";
+        }
+        let git = self.git;
+        let trust = *self.trust_executable.get_or_insert_with(|| {
+            git.read_text(&["config", "--type=bool", "core.fileMode"])
+                .map_or(true, |v| v.trim() != "false")
+        });
+        if trust { "100755" } else { "100644" }
+    }
+}
+
+/// The diff for an untracked file, which adds every line, and its text.
+/// Files bigger than `size_limit` bytes or with more than `line_limit`
+/// lines are marked `too_large` instead.
+fn untracked_file(
+    modes: &mut FileModes<'_>,
+    rel: &str,
+    context: u32,
+    line_limit: usize,
+    size_limit: usize,
+) -> (FileDiff, FileTexts) {
+    let mut f = FileDiff::new(FileStatus::Untracked, None, Some(rel.to_string()));
+    let mut texts = FileTexts::default();
+    let path = modes.git.workdir().join(rel);
+    let Ok(meta) = std::fs::symlink_metadata(&path) else {
+        return (f, texts);
+    };
+    let data = if meta.is_symlink() {
+        // Git stores a symlink as a file that holds the path it points at.
+        f.new_mode = Some("120000".into());
+        std::fs::read_link(&path).ok().map(|t| t.into_os_string().into_encoded_bytes())
+    } else if meta.is_file() {
+        f.new_mode = Some(modes.regular(&meta).into());
+        if meta.len() > size_limit as u64 {
+            f.too_large = true;
+            return (f, texts);
+        }
+        std::fs::read(&path).ok()
+    } else {
+        None
+    };
+    match data {
+        Some(data) if is_binary(&data) => f.binary = true,
+        Some(data) => {
+            let text: std::sync::Arc<str> = String::from_utf8_lossy(&data).into();
+            f.hunks = diff_texts("", &text, context);
+            if f.line_count() > line_limit {
+                f.too_large = true;
+                f.hunks.clear();
+            }
+            texts.new = Some(text);
+        }
+        None => {}
+    }
+    (f, texts)
+}
+
+/// Load an untracked file's diff without the size limits, for "show anyway".
+pub fn load_full_untracked(git: &Git, path: &str, context: u32) -> (FileDiff, FileTexts) {
+    untracked_file(&mut FileModes::new(git), path, context, usize::MAX, usize::MAX)
+}
+
+/// Load the diff of `file` again without the size limit, for "show anyway".
+pub fn load_full_diff(git: &Git, file: &FileDiff, staged: bool, context: u32) -> Result<Option<FileDiff>> {
     let u = format!("-U{context}");
     let mut args = vec!["diff", "--no-ext-diff", "--no-color", "--no-renames", &u];
     if staged {
