@@ -266,7 +266,7 @@ pub fn fixup_staged_into(git: &Git, target: ObjectId) -> Result<Outcome> {
 /// Change the message of a single commit.
 pub fn reword(git: &Git, exe: &Path, id: ObjectId, message: &str) -> Result<Outcome> {
     let head = git.read_text(&["rev-parse", "HEAD"])?;
-    if head.trim() == id.to_string() {
+    if ObjectId::from_hex(head.trim().as_bytes()).ok() == Some(id) {
         git.run_opts(
             &["commit", "--amend", "--only", "--allow-empty", "--cleanup=strip", "-F", "-"],
             &RunOpts {

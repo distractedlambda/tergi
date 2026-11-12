@@ -9,6 +9,8 @@ use imara_diff::{Algorithm, Diff, InternedInput};
 use super::diff::{Hunk, LineKind};
 
 /// Byte ranges to emphasize, for each line of the hunk.
+/// Byte ranges within a line.
+pub type Ranges = Vec<(usize, usize)>;
 pub type Marks = Vec<Vec<(usize, usize)>>;
 
 pub fn hunk_marks(hunk: &Hunk) -> Marks {
@@ -73,7 +75,7 @@ fn tokens(s: &str) -> Vec<&str> {
 }
 
 /// Returns emphasized byte ranges for the old and the new line.
-pub fn line_marks(old: &str, new: &str) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+pub fn line_marks(old: &str, new: &str) -> (Ranges, Ranges) {
     if old.len() > 2000 || new.len() > 2000 {
         return (Vec::new(), Vec::new());
     }
