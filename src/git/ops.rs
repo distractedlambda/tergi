@@ -258,8 +258,22 @@ pub fn stash_drop(git: &Git, stash: &str) -> Result<()> {
 
 /// Resolve a conflicted file by taking one side.
 pub fn take_side(git: &Git, path: &str, ours: bool) -> Result<()> {
-    git.run(&["checkout", if ours { "--ours" } else { "--theirs" }, "--", path])?;
-    git.run(&["add", "--", path])?;
+    let spec = pathspec(path);
+    // Unmerged entries are listed as "<mode> <id> <stage>\t<path>", where
+    // stage 2 is our version and stage 3 is theirs. A side that deleted the
+    // file has no entry, and taking that side means deleting the file.
+    let entries = git.read_text(&["ls-files", "--unmerged", "-z", "--", &spec])?;
+    let stage = if ours { "2" } else { "3" };
+    let has_side = entries
+        .split('\0')
+        .filter_map(|e| e.split_once('\t'))
+        .any(|(meta, _)| meta.split(' ').nth(2) == Some(stage));
+    if has_side {
+        git.run(&["checkout", if ours { "--ours" } else { "--theirs" }, "--", &spec])?;
+        git.run(&["add", "--", &spec])?;
+    } else {
+        git.run(&["rm", "-q", "--", &spec])?;
+    }
     Ok(())
 }
 

@@ -43,6 +43,29 @@ fn paths_that_look_like_patterns() {
 }
 
 #[test]
+fn take_side_when_one_side_deleted() {
+    let s = Scratch::new();
+    s.write("f.txt", "a\n");
+    s.write("g.txt", "a\n");
+    s.commit_all("init");
+    s.sh(&["checkout", "-q", "-b", "other"]);
+    s.sh(&["rm", "-q", "f.txt"]);
+    s.write("g.txt", "theirs\n");
+    s.commit_all("delete f");
+    s.sh(&["checkout", "-q", "main"]);
+    s.write("f.txt", "ours\n");
+    s.sh(&["rm", "-q", "g.txt"]);
+    s.commit_all("change f");
+    assert!(s.git.run(&["merge", "other"]).is_err());
+    // f.txt: we changed it, they deleted it. g.txt is the other way round.
+    ops::take_side(&s.git, "f.txt", false).expect("theirs deletes f");
+    assert!(!s.file("f.txt").exists());
+    ops::take_side(&s.git, "g.txt", false).expect("theirs keeps g");
+    assert_eq!(s.read("g.txt"), "theirs\n");
+    assert_eq!(s.sh(&["status", "--porcelain"]).trim(), "D  f.txt\nA  g.txt");
+}
+
+#[test]
 fn staged_files_before_the_first_commit() {
     let s = Scratch::new();
     s.write("a.txt", "one\ntwo\n");
