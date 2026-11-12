@@ -524,7 +524,7 @@ impl App {
                 }
             }
             AppEvent::Commit(generation, id, r) => {
-                if generation == self.detail.request && self.detail.source == doc::Source::Commit(id) {
+                if generation == self.detail.request && self.detail.source.commit_id() == Some(id) {
                     self.detail.loading = false;
                     match *r {
                         Ok(c) => {
@@ -690,10 +690,7 @@ impl App {
         if self.detail.source == source {
             return;
         }
-        let load = match &source {
-            doc::Source::Commit(id) | doc::Source::Stash(_, id) => Some(*id),
-            doc::Source::Workdir | doc::Source::None => None,
-        };
+        let load = source.commit_id();
         self.detail.set_source(source);
         self.highlighter.set_generation(self.detail.generation);
         if let Some(id) = load {

@@ -27,6 +27,16 @@ pub enum Source {
     Stash(usize, ObjectId),
 }
 
+impl Source {
+    /// The commit this source shows, if it shows one.
+    pub fn commit_id(&self) -> Option<ObjectId> {
+        match self {
+            Source::Commit(id) | Source::Stash(_, id) => Some(*id),
+            Source::None | Source::Workdir => None,
+        }
+    }
+}
+
 /// A line selection: the section, the file index, and `(hunk, line)` pairs.
 pub type LineSelection = (Section, usize, Vec<(usize, usize)>);
 
