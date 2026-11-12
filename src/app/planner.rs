@@ -51,6 +51,7 @@ pub struct PlanRow {
 }
 
 /// Rows are shown newest first, like the history.
+#[derive(Debug)]
 pub struct Planner {
     pub base: Option<ObjectId>,
     pub rows: Vec<PlanRow>,
@@ -96,7 +97,6 @@ impl Planner {
         }
     }
 
-
     pub fn to_plan(&self) -> Result<Plan> {
         let mut steps = Vec::new();
         for r in self.rows.iter().rev() {
@@ -120,8 +120,18 @@ impl Planner {
                 action,
             });
         }
-        // Squash and fixup meld into the commit before them, which can't be
-        // a dropped one.
+        // Squash and fixup meld into the commit before them. Reordering can
+        // leave such a commit at the bottom, with nothing before it.
+        if let Some(first) = steps.first()
+            && first.action.melds()
+        {
+            bail!(
+                "Commit {} is the oldest one, so it has nothing below it to {} into.",
+                first.id.to_hex_with_len(7),
+                first.action.name()
+            );
+        }
+        // The commit before them also can't be a dropped one.
         for w in steps.windows(2) {
             if w[1].action.melds() && w[0].action == Action::Drop {
                 bail!("A commit can't be squashed or fixed up into a dropped commit.");
@@ -148,6 +158,11 @@ impl App {
             self.set_status("The oldest commit has nothing below it to meld into", Level::Warn);
             return;
         }
+        if p.rows[i].action != action {
+            // A message written for a reword doesn't fit a squash, and the
+            // other way round.
+            p.rows[i].message = None;
+        }
         p.rows[i].action = action;
         match action {
             PlanAction::Reword => {
@@ -167,7 +182,7 @@ impl App {
                 let initial = p.rows[i].message.clone().unwrap_or(format!("{below_msg}\n\n{this}"));
                 self.open_planner_input("Message for the squashed commit", &initial, i);
             }
-            _ => p.rows[i].message = None,
+            _ => {}
         }
     }
 
@@ -197,5 +212,46 @@ impl App {
                 rebase::Outcome::Stopped => "Rebase stopped. Make your changes, then Continue (alt+c).".to_string(),
             })
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn planner(n: u8) -> Planner {
+        let steps = (1..=n)
+            .map(|i| {
+                let mut id = [0u8; 20];
+                id[19] = i;
+                Step {
+                    id: ObjectId::from_bytes_or_panic(&id),
+                    summary: format!("commit {i}"),
+                    action: Action::Pick,
+                }
+            })
+            .collect();
+        Planner::new(Plan { base: None, steps })
+    }
+
+    #[test]
+    fn rows_are_newest_first() {
+        let mut p = planner(3);
+        assert_eq!(p.rows[0].summary, "commit 3");
+        p.rows[0].action = PlanAction::Fixup;
+        let plan = p.to_plan().unwrap();
+        assert_eq!(plan.steps[2].action, Action::Fixup);
+        assert_eq!(plan.steps[0].summary, "commit 1");
+    }
+
+    #[test]
+    fn refuses_to_meld_the_oldest_commit() {
+        let mut p = planner(3);
+        p.rows[1].action = PlanAction::Fixup;
+        assert!(p.to_plan().is_ok());
+        // Move the fixup to the bottom.
+        p.selected = 1;
+        p.move_selected(false);
+        assert!(p.to_plan().unwrap_err().to_string().contains("oldest"));
     }
 }

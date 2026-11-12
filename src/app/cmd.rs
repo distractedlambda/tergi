@@ -1094,6 +1094,7 @@ impl App {
             }
             _ if name.is_empty() && !matches!(b.purpose, Purpose::StashPush) => {
                 self.set_status("Nothing entered", Level::Warn);
+                self.cancel_input(b);
             }
             Purpose::NewBranch { at } => self.spawn_op("New branch", After::Nothing, move |r, _| {
                 ops::create_branch(&r.git, &name, &at, true).map(|()| format!("Created and switched to {name}"))
