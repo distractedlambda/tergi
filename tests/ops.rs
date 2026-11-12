@@ -3,6 +3,7 @@
 mod common;
 
 use common::Scratch;
+use gix::ObjectId;
 use tergi::git::ops::{self, ApplyMode, apply_lines};
 use tergi::git::workdir::Workdir;
 
@@ -97,4 +98,30 @@ fn staged_files_before_the_first_commit() {
     assert_eq!(s.index("a.txt"), "one\n");
     ops::unstage_paths(&s.git, &["a.txt"], false).expect("unstage");
     assert_eq!(s.sh(&["status", "--porcelain"]).trim(), "?? a.txt");
+}
+
+#[test]
+fn stash_actions_follow_the_stash_when_others_are_added() {
+    let s = Scratch::new();
+    s.write("f.txt", "a\n");
+    s.commit_all("init");
+    s.write("f.txt", "one\n");
+    s.sh(&["stash", "push", "-m", "one"]);
+    s.write("f.txt", "two\n");
+    s.sh(&["stash", "push", "-m", "two"]);
+    let one = ObjectId::from_hex(s.sh(&["rev-parse", "stash@{1}"]).trim().as_bytes()).expect("stash id");
+
+    // Another stash pushes "one" down to stash@{2}.
+    s.write("f.txt", "three\n");
+    s.sh(&["stash", "push", "-m", "three"]);
+
+    ops::stash_apply(&s.git, one, false).expect("apply");
+    assert_eq!(s.read("f.txt"), "one\n");
+    s.sh(&["checkout", "--", "f.txt"]);
+
+    ops::stash_drop(&s.git, one).expect("drop");
+    let left = s.sh(&["stash", "list", "--format=%gs"]);
+    assert_eq!(left.lines().collect::<Vec<_>>(), ["On main: three", "On main: two"]);
+
+    assert!(ops::stash_drop(&s.git, one).is_err());
 }

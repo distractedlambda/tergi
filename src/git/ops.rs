@@ -1,6 +1,7 @@
 //! Operations that change the repository. They all run the git CLI.
 
 use anyhow::{Result, bail};
+use gix::ObjectId;
 
 use super::cli::{Git, RunOpts};
 use super::diff::{FileDiff, LineKind};
@@ -246,14 +247,26 @@ pub fn stash_push(git: &Git, message: &str, include_untracked: bool, staged_only
     Ok(())
 }
 
-pub fn stash_apply(git: &Git, stash: &str, pop: bool) -> Result<()> {
-    git.run(&["stash", if pop { "pop" } else { "apply" }, stash])?;
+pub fn stash_apply(git: &Git, stash: ObjectId, pop: bool) -> Result<()> {
+    git.run(&["stash", if pop { "pop" } else { "apply" }, &stash_ref(git, stash)?])?;
     Ok(())
 }
 
-pub fn stash_drop(git: &Git, stash: &str) -> Result<()> {
-    git.run(&["stash", "drop", stash])?;
+pub fn stash_drop(git: &Git, stash: ObjectId) -> Result<()> {
+    git.run(&["stash", "drop", &stash_ref(git, stash)?])?;
     Ok(())
+}
+
+/// Find the current `stash@{n}` name of a stash. Pushing or dropping a
+/// stash elsewhere renumbers the others, so an index from an earlier
+/// listing could name a different stash. Pop and drop only accept these
+/// names, not a commit id.
+fn stash_ref(git: &Git, stash: ObjectId) -> Result<String> {
+    let out = git.read_text(&["stash", "list", "--format=%H"])?;
+    match out.lines().position(|l| ObjectId::from_hex(l.as_bytes()).ok() == Some(stash)) {
+        Some(i) => Ok(format!("stash@{{{i}}}")),
+        None => bail!("The stash no longer exists."),
+    }
 }
 
 /// Resolve a conflicted file by taking one side.

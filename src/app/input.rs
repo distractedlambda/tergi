@@ -450,7 +450,11 @@ impl App {
                                 self.run_cmd(Cmd::CheckoutRemote(full));
                             }
                         }
-                        Some(SideRow::Stash(s)) => self.run_cmd(Cmd::StashApply(s, false)),
+                        Some(SideRow::Stash(s)) => {
+                            if let Some(st) = self.refs.stashes.get(s) {
+                                self.run_cmd(Cmd::StashApply(st.id, false));
+                            }
+                        }
                         _ => {}
                     }
                 } else if let Some(SideRow::Header { key, .. }) = self.sidebar.rows.get(i).cloned() {

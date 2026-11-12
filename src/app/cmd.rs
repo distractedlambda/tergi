@@ -128,8 +128,8 @@ pub enum Cmd {
     RebaseOnto(String),
     DeleteTag(String),
     PushTag(String),
-    StashApply(usize, bool),
-    StashDrop(usize),
+    StashApply(ObjectId, bool),
+    StashDrop(ObjectId),
     ToggleSideSection(String),
 
     ContinueOp,
@@ -574,11 +574,14 @@ impl App {
                     act(Some(Key::ch('n')), "New branch from here…", Cmd::NewBranch(t.name.clone())),
                 ]
             }
-            SideRow::Stash(i) => vec![
-                act(Some(Key::ch(' ')), "Apply", Cmd::StashApply(*i, false)).hint(),
-                act(Some(Key::ch('g')), "Pop", Cmd::StashApply(*i, true)).hint(),
-                act(Some(Key::ch('d')), "Drop", Cmd::StashDrop(*i)).hint(),
-            ],
+            SideRow::Stash(i) => {
+                let id = refs.stashes[*i].id;
+                vec![
+                    act(Some(Key::ch(' ')), "Apply", Cmd::StashApply(id, false)).hint(),
+                    act(Some(Key::ch('g')), "Pop", Cmd::StashApply(id, true)).hint(),
+                    act(Some(Key::ch('d')), "Drop", Cmd::StashDrop(id)).hint(),
+                ]
+            }
             SideRow::Empty(_) => Vec::new(),
         }
     }
@@ -634,7 +637,13 @@ impl App {
             ),
             Cmd::DeleteRemoteBranch(r, b) => s("Delete remote branch?", format!("This deletes {b} on {r} for everyone."), "Delete"),
             Cmd::DeleteTag(t) => s("Delete tag?", format!("Delete the tag {t}?"), "Delete"),
-            Cmd::StashDrop(i) => s("Drop stash?", format!("stash@{{{i}}} will be deleted."), "Drop"),
+            Cmd::StashDrop(id) => {
+                let what = match self.refs.stashes.iter().find(|st| st.id == *id) {
+                    Some(st) => format!("\"{}\"", st.message),
+                    None => format!("Stash {}", short(id)),
+                };
+                s("Drop stash?", format!("{what} will be deleted."), "Drop")
+            }
             Cmd::AbortOp => s("Abort?", "Everything done since the operation started will be undone.".into(), "Abort"),
             Cmd::Push { force: true } => s("Force push?", "Commits on the remote that you don't have will be lost. tergi uses --force-with-lease, which refuses if the remote changed since you last fetched.".into(), "Force push"),
             Cmd::CommitAll => s("Nothing is staged", "Stage all changes and commit them?".into(), "Stage all and commit"),
@@ -990,11 +999,11 @@ impl App {
                         .map(|_| format!("Pushed {t}"))
                 });
             }
-            Cmd::StashApply(i, pop) => self.spawn_op(if pop { "Pop stash" } else { "Apply stash" }, After::Nothing, move |r, _| {
-                ops::stash_apply(&r.git, &format!("stash@{{{i}}}"), pop).map(|()| if pop { "Popped stash" } else { "Applied stash" }.into())
+            Cmd::StashApply(id, pop) => self.spawn_op(if pop { "Pop stash" } else { "Apply stash" }, After::Nothing, move |r, _| {
+                ops::stash_apply(&r.git, id, pop).map(|()| if pop { "Popped stash" } else { "Applied stash" }.into())
             }),
-            Cmd::StashDrop(i) => self.spawn_op("Drop stash", After::Nothing, move |r, _| {
-                ops::stash_drop(&r.git, &format!("stash@{{{i}}}")).map(|()| "Dropped stash".into())
+            Cmd::StashDrop(id) => self.spawn_op("Drop stash", After::Nothing, move |r, _| {
+                ops::stash_drop(&r.git, id).map(|()| "Dropped stash".into())
             }),
             Cmd::ToggleSideSection(key) => {
                 if !self.sidebar.collapsed.remove(&key) {
