@@ -45,6 +45,13 @@ pub fn walk(
     // Send a small first batch so the first screen appears quickly.
     let mut batch_size = 200;
 
+    // Tags can point at trees and blobs. git.git has one for a GPG key, for
+    // example. The walk refuses to start from those, so leave them out.
+    let tips: Vec<ObjectId> = tips
+        .into_iter()
+        .filter(|id| repo.find_header(*id).is_ok_and(|h| h.kind() == gix::object::Kind::Commit))
+        .collect();
+
     if !tips.is_empty() {
         let walk = topo::Builder::from_iters(&repo.objects, tips, None::<Vec<ObjectId>>)
             .with_commit_graph(repo.commit_graph_if_enabled().ok().flatten())
