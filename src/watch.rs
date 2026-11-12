@@ -243,6 +243,8 @@ fn classify_git(rel: &Path) -> u8 {
     match first {
         "index" => INDEX,
         "HEAD" | "ORIG_HEAD" | "FETCH_HEAD" | "packed-refs" | "refs" => REFS | INDEX,
+        // Remotes and upstreams live in the config.
+        "config" => REFS,
         "rebase-merge" | "rebase-apply" | "MERGE_HEAD" | "CHERRY_PICK_HEAD" | "REVERT_HEAD"
         | "sequencer" => STATE | REFS | INDEX,
         _ => 0,
@@ -262,6 +264,7 @@ mod tests {
         assert_eq!(classify_git(Path::new("objects/ab/cdef")), 0);
         assert_eq!(classify_git(Path::new("rebase-merge/msgnum")), STATE | REFS | INDEX);
         assert_eq!(classify_git(Path::new("logs/HEAD")), 0);
+        assert_eq!(classify_git(Path::new("config")), REFS);
     }
 
     #[test]
