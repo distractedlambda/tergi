@@ -145,7 +145,7 @@ impl Planner {
 }
 
 impl App {
-    pub fn planner_set(&mut self, action: PlanAction) {
+    pub async fn planner_set(&mut self, action: PlanAction) {
         let Some(p) = &mut self.planner else { return };
         let i = p.selected;
         let n = p.rows.len();
@@ -174,32 +174,19 @@ impl App {
             return;
         }
         let below = p.rows.get(i + 1).map(|b| (b.id, b.message.clone()));
-        self.query(
-            move |r| async move {
-                let this = ops::commit_message(&r.git, &id.to_string()).await.unwrap_or_default();
-                match (action, below) {
-                    (PlanAction::Squash, Some((below_id, below_msg))) => {
-                        let below_msg = match below_msg {
-                            Some(m) => m,
-                            None => ops::commit_message(&r.git, &below_id.to_string()).await.unwrap_or_default(),
-                        };
-                        format!("{below_msg}\n\n{this}")
-                    }
-                    _ => this,
-                }
-            },
-            move |app, initial| {
-                // The user may have changed the plan while we loaded.
-                let unchanged = app
-                    .planner
-                    .as_ref()
-                    .and_then(|p| p.rows.get(i))
-                    .is_some_and(|r| r.id == id && r.action == action && r.message.is_none());
-                if unchanged {
-                    app.open_planner_input(title, &initial, i);
-                }
-            },
-        );
+        let git = &self.repo.git;
+        let this = ops::commit_message(git, &id.to_string()).await.unwrap_or_default();
+        let initial = match (action, below) {
+            (PlanAction::Squash, Some((below_id, below_msg))) => {
+                let below_msg = match below_msg {
+                    Some(m) => m,
+                    None => ops::commit_message(git, &below_id.to_string()).await.unwrap_or_default(),
+                };
+                format!("{below_msg}\n\n{this}")
+            }
+            _ => this,
+        };
+        self.open_planner_input(title, &initial, i);
     }
 
     fn open_planner_input(&mut self, title: &str, initial: &str, row: usize) {

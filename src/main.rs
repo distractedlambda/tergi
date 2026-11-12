@@ -84,12 +84,12 @@ async fn run(path: &Path) -> Result<()> {
                 },
             };
             let Some(ev) = ev else { break };
-            app.handle(ev);
+            app.handle(ev).await;
             // Handle everything that piled up before drawing again, so a
             // burst of mouse moves doesn't cause a burst of redraws.
             for _ in 0..1000 {
                 match app.try_recv() {
-                    Some(ev) => app.handle(ev),
+                    Some(ev) => app.handle(ev).await,
                     None => break,
                 }
             }

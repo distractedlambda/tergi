@@ -22,7 +22,7 @@ struct Ui {
     app: App,
     term: Terminal<TestBackend>,
     // Declared after `app`, so the app and its tasks go away first.
-    _rt: tokio::runtime::Runtime,
+    rt: tokio::runtime::Runtime,
 }
 
 impl Ui {
@@ -41,7 +41,17 @@ impl Ui {
             app
         };
         let term = Terminal::new(TestBackend::new(140, 36)).expect("terminal");
-        Ui { app, term, _rt: rt }
+        Ui { app, term, rt }
+    }
+
+    /// Handle one event, as the main loop does. This blocks until the app
+    /// is done with it, including any git commands it runs.
+    fn handle(&mut self, ev: AppEvent) {
+        self.rt.block_on(self.app.handle(ev));
+    }
+
+    fn run_cmd(&mut self, cmd: Cmd) {
+        self.rt.block_on(self.app.run_cmd(cmd));
     }
 
     /// Select a row in the history and wait for its commit to load.
@@ -65,7 +75,7 @@ impl Ui {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             while let Some(ev) = self.app.try_recv() {
-                self.app.handle(ev);
+                self.handle(ev);
             }
             self.draw();
             if done(self) {
@@ -106,7 +116,7 @@ impl Ui {
 
     fn mouse(&mut self, kind: MouseEventKind, x: u16, y: u16) {
         let ev = MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
-        self.app.handle(AppEvent::Input(Event::Mouse(ev)));
+        self.handle(AppEvent::Input(Event::Mouse(ev)));
         self.draw();
     }
 
@@ -120,7 +130,7 @@ impl Ui {
     }
 
     fn key_with(&mut self, code: KeyCode, modifiers: KeyModifiers) {
-        self.app.handle(AppEvent::Input(Event::Key(KeyEvent::new(code, modifiers))));
+        self.handle(AppEvent::Input(Event::Key(KeyEvent::new(code, modifiers))));
         self.draw();
     }
 
@@ -133,7 +143,7 @@ impl Ui {
     /// Wait until the running operation is done. The reloads it causes
     /// may still be on their way.
     fn settle(&mut self) {
-        self.wait("the operation to finish", |u| u.app.is_idle());
+        self.wait("the operation to finish", |u| u.app.busy.is_none());
     }
 }
 
@@ -263,7 +273,7 @@ fn right_click_selects_without_activating() {
     assert!(ui.app.overlays.is_empty());
     let stage = ui.find_hit(|t| matches!(t, Target::Button(Cmd::Stage(Unit::File(..)))));
     ui.click(MouseButton::Right, stage);
-    ui.wait("things to settle", |u| u.app.is_idle());
+    ui.wait("things to settle", |u| u.app.busy.is_none());
     assert_eq!(s.sh(&["diff", "--cached", "--name-only"]).trim(), "");
 
     // A right-click outside a dialog leaves it open, like a left-click.
@@ -281,7 +291,7 @@ fn right_click_in_the_planner_opens_one_menu() {
     ui.app.select_history(2);
     ui.key(KeyCode::Char('2'));
     ui.key(KeyCode::Char('i'));
-    ui.wait("the planner", |u| u.app.planner.is_some());
+    assert!(ui.app.planner.is_some());
     ui.draw();
     let action = ui.find_hit(|t| matches!(t, Target::PlannerAction(1)));
     ui.click(MouseButton::Right, action);
@@ -346,13 +356,13 @@ fn draws_at_any_size() {
     ui.key(KeyCode::Char('S'));
     draw_all(&mut ui, "an input box");
     ui.key(KeyCode::Esc);
-    ui.app.run_cmd(Cmd::Palette);
+    ui.run_cmd(Cmd::Palette);
     draw_all(&mut ui, "the palette");
     ui.key(KeyCode::Esc);
     ui.key(KeyCode::Char('@'));
     draw_all(&mut ui, "the command log");
     ui.key(KeyCode::Esc);
-    ui.app.run_cmd(Cmd::Drop(ui.app.history.commits[0].id));
+    ui.run_cmd(Cmd::Drop(ui.app.history.commits[0].id));
     draw_all(&mut ui, "a confirmation");
     ui.key(KeyCode::Esc);
     ui.app.show_error("Something failed", &anyhow::anyhow!("a long explanation\nover two lines"));
@@ -361,7 +371,7 @@ fn draws_at_any_size() {
 
     ui.key(KeyCode::Char('2'));
     ui.key(KeyCode::Char('i'));
-    ui.wait("the planner", |u| u.app.planner.is_some());
+    assert!(ui.app.planner.is_some());
     draw_all(&mut ui, "the planner");
 }
 
@@ -384,7 +394,7 @@ fn commits_and_amends_from_the_message_box() {
     // Amend only the message.
     ui.key(KeyCode::Char('3'));
     ui.key(KeyCode::Char('A'));
-    ui.wait("HEAD's message", |u| u.app.message.text() == "#3 Use a digit");
+    assert_eq!(ui.app.message.text(), "#3 Use a digit");
     ui.key(KeyCode::Char('c'));
     ui.type_text("!");
     ui.key_with(KeyCode::Char('s'), KeyModifiers::CONTROL);
@@ -405,7 +415,7 @@ fn rewords_a_commit_and_runs_a_plan() {
     // Reword the oldest commit.
     ui.app.select_history(3);
     ui.key(KeyCode::Char('r'));
-    ui.wait("the message box", |u| matches!(u.app.overlays.last(), Some(Overlay::Input(_))));
+    assert!(matches!(ui.app.overlays.last(), Some(Overlay::Input(_))), "{}", ui.screen());
     ui.type_text(" file");
     ui.key_with(KeyCode::Enter, KeyModifiers::CONTROL);
     ui.settle();
@@ -416,12 +426,10 @@ fn rewords_a_commit_and_runs_a_plan() {
     // Plan: fix up the newest into the middle one, and reword the middle.
     ui.app.select_history(3);
     ui.key(KeyCode::Char('i'));
-    ui.wait("the planner", |u| u.app.planner.is_some());
     assert_eq!(ui.app.planner.as_ref().map(|p| p.rows.len()), Some(3));
     ui.key(KeyCode::Char('f'));
     ui.key(KeyCode::Char('j'));
     ui.key(KeyCode::Char('r'));
-    ui.wait("the message box", |u| matches!(u.app.overlays.last(), Some(Overlay::Input(_))));
     ui.type_text("!");
     ui.key_with(KeyCode::Enter, KeyModifiers::CONTROL);
     assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
@@ -496,7 +504,7 @@ fn resolves_a_conflict_and_continues_the_merge() {
     s.commit_all("ours");
     let mut ui = Ui::open(&s);
     ui.wait_loaded(3);
-    ui.app.run_cmd(Cmd::Merge("other".into()));
+    ui.run_cmd(Cmd::Merge("other".into()));
     ui.settle();
     // Git's message about the conflict is shown in a dialog.
     assert!(matches!(ui.app.overlays.last(), Some(Overlay::Message { .. })));

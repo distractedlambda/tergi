@@ -32,10 +32,10 @@ pub enum Target {
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 impl App {
-    pub fn handle_input(&mut self, ev: Event) {
+    pub async fn handle_input(&mut self, ev: Event) {
         match ev {
-            Event::Key(k) if k.kind != KeyEventKind::Release => self.handle_key(k),
-            Event::Mouse(m) => self.handle_mouse(m),
+            Event::Key(k) if k.kind != KeyEventKind::Release => self.handle_key(k).await,
+            Event::Mouse(m) => self.handle_mouse(m).await,
             Event::Paste(s) => self.handle_paste(&s),
             Event::FocusGained => self.refresh(super::REFRESH_ALL),
             Event::Resize(w, h) => self.size = (w, h),
@@ -56,9 +56,9 @@ impl App {
         }
     }
 
-    fn handle_key(&mut self, k: KeyEvent) {
+    async fn handle_key(&mut self, k: KeyEvent) {
         if !self.overlays.is_empty() {
-            self.overlay_key(k);
+            self.overlay_key(k).await;
             return;
         }
         if self.planner.is_some() {
@@ -66,30 +66,30 @@ impl App {
                 return;
             }
             if let Some(a) = find_action(&self.actions(super::cmd::Context::Planner), &k) {
-                self.run_cmd(a);
+                self.run_cmd(a).await;
                 return;
             }
             if let Some(a) = find_action(&self.global_actions(), &k)
                 && matches!(a, Cmd::Help | Cmd::Quit | Cmd::Palette | Cmd::CommandLog)
             {
-                self.run_cmd(a);
+                self.run_cmd(a).await;
             }
             return;
         }
         if self.focus == Focus::Message {
-            self.message_key(k);
+            self.message_key(k).await;
             return;
         }
-        if self.nav_key(k) {
+        if self.nav_key(k).await {
             return;
         }
         let ctx = self.context();
         if let Some(a) = find_action(&self.actions(ctx), &k) {
-            self.run_cmd(a);
+            self.run_cmd(a).await;
             return;
         }
         if let Some(a) = find_action(&self.global_actions(), &k) {
-            self.run_cmd(a);
+            self.run_cmd(a).await;
             return;
         }
         if k.code == KeyCode::F(10) && k.modifiers.contains(KeyModifiers::SHIFT) || k.code == KeyCode::Menu {
@@ -97,23 +97,23 @@ impl App {
         }
     }
 
-    fn message_key(&mut self, k: KeyEvent) {
+    async fn message_key(&mut self, k: KeyEvent) {
         match k.code {
-            KeyCode::Tab => return self.run_cmd(Cmd::FocusNext),
-            KeyCode::BackTab => return self.run_cmd(Cmd::FocusPrev),
-            KeyCode::Char('a') if k.modifiers == KeyModifiers::ALT => return self.toggle_amend(),
+            KeyCode::Tab => return self.run_cmd(Cmd::FocusNext).await,
+            KeyCode::BackTab => return self.run_cmd(Cmd::FocusPrev).await,
+            KeyCode::Char('a') if k.modifiers == KeyModifiers::ALT => return self.toggle_amend().await,
             KeyCode::Char('c') if k.modifiers == KeyModifiers::CONTROL => return self.focus = Focus::Detail,
             _ => {}
         }
         match self.message.handle_key(k) {
-            Outcome::Submit => self.run_cmd(Cmd::Commit),
+            Outcome::Submit => self.run_cmd(Cmd::Commit).await,
             Outcome::Cancel => self.focus = Focus::Detail,
             Outcome::Handled | Outcome::Ignored => {}
         }
     }
 
     /// Movement keys for the focused list. Returns true if the key was used.
-    fn nav_key(&mut self, k: KeyEvent) -> bool {
+    async fn nav_key(&mut self, k: KeyEvent) -> bool {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let page = |a: Rect| usize::from(a.height.max(2)) - 1;
         enum Move {
@@ -171,8 +171,8 @@ impl App {
             }
             (Focus::Sidebar, KeyCode::Enter) => {
                 match self.sidebar.rows.get(self.sidebar.selected).cloned() {
-                    Some(SideRow::Header { key, .. }) => self.run_cmd(Cmd::ToggleSideSection(key)),
-                    Some(SideRow::Remote(r)) => self.run_cmd(Cmd::ToggleSideSection(format!("remote:{r}"))),
+                    Some(SideRow::Header { key, .. }) => self.run_cmd(Cmd::ToggleSideSection(key)).await,
+                    Some(SideRow::Remote(r)) => self.run_cmd(Cmd::ToggleSideSection(format!("remote:{r}"))).await,
                     _ => self.focus = Focus::History,
                 }
                 true
@@ -194,20 +194,20 @@ impl App {
                 true
             }
             (Focus::Detail, KeyCode::Enter) => {
-                self.activate_doc_row(self.detail.cursor);
+                self.activate_doc_row(self.detail.cursor).await;
                 true
             }
             _ => false,
         }
     }
 
-    fn activate_doc_row(&mut self, i: usize) {
+    async fn activate_doc_row(&mut self, i: usize) {
         match self.detail.rows.get(i).cloned() {
-            Some(Row::File { .. } | Row::Section(_)) => self.run_cmd(Cmd::ToggleFold),
-            Some(Row::Notice { .. }) => self.run_cmd(Cmd::LoadFull),
+            Some(Row::File { .. } | Row::Section(_)) => self.run_cmd(Cmd::ToggleFold).await,
+            Some(Row::Notice { .. }) => self.run_cmd(Cmd::LoadFull).await,
             Some(Row::Meta(m)) => {
                 if let Some(c) = self.detail.meta.get(m).and_then(|m| m.click.clone()) {
-                    self.run_cmd(c);
+                    self.run_cmd(c).await;
                 }
             }
             _ => {}
@@ -275,7 +275,7 @@ impl App {
         true
     }
 
-    fn overlay_key(&mut self, k: KeyEvent) {
+    async fn overlay_key(&mut self, k: KeyEvent) {
         let Some(top) = self.overlays.last_mut() else { return };
         let up = matches!(k.code, KeyCode::Up | KeyCode::Char('k'))
             || (k.code == KeyCode::Char('p') && k.modifiers == KeyModifiers::CONTROL);
@@ -299,19 +299,19 @@ impl App {
                     let item = m.items.get(m.selected).cloned();
                     self.overlays.pop();
                     if let Some(a) = item.filter(|a| a.enabled) {
-                        self.run_cmd(a.cmd);
+                        self.run_cmd(a.cmd).await;
                     }
                 } else if let Some(a) = m.items.iter().find(|a| a.enabled && a.key.is_some_and(|key| key.matches(&k))) {
                     let cmd = a.cmd.clone();
                     self.overlays.pop();
-                    self.run_cmd(cmd);
+                    self.run_cmd(cmd).await;
                 }
             }
             Overlay::Confirm { yes, .. } => match k.code {
                 KeyCode::Enter | KeyCode::Char('y') => {
                     let cmd = yes.clone();
                     self.overlays.pop();
-                    self.run_cmd(cmd);
+                    self.run_cmd(cmd).await;
                 }
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
                     self.overlays.pop();
@@ -321,7 +321,7 @@ impl App {
             Overlay::Input(b) => match b.text.handle_key(k) {
                 Outcome::Submit => {
                     if let Some(Overlay::Input(b)) = self.overlays.pop() {
-                        self.submit_input(b);
+                        self.submit_input(b).await;
                     }
                 }
                 Outcome::Cancel => {
@@ -339,7 +339,7 @@ impl App {
                     let cmd = filtered.get(*selected).map(|&i| items[i].cmd.clone());
                     self.overlays.pop();
                     if let Some(c) = cmd {
-                        self.run_cmd(c);
+                        self.run_cmd(c).await;
                     }
                 } else if matches!(k.code, KeyCode::Up) || (k.code == KeyCode::Char('p') && k.modifiers == KeyModifiers::CONTROL) {
                     *selected = selected.saturating_sub(1);
@@ -380,7 +380,7 @@ impl App {
             .map(|(_, t)| t.clone())
     }
 
-    fn handle_mouse(&mut self, m: MouseEvent) {
+    async fn handle_mouse(&mut self, m: MouseEvent) {
         self.mouse = (m.column, m.row);
         let (x, y) = (m.column, m.row);
         match m.kind {
@@ -390,11 +390,11 @@ impl App {
                     .is_some_and(|(t, lx, ly)| t.elapsed() < DOUBLE_CLICK && lx == x && ly == y);
                 self.last_click = Some((Instant::now(), x, y));
                 let target = self.target_at(x, y);
-                self.click(target, x, y, double, m.modifiers.contains(KeyModifiers::SHIFT));
+                self.click(target, x, y, double, m.modifiers.contains(KeyModifiers::SHIFT)).await;
             }
             MouseEventKind::Down(MouseButton::Right) => {
                 let target = self.target_at(x, y);
-                self.right_click(target.as_ref(), x, y);
+                self.right_click(target.as_ref(), x, y).await;
             }
             MouseEventKind::Drag(MouseButton::Left) => self.drag_to(x, y),
             MouseEventKind::Up(_) => self.drag = None,
@@ -420,7 +420,7 @@ impl App {
         }
     }
 
-    fn click(&mut self, target: Option<Target>, x: u16, y: u16, double: bool, shift: bool) {
+    async fn click(&mut self, target: Option<Target>, x: u16, y: u16, double: bool, shift: bool) {
         // Clicking outside a menu closes it. Other dialogs stay open. The hit
         // map only holds the top overlay's targets, so any hit is inside it.
         let Some(target) = target else {
@@ -441,26 +441,26 @@ impl App {
                                 && !br.is_head
                             {
                                 let name = br.name.clone();
-                                self.run_cmd(Cmd::Checkout(name));
+                                self.run_cmd(Cmd::Checkout(name)).await;
                             }
                         }
                         Some(SideRow::RemoteBranch(b)) => {
                             if let Some(rb) = self.refs.remote_branches.get(b) {
                                 let full = rb.full_name();
-                                self.run_cmd(Cmd::CheckoutRemote(full));
+                                self.run_cmd(Cmd::CheckoutRemote(full)).await;
                             }
                         }
                         Some(SideRow::Stash(s)) => {
                             if let Some(st) = self.refs.stashes.get(s) {
-                                self.run_cmd(Cmd::StashApply(st.id, false));
+                                self.run_cmd(Cmd::StashApply(st.id, false)).await;
                             }
                         }
                         _ => {}
                     }
                 } else if let Some(SideRow::Header { key, .. }) = self.sidebar.rows.get(i).cloned() {
-                    self.run_cmd(Cmd::ToggleSideSection(key));
+                    self.run_cmd(Cmd::ToggleSideSection(key)).await;
                 } else if let Some(SideRow::Remote(r)) = self.sidebar.rows.get(i).cloned() {
-                    self.run_cmd(Cmd::ToggleSideSection(format!("remote:{r}")));
+                    self.run_cmd(Cmd::ToggleSideSection(format!("remote:{r}"))).await;
                 }
             }
             Target::HistoryRow(i) => {
@@ -489,7 +489,7 @@ impl App {
                     Some(Row::File { .. } | Row::Section(_) | Row::Notice { .. } | Row::Meta(_)) => {
                         self.detail.cursor = i;
                         self.detail.anchor = None;
-                        self.activate_doc_row(i);
+                        self.activate_doc_row(i).await;
                     }
                     _ => {
                         self.detail.cursor = i;
@@ -504,14 +504,14 @@ impl App {
             }
             Target::Button(Cmd::SubmitInput) => {
                 if let Some(Overlay::Input(b)) = self.overlays.pop() {
-                    self.submit_input(b);
+                    self.submit_input(b).await;
                 }
             }
             Target::Button(cmd) => {
                 if let Some(Overlay::Confirm { .. }) = self.overlays.last() {
                     self.overlays.pop();
                 }
-                self.run_cmd(cmd);
+                self.run_cmd(cmd).await;
             }
             Target::Message => {
                 if self.detail.source != Source::Workdir {
@@ -526,7 +526,7 @@ impl App {
                     let item = m.items.get(i).cloned();
                     if let Some(a) = item.filter(|a| a.enabled) {
                         self.overlays.pop();
-                        self.run_cmd(a.cmd);
+                        self.run_cmd(a.cmd).await;
                     }
                 }
             }
@@ -535,7 +535,7 @@ impl App {
                     let cmd = items.get(i).map(|a| a.cmd.clone());
                     self.overlays.pop();
                     if let Some(c) = cmd {
-                        self.run_cmd(c);
+                        self.run_cmd(c).await;
                     }
                 }
             }
@@ -563,11 +563,11 @@ impl App {
 
     /// Select the row under the mouse and open its menu. Unlike a left
     /// click, this doesn't fold anything, follow links or press buttons.
-    fn right_click(&mut self, target: Option<&Target>, x: u16, y: u16) {
+    async fn right_click(&mut self, target: Option<&Target>, x: u16, y: u16) {
         if !self.overlays.is_empty() {
             // Outside the top dialog, both buttons do the same.
             if target.is_none() {
-                self.click(None, x, y, false, false);
+                self.click(None, x, y, false, false).await;
             }
             return;
         }

@@ -110,9 +110,6 @@ pub enum AppEvent {
     Progress(String),
     Watch(watch::Event),
     AskPass(String, oneshot::Sender<Option<String>>),
-    /// Finish something that had to wait for a background task. See
-    /// `App::query`.
-    Then(Box<dyn FnOnce(&mut App) + Send>),
     Tick,
 }
 
@@ -265,8 +262,6 @@ pub struct App {
     pub history_frac: f32,
 
     pub busy: Option<Busy>,
-    /// How many `query` results haven't come back yet.
-    queries: usize,
     pub status: Option<(String, Level, Instant)>,
     pub animating: Arc<AtomicBool>,
 
@@ -369,7 +364,6 @@ impl App {
             sidebar_width: 28,
             history_frac: 0.45,
             busy: None,
-            queries: 0,
             status: None,
             animating: Arc::new(AtomicBool::new(false)),
             areas: Areas::default(),
@@ -550,9 +544,9 @@ impl App {
 
     // ----- Event handling -----
 
-    pub fn handle(&mut self, ev: AppEvent) {
+    pub async fn handle(&mut self, ev: AppEvent) {
         match ev {
-            AppEvent::Input(e) => self.handle_input(e),
+            AppEvent::Input(e) => self.handle_input(e).await,
             AppEvent::History(batch) => self.on_history(batch),
             AppEvent::HistoryError(generation, e) => {
                 if generation == self.history.generation {
@@ -643,10 +637,6 @@ impl App {
                     text,
                     purpose: cmd::Purpose::AskPass(reply),
                 }));
-            }
-            AppEvent::Then(f) => {
-                self.queries -= 1;
-                f(self);
             }
             AppEvent::Tick => {
                 if let Some((_, level, t)) = &self.status {
@@ -828,26 +818,6 @@ impl App {
         });
     }
 
-    /// Run `fut` in the background, then pass its result to `then` back on
-    /// the UI side. By then the user may have moved on, so `then` should
-    /// check that what it's about to change still makes sense.
-    pub fn query<T, F>(
-        &mut self,
-        fut: impl FnOnce(Arc<Repo>) -> F,
-        then: impl FnOnce(&mut App, T) + Send + 'static,
-    ) where
-        T: Send + 'static,
-        F: Future<Output = T> + Send + 'static,
-    {
-        let fut = fut(self.repo.clone());
-        let tx = self.tx.clone();
-        self.queries += 1;
-        self.spawn(async move {
-            let value = fut.await;
-            let _ = tx.send(AppEvent::Then(Box::new(move |app| then(app, value))));
-        });
-    }
-
     fn on_op_done(&mut self, r: OpResult) {
         self.busy = None;
         match r.result {
@@ -879,34 +849,18 @@ impl App {
         self.refresh(REFRESH_ALL);
     }
 
-    /// Whether no operation is running and no `query` is waiting for its
-    /// result.
-    pub fn is_idle(&self) -> bool {
-        self.busy.is_none() && self.queries == 0
-    }
-
     pub fn sidebar_shown(&self) -> bool {
         self.sidebar_visible.unwrap_or(self.size.0 >= 100)
     }
 
-    pub fn toggle_amend(&mut self) {
+    pub async fn toggle_amend(&mut self) {
         self.amend = !self.amend;
         if self.amend {
-            if self.message.is_empty() {
-                self.query(
-                    |r| async move { crate::git::ops::commit_message(&r.git, "HEAD").await },
-                    |app, msg| {
-                        // Only fill in the message if amend is still on and
-                        // nothing was typed in the meantime.
-                        if let Ok(msg) = msg
-                            && app.amend
-                            && app.message.is_empty()
-                        {
-                            app.message_before_amend = Some(app.message.text());
-                            app.message.set_text(&msg);
-                        }
-                    },
-                );
+            if self.message.is_empty()
+                && let Ok(msg) = crate::git::ops::commit_message(&self.repo.git, "HEAD").await
+            {
+                self.message_before_amend = Some(self.message.text());
+                self.message.set_text(&msg);
             }
         } else if let Some(prev) = self.message_before_amend.take() {
             self.message.set_text(&prev);
