@@ -8,6 +8,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crossbeam_channel::{Sender, bounded};
 
@@ -16,7 +17,11 @@ pub const SOCKET_ENV: &str = "TERGI_ASKPASS_SOCK";
 /// Listen for prompts. `on_prompt` gets the prompt text and a channel for
 /// the answer, where `None` means the user cancelled.
 pub fn start_server(on_prompt: impl Fn(String, Sender<Option<String>>) + Send + 'static) -> Option<PathBuf> {
-    let path = std::env::temp_dir().join(format!("tergi-askpass-{}.sock", std::process::id()));
+    // One process can start more than one server, as the tests do, so the
+    // process id alone doesn't make the name unique.
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+    let n = COUNT.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("tergi-askpass-{}-{n}.sock", std::process::id()));
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path).ok()?;
     std::thread::Builder::new()
