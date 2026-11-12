@@ -384,3 +384,124 @@ fn commits_and_amends_from_the_message_box() {
     assert!(!ui.app.amend);
     assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
 }
+
+#[test]
+fn rewords_a_commit_and_runs_a_plan() {
+    let s = repo_with_change();
+    s.sh(&["stash", "-q"]);
+    s.write("more.txt", "more\n");
+    s.commit_all("Add more");
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(3);
+    // Reword the oldest commit.
+    ui.app.select_history(3);
+    ui.key(KeyCode::Char('r'));
+    assert!(matches!(ui.app.overlays.last(), Some(Overlay::Input(_))), "{}", ui.screen());
+    ui.type_text(" file");
+    ui.key_with(KeyCode::Enter, KeyModifiers::CONTROL);
+    ui.settle();
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
+    assert_eq!(s.log(), ["Add more", "Add a fourth note", "Add notes file"]);
+    ui.wait("the rewritten history", |u| u.app.history.commits.len() == 3 && u.app.history.commits[2].summary == "Add notes file");
+
+    // Plan: fix up the newest into the middle one, and reword the middle.
+    ui.app.select_history(3);
+    ui.key(KeyCode::Char('i'));
+    assert_eq!(ui.app.planner.as_ref().map(|p| p.rows.len()), Some(3));
+    ui.key(KeyCode::Char('f'));
+    ui.key(KeyCode::Char('j'));
+    ui.key(KeyCode::Char('r'));
+    ui.type_text("!");
+    ui.key_with(KeyCode::Enter, KeyModifiers::CONTROL);
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
+    ui.key(KeyCode::Enter);
+    ui.settle();
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
+    assert!(ui.app.planner.is_none());
+    assert_eq!(s.log(), ["Add a fourth note!", "Add notes file"]);
+    assert!(s.file("more.txt").exists());
+}
+
+#[test]
+fn stages_selected_lines_and_discards_a_file() {
+    let s = Scratch::new();
+    s.write("f.txt", "1\n2\n3\n4\n5\n");
+    s.commit_all("init");
+    s.write("f.txt", "1\ntwo\nthree\n4\nfive\n");
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(1);
+    ui.key(KeyCode::Char('3'));
+    let line = |u: &Ui, text: &str| {
+        let files = u.app.section_files(tergi::app::doc::Section::Unstaged);
+        u.app
+            .detail
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Line { file, hunk, line, .. } if files[*file].hunks[*hunk].lines[*line].text == text && files[*file].hunks[*hunk].lines[*line].new_no.is_some()))
+            .expect("line")
+    };
+    // Select "+two" and "+three" with v and j, then stage them.
+    let at = line(&ui, "two");
+    ui.app.detail_move_to(at, false);
+    ui.key(KeyCode::Char('v'));
+    ui.key(KeyCode::Char('j'));
+    ui.key(KeyCode::Char(' '));
+    ui.settle();
+    ui.wait("staged lines", |u| u.screen().contains("Staged changes (1)"));
+    assert_eq!(s.index("f.txt"), "1\n2\n3\ntwo\nthree\n4\n5\n");
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
+
+    // Side by side, the cursor row holds an old and a new line.
+    ui.key(KeyCode::Char('t'));
+    let at = ui.app.detail.rows.iter().position(|r| matches!(r, Row::Split { sec: tergi::app::doc::Section::Unstaged, left: Some(l), right: Some(r), .. } if l != r)).expect("a split row");
+    ui.app.detail_move_to(at, false);
+    ui.key(KeyCode::Char(' '));
+    ui.settle();
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
+    assert_eq!(s.index("f.txt"), "1\n2\n3\ntwo\nthree\n4\nfive\n");
+
+    // Discard asks first.
+    ui.key(KeyCode::Char('t'));
+    ui.wait("unstaged rows", |u| u.app.detail.rows.iter().any(|r| matches!(r, Row::File { sec: tergi::app::doc::Section::Unstaged, .. })));
+    let at = ui.app.detail.rows.iter().position(|r| matches!(r, Row::File { sec: tergi::app::doc::Section::Unstaged, .. })).expect("file row");
+    ui.app.detail_move_to(at, false);
+    ui.key(KeyCode::Char('d'));
+    assert!(matches!(ui.app.overlays.last(), Some(Overlay::Confirm { .. })), "{}", ui.screen());
+    ui.key(KeyCode::Char('y'));
+    ui.settle();
+    assert_eq!(s.sh(&["diff", "--name-only"]).trim(), "");
+}
+
+#[test]
+fn resolves_a_conflict_and_continues_the_merge() {
+    let s = Scratch::new();
+    s.write("f.txt", "a\n");
+    s.commit_all("init");
+    s.sh(&["checkout", "-q", "-b", "other"]);
+    s.write("f.txt", "theirs\n");
+    s.commit_all("theirs");
+    s.sh(&["checkout", "-q", "main"]);
+    s.write("f.txt", "ours\n");
+    s.commit_all("ours");
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(3);
+    ui.app.run_cmd(Cmd::Merge("other".into()));
+    ui.settle();
+    // Git's message about the conflict is shown in a dialog.
+    assert!(matches!(ui.app.overlays.last(), Some(Overlay::Message { .. })));
+    ui.key(KeyCode::Enter);
+    ui.wait("the conflict", |u| u.screen().contains("Merge conflicts (1)"));
+    let screen = ui.screen();
+    assert!(screen.contains("Merge in progress"), "{screen}");
+    let theirs = ui.find_hit(|t| matches!(t, Target::Button(Cmd::TakeSide(_, false))));
+    ui.click(MouseButton::Left, theirs);
+    ui.settle();
+    ui.wait("the resolution", |u| u.screen().contains("Staged changes (1)"));
+    assert_eq!(s.read("f.txt"), "theirs\n");
+    ui.key_with(KeyCode::Char('c'), KeyModifiers::ALT);
+    ui.settle();
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
+    ui.wait("the merge commit", |u| u.app.history.commits.len() == 4);
+    let screen = ui.screen();
+    assert!(!screen.contains("in progress"), "{screen}");
+}
