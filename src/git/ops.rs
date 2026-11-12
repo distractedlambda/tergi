@@ -88,8 +88,10 @@ pub fn unstage_paths(git: &Git, paths: &[&str], has_head: bool) -> Result<()> {
     if has_head {
         run_on_paths(git, &["restore", "--staged"], paths)
     } else {
-        // Before the first commit there's nothing to restore from.
-        run_on_paths(git, &["rm", "--cached", "-r", "-q"], paths)
+        // Before the first commit there's nothing to restore from. Without
+        // `-f`, git refuses when the file changed after it was staged. With
+        // `--cached` the file itself is never touched.
+        run_on_paths(git, &["rm", "--cached", "-r", "-f", "-q"], paths)
     }
 }
 
@@ -97,7 +99,7 @@ pub fn unstage_all(git: &Git, has_head: bool) -> Result<()> {
     if has_head {
         git.run(&["reset", "-q"])?;
     } else {
-        git.run(&["rm", "--cached", "-r", "-q", "."])?;
+        git.run(&["rm", "--cached", "-r", "-f", "-q", "."])?;
     }
     Ok(())
 }
