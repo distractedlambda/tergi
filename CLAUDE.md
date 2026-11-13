@@ -61,7 +61,11 @@ starts. Commit details go through a watch channel that only keeps the
 newest request.
 
 The history selection is a commit id (`Selected`), not a row, because a
-reload can move rows around while it runs.
+reload can move rows around while it runs. Anything else that outlives
+the event that created it follows the same rule. The sidebar finds its
+selected ref again by name after a reload, planner rows are found by
+commit id, and a staging `Unit` names its file by path and keeps the
+diff that its hunks and lines came from.
 
 ### Reading with gix, writing with the git CLI
 
