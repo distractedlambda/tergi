@@ -165,6 +165,26 @@ async fn splitting_last_line_change_is_refused() {
 }
 
 #[tokio::test]
+async fn remove_last_line_without_newline_or_context() {
+    // The line before has the same text. Without context lines, git apply
+    // has to go by the hunk header to tell the two apart.
+    let s = Scratch::new();
+    s.write("f.txt", "a\nb\nb");
+    s.commit_all("init");
+    s.write("f.txt", "a\nb\n");
+    let f = Workdir::load(&s.git, 0, 100_000).await.expect("load").unstaged.remove(0);
+    apply_lines(&s.git, &f, ApplyMode::Stage, &|_, _| true).await.expect("stage");
+    assert_eq!(s.index("f.txt"), "a\nb\n");
+
+    s.commit_all("remove");
+    s.write("f.txt", "a\nb\nb");
+    s.sh(&["add", "f.txt"]);
+    let f = Workdir::load(&s.git, 0, 100_000).await.expect("load").staged.remove(0);
+    apply_lines(&s.git, &f, ApplyMode::Unstage, &|_, _| true).await.expect("unstage");
+    assert_eq!(s.index("f.txt"), "a\nb\n");
+}
+
+#[tokio::test]
 async fn crlf_lines() {
     let s = Scratch::new();
     s.write("f.txt", "a\r\nb\r\nc\r\n");

@@ -57,15 +57,20 @@ pub fn build_patch(
             continue;
         }
         // A line without a trailing newline must be the last line on its
-        // side of the patch. If turning a change into context breaks that,
-        // the result would be garbage, so refuse instead.
-        for (i, (tag, _, no_eol)) in body.iter().enumerate() {
-            if *no_eol && *tag == ' ' && i + 1 < body.len() {
-                bail!(
-                    "This selection splits a change to the last line of the file. \
-                     Select the whole change at the end of the file instead."
-                );
-            }
+        // side of the patch. Leaving out part of a change at the end of the
+        // file can break that, and the patch would be garbage, so refuse.
+        let ends_badly = |side: char| {
+            body.iter()
+                .filter(|(tag, _, _)| *tag == ' ' || *tag == side)
+                .rev()
+                .skip(1)
+                .any(|(_, _, no_eol)| *no_eol)
+        };
+        if ends_badly('-') || ends_badly('+') {
+            bail!(
+                "This selection splits a change to the last line of the file. \
+                 Select the whole change at the end of the file instead."
+            );
         }
         let old_count = body.iter().filter(|(t, _, _)| *t != '+').count() as i64;
         let new_count = body.iter().filter(|(t, _, _)| *t != '-').count() as i64;
@@ -81,9 +86,9 @@ pub fn build_patch(
         delta += new_count - old_count;
         out.push_str(&format!(
             "@@ -{},{} +{},{} @@\n",
-            range_start(old_first, old_count),
+            range_start(old_first, old_count, reverse),
             old_count,
-            range_start(new_first, new_count),
+            range_start(new_first, new_count, !reverse),
             new_count
         ));
         for (tag, text, no_eol) in body {
@@ -107,8 +112,16 @@ fn first_line(start: u32, len: u32) -> i64 {
 /// The start to write in a hunk header for a range that begins at line
 /// `first`. `git apply` only needs this to be exact for patches without
 /// context lines, where it has nothing else to find the place by.
-fn range_start(first: i64, count: i64) -> i64 {
-    if count == 0 { (first - 1).max(0) } else { first.max(0) }
+///
+/// For an empty range, a hunk header normally gives the line before it. But
+/// `git apply` guesses where a hunk goes from the start of the side it is
+/// applying towards (`towards`), and takes that number as is. For a hunk that
+/// only removes lines, the guess is then one line too early. If that line
+/// has the same text, git removes it instead. That changes nothing, unless
+/// the removed line is the last one and has no newline. Then git also drops
+/// the newline from the line before. So on that side we give the exact line.
+fn range_start(first: i64, count: i64, towards: bool) -> i64 {
+    if count == 0 && !towards { (first - 1).max(0) } else { first.max(0) }
 }
 
 fn header(file: &FileDiff, full: bool, reverse: bool) -> String {
@@ -209,6 +222,25 @@ index 1111111..2222222 100644
     fn nothing_selected() {
         let f = &parse_unified(DIFF, DEFAULT_LINE_LIMIT)[0];
         assert!(build_patch(f, &|_, _| false, false).unwrap().is_none());
+    }
+
+    #[test]
+    fn refuses_to_split_a_newline_change() {
+        // Unstaging only "-c" would need "c" without a newline followed by
+        // another line.
+        let diff = "\
+diff --git a/f b/f
+--- a/f
++++ b/f
+@@ -2 +2 @@
+-c
+\\ No newline at end of file
++c
+";
+        let f = &parse_unified(diff, DEFAULT_LINE_LIMIT)[0];
+        assert!(build_patch(f, &|_, l| l == 0, true).is_err());
+        assert!(build_patch(f, &|_, l| l == 1, false).is_err());
+        assert!(build_patch(f, &|_, _| true, true).unwrap().is_some());
     }
 
     #[test]
