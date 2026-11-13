@@ -5,7 +5,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
-use crate::util::char_width;
+use crate::util::{cells, char_width, width};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -318,9 +318,17 @@ impl TextArea {
         for (i, line) in self.lines.iter().skip(self.scroll_row).take(h).enumerate() {
             let y = area.y + i as u16;
             let mut col = 0;
-            for c in line.chars() {
+            // Masked text shows one dot for every char, so it doesn't
+            // keep graphemes together.
+            let pieces: Vec<&str> = if self.masked {
+                line.char_indices().map(|(i, c)| &line[i..i + c.len_utf8()]).collect()
+            } else {
+                cells(line).map(|(_, piece)| piece).collect()
+            };
+            for piece in pieces {
+                let Some(c) = piece.chars().next() else { continue };
                 let shown = self.display(c);
-                let cw = char_width(shown, col, 4);
+                let cw = if self.masked || shown == '\t' { char_width(shown, col, 4) } else { width(piece, 4) };
                 if col >= self.scroll_col && col + cw <= self.scroll_col + w {
                     let x = area.x + (col - self.scroll_col) as u16;
                     if shown == '\t' {
@@ -330,7 +338,18 @@ impl TextArea {
                             }
                         }
                     } else if let Some(cell) = buf.cell_mut((x, y)) {
-                        cell.set_char(shown);
+                        if self.masked {
+                            cell.set_char(shown);
+                        } else if c.is_control() {
+                            cell.set_char('�');
+                        } else {
+                            cell.set_symbol(piece);
+                        }
+                        for k in 1..cw {
+                            if let Some(cell) = buf.cell_mut((x + k as u16, y)) {
+                                cell.set_symbol("");
+                            }
+                        }
                     }
                 }
                 col += cw;
@@ -385,6 +404,21 @@ mod tests {
         t.masked = true;
         t.click(2, 0);
         assert_eq!(t.col, 2);
+    }
+
+    fn drawn(t: &mut TextArea) -> Vec<String> {
+        let area = Rect::new(0, 0, 8, 1);
+        let mut buf = Buffer::empty(area);
+        t.render(&mut buf, area, Style::default(), Style::default());
+        buf.content().iter().map(|c| c.symbol().to_string()).collect()
+    }
+
+    #[test]
+    fn combining_characters_stay_with_their_letter() {
+        let mut t = TextArea::with_text(false, "e\u{301}\u{202e}x\x07日");
+        assert_eq!(drawn(&mut t), ["e\u{301}", "x", "�", "日", "", " ", " ", " "]);
+        t.masked = true;
+        assert_eq!(drawn(&mut t), ["•", "•", "•", "•", "•", "•", " ", " "]);
     }
 
     /// A simpler text area for comparison: the text is one list of chars,
