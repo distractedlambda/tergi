@@ -22,7 +22,7 @@ struct Ui {
     app: App,
     term: Terminal<TestBackend>,
     // Declared after `app`, so the app and its tasks go away first.
-    rt: tokio::runtime::Runtime,
+    _rt: tokio::runtime::Runtime,
 }
 
 impl Ui {
@@ -41,17 +41,17 @@ impl Ui {
             app
         };
         let term = Terminal::new(TestBackend::new(140, 36)).expect("terminal");
-        Ui { app, term, rt }
+        Ui { app, term, _rt: rt }
     }
 
-    /// Handle one event, as the main loop does. This blocks until the app
-    /// is done with it, including any git commands it runs.
+    /// Handle one event, as the main loop does. Anything the app does in
+    /// the background is still running afterwards, so use `wait` for it.
     fn handle(&mut self, ev: AppEvent) {
-        self.rt.block_on(self.app.handle(ev));
+        self.app.handle(ev);
     }
 
     fn run_cmd(&mut self, cmd: Cmd) {
-        self.rt.block_on(self.app.run_cmd(cmd));
+        self.app.run_cmd(cmd);
     }
 
     /// Select a row in the history and wait for its commit to load.
@@ -291,8 +291,7 @@ fn right_click_in_the_planner_opens_one_menu() {
     ui.app.select_history(2);
     ui.key(KeyCode::Char('2'));
     ui.key(KeyCode::Char('i'));
-    assert!(ui.app.planner.is_some());
-    ui.draw();
+    ui.wait("the planner", |u| u.app.planner.is_some());
     let action = ui.find_hit(|t| matches!(t, Target::PlannerAction(1)));
     ui.click(MouseButton::Right, action);
     assert_eq!(ui.app.overlays.len(), 1);
@@ -371,7 +370,7 @@ fn draws_at_any_size() {
 
     ui.key(KeyCode::Char('2'));
     ui.key(KeyCode::Char('i'));
-    assert!(ui.app.planner.is_some());
+    ui.wait("the planner", |u| u.app.planner.is_some());
     draw_all(&mut ui, "the planner");
 }
 
@@ -394,7 +393,7 @@ fn commits_and_amends_from_the_message_box() {
     // Amend only the message.
     ui.key(KeyCode::Char('3'));
     ui.key(KeyCode::Char('A'));
-    assert_eq!(ui.app.message.text(), "#3 Use a digit");
+    ui.wait("HEAD's message", |u| u.app.message.text() == "#3 Use a digit");
     ui.key(KeyCode::Char('c'));
     ui.type_text("!");
     ui.key_with(KeyCode::Char('s'), KeyModifiers::CONTROL);
@@ -415,7 +414,7 @@ fn rewords_a_commit_and_runs_a_plan() {
     // Reword the oldest commit.
     ui.app.select_history(3);
     ui.key(KeyCode::Char('r'));
-    assert!(matches!(ui.app.overlays.last(), Some(Overlay::Input(_))), "{}", ui.screen());
+    ui.wait("the reword dialog", |u| matches!(u.app.overlays.last(), Some(Overlay::Input(_))));
     ui.type_text(" file");
     ui.key_with(KeyCode::Enter, KeyModifiers::CONTROL);
     ui.settle();
@@ -426,10 +425,12 @@ fn rewords_a_commit_and_runs_a_plan() {
     // Plan: fix up the newest into the middle one, and reword the middle.
     ui.app.select_history(3);
     ui.key(KeyCode::Char('i'));
+    ui.wait("the planner", |u| u.app.planner.is_some());
     assert_eq!(ui.app.planner.as_ref().map(|p| p.rows.len()), Some(3));
     ui.key(KeyCode::Char('f'));
     ui.key(KeyCode::Char('j'));
     ui.key(KeyCode::Char('r'));
+    ui.wait("the message dialog", |u| matches!(u.app.overlays.last(), Some(Overlay::Input(_))));
     ui.type_text("!");
     ui.key_with(KeyCode::Enter, KeyModifiers::CONTROL);
     assert!(ui.app.overlays.is_empty(), "{}", ui.screen());

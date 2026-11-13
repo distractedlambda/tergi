@@ -14,6 +14,7 @@ use super::doc::{Row, Section, Source};
 use super::planner::{PlanAction, Planner};
 use super::{After, App, Focus, Level, Suspend};
 use super::input::Target;
+use crate::git::commit::FileTexts;
 use crate::git::diff::FileDiff;
 use crate::git::ops::{self, ApplyMode, ResetMode};
 use crate::git::rebase::{self, Action, Outcome, RepoState};
@@ -651,7 +652,7 @@ impl App {
         }
     }
 
-    pub async fn run_cmd(&mut self, cmd: Cmd) {
+    pub fn run_cmd(&mut self, cmd: Cmd) {
         let cmd = match cmd {
             Cmd::Confirmed(inner) => *inner,
             other => {
@@ -820,32 +821,49 @@ impl App {
                 });
             }
 
-            Cmd::Reword(id) => {
-                let msg = ops::commit_message(&self.repo.git, &id.to_string()).await.unwrap_or_default();
-                self.open_input("Reword commit", "Ctrl+Enter to save", true, &msg, Purpose::Reword(id));
-            }
-            Cmd::Squash(id) => {
-                let git = &self.repo.git;
-                let this = ops::commit_message(git, &id.to_string()).await.unwrap_or_default();
-                let parent = ops::commit_message(git, &format!("{id}^")).await.unwrap_or_default();
-                self.open_input(
-                    "Squash into parent",
-                    "Message for the combined commit. Ctrl+Enter to save.",
-                    true,
-                    &format!("{parent}\n\n{this}"),
-                    Purpose::Squash(id),
-                );
-            }
+            // The dialogs below open once git has answered. If another one
+            // opened in the meantime, the user has moved on, so we don't.
+            Cmd::Reword(id) => self.spawn_read(
+                move |r| async move { ops::commit_message(&r.git, &id.to_string()).await.unwrap_or_default() },
+                move |app, msg| {
+                    if app.overlays.is_empty() {
+                        app.open_input("Reword commit", "Ctrl+Enter to save", true, &msg, Purpose::Reword(id));
+                    }
+                },
+            ),
+            Cmd::Squash(id) => self.spawn_read(
+                move |r| async move {
+                    let this = ops::commit_message(&r.git, &id.to_string()).await.unwrap_or_default();
+                    let parent = ops::commit_message(&r.git, &format!("{id}^")).await.unwrap_or_default();
+                    format!("{parent}\n\n{this}")
+                },
+                move |app, msg| {
+                    if app.overlays.is_empty() {
+                        app.open_input(
+                            "Squash into parent",
+                            "Message for the combined commit. Ctrl+Enter to save.",
+                            true,
+                            &msg,
+                            Purpose::Squash(id),
+                        );
+                    }
+                },
+            ),
             Cmd::Fixup(id) => self.rebase_op("Fixup", move |r| async move { rebase::single(&r.git, &exe, id, Action::Fixup).await }),
             Cmd::Drop(id) => self.rebase_op("Drop commit", move |r| async move { rebase::single(&r.git, &exe, id, Action::Drop).await }),
             Cmd::Edit(id) => self.rebase_op("Edit commit", move |r| async move { rebase::single(&r.git, &exe, id, Action::Edit).await }),
             Cmd::Move(id, newer) => self.rebase_op("Move commit", move |r| async move { rebase::move_commit(&r.git, &exe, id, newer).await }),
-            Cmd::Planner(id) => match rebase::plan_from(&self.repo.git, id).await {
-                Ok(plan) => {
-                    self.planner = Some(Planner::new(plan));
-                }
-                Err(e) => self.show_error("Can't edit history here", &e),
-            },
+            Cmd::Planner(id) => self.spawn_read(
+                move |r| async move { rebase::plan_from(&r.git, id).await },
+                |app, plan| match plan {
+                    Ok(plan) => {
+                        if app.planner.is_none() && app.overlays.is_empty() {
+                            app.planner = Some(Planner::new(plan));
+                        }
+                    }
+                    Err(e) => app.show_error("Can't edit history here", &e),
+                },
+            ),
             Cmd::CheckoutCommit(id) => {
                 let s = id.to_string();
                 self.spawn_op("Checkout", After::Nothing, move |r, _| async move {
@@ -886,7 +904,7 @@ impl App {
                 }
             }
 
-            Cmd::Stage(u) if u.section() == Section::Staged => Box::pin(self.run_cmd(Cmd::Unstage(u))).await,
+            Cmd::Stage(u) if u.section() == Section::Staged => self.run_cmd(Cmd::Unstage(u)),
             Cmd::Stage(u) => self.apply_unit(u, ApplyMode::Stage, has_head),
             Cmd::Unstage(u) => self.apply_unit(u, ApplyMode::Unstage, has_head),
             Cmd::Discard(u) => self.apply_unit(u, ApplyMode::Discard, has_head),
@@ -905,34 +923,37 @@ impl App {
                     }
                     return;
                 }
+                let amend = self.amend;
+                if all || amend || self.workdir.as_ref().is_some_and(|w| w.status.has_staged()) {
+                    self.start_commit(msg, amend, all);
+                    return;
+                }
                 // The status we have may be from before the last stage, since
                 // it reloads in the background. So before saying that nothing
                 // is staged, ask git. It exits with 1 when something is.
-                let staged = self.workdir.as_ref().is_some_and(|w| w.status.has_staged())
-                    || self.repo.git.read(&["diff", "--cached", "--quiet"]).await.is_err();
-                if !staged && !self.amend && !all {
-                    let any = self.workdir.as_ref().is_some_and(|w| !w.status.is_clean());
-                    if any {
-                        Box::pin(self.run_cmd(Cmd::CommitAll)).await;
-                    } else {
-                        self.set_status("There's nothing to commit", Level::Warn);
-                    }
-                    return;
-                }
-                let amend = self.amend;
-                self.focus = Focus::Detail;
-                self.spawn_op(if amend { "Amend" } else { "Commit" }, After::ClearMessage, move |r, _| async move {
-                    if all {
-                        ops::stage_all(&r.git).await?;
-                    }
-                    ops::commit(&r.git, &msg, amend).await
-                });
+                self.spawn_read(
+                    |r| async move { r.git.read(&["diff", "--cached", "--quiet"]).await.is_err() },
+                    move |app, staged| {
+                        // If the message or amend changed while git answered,
+                        // the user did something else in the meantime.
+                        if app.amend || app.message.text() != msg {
+                            return;
+                        }
+                        if staged {
+                            app.start_commit(msg, false, false);
+                        } else if app.workdir.as_ref().is_some_and(|w| !w.status.is_clean()) {
+                            app.run_cmd(Cmd::CommitAll);
+                        } else {
+                            app.set_status("There's nothing to commit", Level::Warn);
+                        }
+                    },
+                );
             }
-            Cmd::ToggleAmend => self.toggle_amend().await,
+            Cmd::ToggleAmend => self.toggle_amend(),
             Cmd::StashPush => self.open_input("Stash changes", "Optional message. Untracked files are included.", false, "", Purpose::StashPush),
             Cmd::ToggleFold => self.toggle_fold(),
             Cmd::FoldAll => self.fold_all(),
-            Cmd::LoadFull => self.load_full().await,
+            Cmd::LoadFull => self.load_full(),
             Cmd::OpenInEditor(p) => self.suspend = Some(Suspend::Edit(self.repo.workdir.join(p))),
             Cmd::TakeSide(p, ours) => self.spawn_op("Resolve", After::Nothing, move |r, _| async move {
                 ops::take_side(&r.git, &p, ours).await.map(|()| format!("Resolved {p}"))
@@ -1025,7 +1046,7 @@ impl App {
                 self.rebase_op("Skip", move |r| async move { rebase::skip_op(&r.git, &st).await });
             }
 
-            Cmd::PlanSet(a) => self.planner_set(a).await,
+            Cmd::PlanSet(a) => self.planner_set(a),
             Cmd::PlanMove(up) => {
                 if let Some(p) = &mut self.planner {
                     p.move_selected(up);
@@ -1034,6 +1055,16 @@ impl App {
             Cmd::PlanStart => self.planner_start(),
             Cmd::PlanCancel => self.planner = None,
         }
+    }
+
+    fn start_commit(&mut self, msg: String, amend: bool, all: bool) {
+        self.focus = Focus::Detail;
+        self.spawn_op(if amend { "Amend" } else { "Commit" }, After::ClearMessage, move |r, _| async move {
+            if all {
+                ops::stage_all(&r.git).await?;
+            }
+            ops::commit(&r.git, &msg, amend).await
+        });
     }
 
     fn rebase_op<F>(&mut self, label: &str, f: impl FnOnce(std::sync::Arc<super::Repo>) -> F + Send + 'static)
@@ -1100,7 +1131,7 @@ impl App {
         }));
     }
 
-    pub async fn submit_input(&mut self, b: InputBox) {
+    pub fn submit_input(&mut self, b: InputBox) {
         let text = b.text.text();
         let exe = self.repo.exe.clone();
         let name = text.trim().to_string();
@@ -1254,7 +1285,7 @@ impl App {
         self.rebuild_doc();
     }
 
-    async fn load_full(&mut self) {
+    fn load_full(&mut self) {
         let Some((sec, fi)) = self.detail.rows.get(self.detail.cursor).and_then(Row::file) else {
             return;
         };
@@ -1263,52 +1294,72 @@ impl App {
             return;
         }
         let ctx = self.cfg.context_lines;
-        let git = &self.repo.git;
+        let path = f.path().to_string();
         match sec {
             Section::Unstaged | Section::Staged => {
-                match crate::git::workdir::load_full_diff(git, f, sec == Section::Staged, ctx).await {
-                    Ok(Some(full)) => {
-                        if let Some(w) = &mut self.workdir {
-                            let list = if sec == Section::Staged { &mut w.staged } else { &mut w.unstaged };
-                            if let Some(slot) = list.get_mut(fi) {
-                                *slot = full;
-                            }
-                        }
-                        self.detail.reset_for_reload();
-                        self.rebuild_doc();
-                    }
-                    Ok(None) => {}
-                    Err(e) => self.show_error("Loading the diff failed", &e),
-                }
+                let f = f.clone();
+                self.spawn_read(
+                    move |r| async move { crate::git::workdir::load_full_diff(&r.git, &f, sec == Section::Staged, ctx).await },
+                    move |app, full| match full {
+                        Ok(Some(full)) => app.put_full_diff(sec, fi, &path, full, None),
+                        Ok(None) => {}
+                        Err(e) => app.show_error("Loading the diff failed", &e),
+                    },
+                );
             }
             Section::Untracked => {
-                let (full, texts) = crate::git::workdir::load_full_untracked(git, f.path(), ctx).await;
-                if let Some(w) = &mut self.workdir
-                    && let (Some(slot), Some(text_slot)) = (w.untracked.get_mut(fi), w.untracked_texts.get_mut(fi))
-                {
-                    *slot = full;
-                    *text_slot = texts;
-                }
-                self.detail.reset_for_reload();
-                self.rebuild_doc();
+                let p = path.clone();
+                self.spawn_read(
+                    move |r| async move { crate::git::workdir::load_full_untracked(&r.git, &p, ctx).await },
+                    move |app, (full, texts)| app.put_full_diff(sec, fi, &path, full, Some(texts)),
+                );
             }
             Section::Commit => {
-                if let Some(c) = &self.detail.commit {
-                    let (repo, id) = (self.repo.clone(), c.id);
-                    let full = crate::util::blocking(move || {
-                        crate::git::commit::load(&repo.gix.to_thread_local(), id, ctx, usize::MAX)
-                    })
-                    .await;
-                    match full {
-                        Ok(full) => {
-                            self.detail.set_commit(std::sync::Arc::new(full));
-                            self.rebuild_doc();
+                let Some(id) = self.detail.commit.as_ref().map(|c| c.id) else { return };
+                self.spawn_read(
+                    move |r| crate::util::blocking(move || crate::git::commit::load(&r.gix.to_thread_local(), id, ctx, usize::MAX)),
+                    move |app, full| {
+                        if app.detail.commit.as_ref().is_none_or(|c| c.id != id) {
+                            return;
                         }
-                        Err(e) => self.show_error("Loading the diff failed", &e),
-                    }
-                }
+                        match full {
+                            Ok(full) => {
+                                app.detail.set_commit(std::sync::Arc::new(full));
+                                app.rebuild_doc();
+                            }
+                            Err(e) => app.show_error("Loading the diff failed", &e),
+                        }
+                    },
+                );
             }
             Section::Conflicted => {}
+        }
+    }
+
+    /// Show the whole diff of a working directory file in place of the
+    /// shortened one. The status may have reloaded while git worked, so
+    /// only do it if the same file is still in the same place.
+    fn put_full_diff(&mut self, sec: Section, fi: usize, path: &str, full: FileDiff, texts: Option<FileTexts>) {
+        let Some(w) = &mut self.workdir else { return };
+        let list = match sec {
+            Section::Staged => &mut w.staged,
+            Section::Unstaged => &mut w.unstaged,
+            Section::Untracked => &mut w.untracked,
+            Section::Commit | Section::Conflicted => return,
+        };
+        let Some(slot) = list.get_mut(fi) else { return };
+        if slot.path() != path || !slot.too_large {
+            return;
+        }
+        *slot = full;
+        if let Some(texts) = texts
+            && let Some(t) = w.untracked_texts.get_mut(fi)
+        {
+            *t = texts;
+        }
+        if self.detail.source == Source::Workdir {
+            self.detail.reset_for_reload();
+            self.rebuild_doc();
         }
     }
 }

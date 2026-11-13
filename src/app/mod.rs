@@ -110,6 +110,9 @@ pub enum AppEvent {
     Progress(String),
     Watch(watch::Event),
     AskPass(String, oneshot::Sender<Option<String>>),
+    /// A read started by `App::spawn_read` finished. This applies its
+    /// result.
+    ReadDone(Box<dyn FnOnce(&mut App) + Send>),
     Tick,
 }
 
@@ -548,9 +551,13 @@ impl App {
 
     // ----- Event handling -----
 
-    pub async fn handle(&mut self, ev: AppEvent) {
+    /// Handle one event. This never waits for git or anything else slow.
+    /// Work like that goes to a background task, which sends its result
+    /// back as another event.
+    pub fn handle(&mut self, ev: AppEvent) {
         match ev {
-            AppEvent::Input(e) => self.handle_input(e).await,
+            AppEvent::Input(e) => self.handle_input(e),
+            AppEvent::ReadDone(apply) => apply(self),
             AppEvent::History(batch) => self.on_history(batch),
             AppEvent::HistoryError(generation, e) => {
                 if generation == self.history.generation {
@@ -822,6 +829,23 @@ impl App {
         });
     }
 
+    /// Read something from the repository in the background, then pass the
+    /// result to `then` on the event loop. By the time `then` runs, the user
+    /// may have moved on, so it has to check that what it changes is still
+    /// there.
+    pub fn spawn_read<T, F>(&mut self, read: impl FnOnce(Arc<Repo>) -> F, then: impl FnOnce(&mut App, T) + Send + 'static)
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let tx = self.tx.clone();
+        let read = read(self.repo.clone());
+        self.spawn(async move {
+            let value = read.await;
+            let _ = tx.send(AppEvent::ReadDone(Box::new(move |app: &mut App| then(app, value))));
+        });
+    }
+
     fn on_op_done(&mut self, r: OpResult) {
         self.busy = None;
         match r.result {
@@ -857,14 +881,24 @@ impl App {
         self.sidebar_visible.unwrap_or(self.size.0 >= 100)
     }
 
-    pub async fn toggle_amend(&mut self) {
+    pub fn toggle_amend(&mut self) {
         self.amend = !self.amend;
         if self.amend {
-            if self.message.is_empty()
-                && let Ok(msg) = crate::git::ops::commit_message(&self.repo.git, "HEAD").await
-            {
-                self.message_before_amend = Some(self.message.text());
-                self.message.set_text(&msg);
+            if self.message.is_empty() {
+                self.spawn_read(
+                    |r| async move { crate::git::ops::commit_message(&r.git, "HEAD").await },
+                    |app, msg| {
+                        // Leave the box alone if amend was turned off again,
+                        // or the user started typing.
+                        if let Ok(msg) = msg
+                            && app.amend
+                            && app.message.is_empty()
+                        {
+                            app.message_before_amend = Some(String::new());
+                            app.message.set_text(&msg);
+                        }
+                    },
+                );
             }
         } else if let Some(prev) = self.message_before_amend.take() {
             self.message.set_text(&prev);
