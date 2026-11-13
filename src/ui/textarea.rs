@@ -269,7 +269,7 @@ impl TextArea {
         let mut w = 0;
         let mut col = 0;
         for c in self.lines[row].chars() {
-            let cw = char_width(c, w, 4);
+            let cw = char_width(self.display(c), w, 4);
             if w + cw > target {
                 break;
             }
@@ -345,6 +345,8 @@ impl TextArea {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -374,5 +376,201 @@ mod tests {
         t.insert_str("a\nb");
         assert_eq!(t.text(), "a b");
         assert_eq!(t.handle_key(key(KeyCode::Enter)), Outcome::Submit);
+    }
+
+    #[test]
+    fn click_in_masked_text() {
+        // Every char is shown as one dot, whatever its real width.
+        let mut t = TextArea::with_text(false, "\t日x");
+        t.masked = true;
+        t.click(2, 0);
+        assert_eq!(t.col, 2);
+    }
+
+    /// A simpler text area for comparison: the text is one list of chars,
+    /// with newlines in it, and the cursor is an index into it.
+    #[derive(Debug)]
+    struct Model {
+        text: Vec<char>,
+        cur: usize,
+        multiline: bool,
+    }
+
+    impl Model {
+        fn line_start(&self, at: usize) -> usize {
+            self.text[..at].iter().rposition(|&c| c == '\n').map_or(0, |i| i + 1)
+        }
+
+        fn line_end(&self, at: usize) -> usize {
+            self.text[at..].iter().position(|&c| c == '\n').map_or(self.text.len(), |i| at + i)
+        }
+
+        fn word_left(&self) -> usize {
+            let start = self.line_start(self.cur);
+            let mut c = self.cur;
+            while c > start && !self.text[c - 1].is_alphanumeric() {
+                c -= 1;
+            }
+            while c > start && self.text[c - 1].is_alphanumeric() {
+                c -= 1;
+            }
+            c
+        }
+
+        fn word_right(&self) -> usize {
+            let end = self.line_end(self.cur);
+            let mut c = self.cur;
+            while c < end && !self.text[c].is_alphanumeric() {
+                c += 1;
+            }
+            while c < end && self.text[c].is_alphanumeric() {
+                c += 1;
+            }
+            c
+        }
+
+        fn insert(&mut self, s: &str) {
+            let s = s.replace("\r\n", "\n").replace('\r', "\n");
+            let s = if self.multiline { s } else { s.replace('\n', " ") };
+            for c in s.chars() {
+                self.text.insert(self.cur, c);
+                self.cur += 1;
+            }
+        }
+
+        /// Move to the same column on the line that starts at `start`.
+        fn move_to_line(&mut self, start: usize) {
+            let col = self.cur - self.line_start(self.cur);
+            self.cur = start + col.min(self.line_end(start) - start);
+        }
+
+        fn key(&mut self, key: KeyEvent) {
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            let alt = key.modifiers.contains(KeyModifiers::ALT);
+            let (start, end) = (self.line_start(self.cur), self.line_end(self.cur));
+            match key.code {
+                KeyCode::Enter if !ctrl && !alt && self.multiline => self.insert("\n"),
+                KeyCode::Char('a') if ctrl => self.cur = start,
+                KeyCode::Char('b') if alt => self.cur = self.word_left(),
+                KeyCode::Char(c) if !ctrl => self.insert(c.encode_utf8(&mut [0; 4])),
+                KeyCode::Backspace if ctrl || alt => {
+                    let from = self.word_left();
+                    self.text.drain(from..self.cur);
+                    self.cur = from;
+                }
+                KeyCode::Backspace if self.cur > 0 => {
+                    self.cur -= 1;
+                    self.text.remove(self.cur);
+                }
+                KeyCode::Delete if self.cur < self.text.len() => {
+                    self.text.remove(self.cur);
+                }
+                KeyCode::Char('u') if ctrl => {
+                    self.text.drain(start..self.cur);
+                    self.cur = start;
+                }
+                KeyCode::Char('k') if ctrl => {
+                    if self.cur == end {
+                        if self.cur < self.text.len() {
+                            self.text.remove(self.cur);
+                        }
+                    } else {
+                        self.text.drain(self.cur..end);
+                    }
+                }
+                KeyCode::Left if ctrl || alt => self.cur = self.word_left(),
+                KeyCode::Right if ctrl || alt => self.cur = self.word_right(),
+                KeyCode::Left => self.cur = self.cur.saturating_sub(1),
+                KeyCode::Right => self.cur = (self.cur + 1).min(self.text.len()),
+                KeyCode::Up if start > 0 => {
+                    let prev = self.line_start(start - 1);
+                    self.move_to_line(prev);
+                }
+                KeyCode::Down if end < self.text.len() => self.move_to_line(end + 1),
+                KeyCode::Home if ctrl => self.cur = 0,
+                KeyCode::End if ctrl => self.cur = self.text.len(),
+                KeyCode::Home => self.cur = start,
+                KeyCode::End => self.cur = end,
+                _ => {}
+            }
+        }
+
+        fn row_col(&self) -> (usize, usize) {
+            let row = self.text[..self.cur].iter().filter(|&&c| c == '\n').count();
+            (row, self.cur - self.line_start(self.cur))
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        Key(KeyEvent),
+        Paste(String),
+    }
+
+    /// Text with wide chars, tabs and word boundaries.
+    const CHARS: &str = "[ab1_ .é日\t]";
+
+    fn op() -> impl Strategy<Value = Op> {
+        let code = prop_oneof![
+            4 => CHARS.prop_map(|s| KeyCode::Char(s.chars().next().unwrap_or('a'))),
+            1 => prop::sample::select(vec![
+                KeyCode::Char('u'),
+                KeyCode::Char('k'),
+                KeyCode::Enter,
+                KeyCode::Backspace,
+                KeyCode::Delete,
+                KeyCode::Left,
+                KeyCode::Right,
+                KeyCode::Up,
+                KeyCode::Down,
+                KeyCode::Home,
+                KeyCode::End,
+            ]),
+        ];
+        let mods = prop::sample::select(vec![KeyModifiers::NONE, KeyModifiers::CONTROL, KeyModifiers::ALT]);
+        prop_oneof![
+            8 => (code, mods).prop_map(|(c, m)| Op::Key(KeyEvent::new(c, m))),
+            1 => "([ab1_ .é日\t]|\r|\n){0,6}".prop_map(Op::Paste),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn edits_like_a_flat_string(
+            multiline in any::<bool>(),
+            masked in any::<bool>(),
+            ops in prop::collection::vec(op(), 0..60),
+            (w, h) in (1u16..12, 1u16..5),
+        ) {
+            let mut t = TextArea::new(multiline);
+            t.masked = masked;
+            let mut m = Model { text: Vec::new(), cur: 0, multiline };
+            let area = Rect::new(2, 1, w, h);
+            let mut buf = Buffer::empty(Rect::new(0, 0, 20, 8));
+            for op in ops {
+                match &op {
+                    Op::Key(k) => {
+                        // Keys that submit or cancel don't change anything.
+                        if !matches!(t.handle_key(*k), Outcome::Submit | Outcome::Cancel) {
+                            m.key(*k);
+                        }
+                    }
+                    Op::Paste(s) => {
+                        t.insert_str(s);
+                        m.insert(s);
+                    }
+                }
+                prop_assert_eq!(t.text(), m.text.iter().collect::<String>(), "after {:?}", op);
+                prop_assert_eq!((t.row, t.col), m.row_col(), "after {:?}", op);
+
+                // The cursor is drawn inside the area, and clicking there
+                // puts it where it was drawn.
+                let at = t.render(&mut buf, area, Style::default(), Style::default());
+                prop_assert!(area.contains(at), "cursor {:?} outside {:?}", at, area);
+                t.click(at.x - area.x, at.y - area.y);
+                prop_assert_eq!(t.render(&mut buf, area, Style::default(), Style::default()), at);
+                prop_assert_eq!((t.row, t.col), m.row_col(), "after clicking at the cursor");
+            }
+        }
     }
 }
