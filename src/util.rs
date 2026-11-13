@@ -129,6 +129,9 @@ pub fn width(s: &str, tab: usize) -> usize {
 pub fn char_width(c: char, col: usize, tab: usize) -> usize {
     if c == '\t' {
         tab - col % tab
+    } else if c.is_control() {
+        // We draw other control characters as a replacement character.
+        1
     } else {
         c.width().unwrap_or(0)
     }
@@ -225,6 +228,7 @@ mod tests {
     fn widths() {
         assert_eq!(width("a\tb", 4), 5);
         assert_eq!(width("日本", 4), 4);
+        assert_eq!(width("a\x07\0b", 4), 4);
         assert_eq!(truncate("hello world", 6), "hello…");
         assert_eq!(truncate("hi", 6), "hi");
     }

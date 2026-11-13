@@ -774,7 +774,7 @@ fn draw_code(
     let mut last: Option<u16> = None;
     for (bi, ch) in text.char_indices() {
         let cw = char_width(ch, col, tab);
-        if cw == 0 && !ch.is_control() {
+        if cw == 0 {
             if let Some(lx) = last
                 && let Some(c) = buf.cell_mut((lx, y))
             {
@@ -1182,6 +1182,12 @@ mod tests {
         assert_eq!(code("你\u{301}x", 4, 0), ["|", "你\u{301}", "", "x", " "]);
         // The last character that fits still gets its marks.
         assert_eq!(code("ae\u{301}x", 2, 0), ["|", "a", "e\u{301}"]);
+    }
+
+    #[test]
+    fn control_characters_take_a_cell() {
+        assert_eq!(code("a\x07b", 4, 0), ["|", "a", "�", "b", " "]);
+        assert_eq!(code("\0\u{301}", 2, 0), ["|", "�", " "]);
     }
 
     #[test]
