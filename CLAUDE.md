@@ -11,25 +11,16 @@ the user's side, and `TODO.md` lists known bugs that nobody has fixed yet.
 Build and test inside the dev image from `dev/Containerfile`, not on the
 host. The image has Rust, clippy, rustfmt, tmux, and a git new enough for
 the reftable tests. It also sets a system-wide git identity, which the
-tests need. The image `localhost/tergi-dev` and the cargo registry volume
-`tergi-cargo` may already exist, so check `podman images` before building.
+tests need. Run these commands inside it:
 
 ```sh
-podman build -t localhost/tergi-dev dev
-podman run --rm -v tergi-cargo:/usr/local/cargo/registry \
-    -v "$PWD:$PWD" -w "$PWD" localhost/tergi-dev cargo test
-```
-
-Below, `dev` stands for that `podman run ... localhost/tergi-dev` prefix.
-
-```sh
-dev cargo build
-dev cargo test
-dev cargo test --test ui                       # one integration test file
-dev cargo test --test staging some_test_name   # one test
-dev cargo test --lib git::patch                # unit tests in one module
-dev cargo clippy --all-targets
-dev cargo fmt
+cargo build
+cargo test
+cargo test --test ui                       # one integration test file
+cargo test --test staging some_test_name   # one test
+cargo test --lib git::patch                # unit tests in one module
+cargo clippy --all-targets
+cargo fmt
 ```
 
 Clippy lints are set in `Cargo.toml`. `unwrap_used` warns outside tests,
