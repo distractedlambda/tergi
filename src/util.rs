@@ -1,6 +1,8 @@
-//! Small helpers: dates, text width, base64 for the clipboard, and running
-//! blocking work from async code.
+//! Small helpers: dates, text width, base64 for the clipboard, running
+//! blocking work from async code, and numbering background requests.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use unicode_width::UnicodeWidthChar;
@@ -14,6 +16,30 @@ pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
         // The work was cancelled because the runtime is shutting down. The
         // caller is about to be dropped too, so just wait for that.
         Err(_) => std::future::pending().await,
+    }
+}
+
+/// Numbers requests for background work where only the newest request
+/// matters, such as the history walk. Each request gets a number, and a
+/// result is only used if its number is still the current one. Clones share
+/// the counter, so a background task can hold one and stop early once a
+/// newer request replaces its own.
+#[derive(Debug, Clone, Default)]
+pub struct Generation(Arc<AtomicU64>);
+
+impl Generation {
+    /// Start a new request, which replaces all earlier ones.
+    pub fn next(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// The number of the newest request, or 0 if there hasn't been one.
+    pub fn current(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    pub fn is_current(&self, generation: u64) -> bool {
+        self.current() == generation
     }
 }
 

@@ -8,7 +8,7 @@ pub mod planner;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -31,6 +31,7 @@ use crate::git::workdir::Workdir;
 use crate::highlight::{self, FileHighlight, Highlighter};
 use crate::theme::Theme;
 use crate::ui::textarea::TextArea;
+use crate::util::Generation;
 use crate::watch;
 
 pub use cmd::Cmd;
@@ -102,8 +103,8 @@ pub enum AppEvent {
     Input(crossterm::event::Event),
     History(log::Batch),
     HistoryError(u64, String),
-    Refs(u64, Result<Refs>),
-    Workdir(u64, Box<Result<Workdir>>),
+    Refs(Result<Refs>),
+    Workdir(Box<Result<Workdir>>),
     Commit(u64, ObjectId, Box<Result<CommitDetail>>),
     Highlight(highlight::Key, FileHighlight),
     OpDone(OpResult),
@@ -163,7 +164,9 @@ pub struct History {
     pub commits: Vec<CommitInfo>,
     pub rows: Vec<GraphRow>,
     pub index: HashMap<ObjectId, usize>,
-    pub generation: u64,
+    /// Numbers the walks. The running walk holds a clone and stops once a
+    /// newer walk starts.
+    pub generation: Generation,
     pub loading: bool,
     pub tips: Vec<ObjectId>,
     /// Row selected in the list. Row 0 is the working directory, row `i + 1`
@@ -231,17 +234,12 @@ pub struct App {
 
     pub refs: Refs,
     pub labels: HashMap<ObjectId, Vec<Label>>,
-    refs_generation: u64,
-    refs_inflight: bool,
-    refs_again: bool,
+    refs_load: Reload,
 
     pub history: History,
-    history_current: Arc<AtomicU64>,
 
     pub workdir: Option<Workdir>,
-    workdir_generation: u64,
-    workdir_inflight: bool,
-    workdir_again: bool,
+    workdir_load: Reload,
 
     pub repo_state: RepoState,
     pub focus: Focus,
@@ -289,6 +287,41 @@ pub enum Suspend {
     Edit(PathBuf),
 }
 
+/// Keeps a background load, such as reading the refs, to one copy at a
+/// time. A request that comes in while the load runs makes it run once more
+/// afterwards. Running two copies at once could deliver their results out
+/// of order. Cancelling the running copy instead could mean that, while
+/// files keep changing, a load never gets to finish.
+#[derive(Debug, Default)]
+struct Reload {
+    running: bool,
+    again: bool,
+}
+
+impl Reload {
+    /// Ask for a load. Returns true if the caller should start one now.
+    fn request(&mut self) -> bool {
+        if self.running {
+            self.again = true;
+            false
+        } else {
+            self.running = true;
+            true
+        }
+    }
+
+    /// The running load finished. Returns true if the caller should start
+    /// another one.
+    fn finish(&mut self) -> bool {
+        if std::mem::take(&mut self.again) {
+            true
+        } else {
+            self.running = false;
+            false
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct SidebarState {
     pub rows: Vec<cmd::SideRow>,
@@ -316,8 +349,9 @@ impl App {
             tasks.spawn_on(serve, &rt);
         }
         let theme = Theme::new(cfg.theme);
+        let detail = Detail::default();
         let tx2 = tx.clone();
-        let (highlighter, highlight) = Highlighter::new(theme.dark, move |k, h| {
+        let (highlighter, highlight) = Highlighter::new(theme.dark, detail.generation.clone(), move |k, h| {
             let _ = tx2.send(AppEvent::Highlight(k, h));
         });
         tasks.spawn_on(highlight, &rt);
@@ -339,22 +373,17 @@ impl App {
             quit: false,
             refs: Refs::default(),
             labels: HashMap::new(),
-            refs_generation: 0,
-            refs_inflight: false,
-            refs_again: false,
+            refs_load: Reload::default(),
             history: History::default(),
-            history_current: Arc::new(AtomicU64::new(0)),
             workdir: None,
-            workdir_generation: 0,
-            workdir_inflight: false,
-            workdir_again: false,
+            workdir_load: Reload::default(),
             repo_state: RepoState::Clean,
             focus: Focus::History,
             sidebar: SidebarState {
                 collapsed,
                 ..Default::default()
             },
-            detail: Detail::default(),
+            detail,
             detail_tx,
             highlighter,
             overlays: Vec::new(),
@@ -479,39 +508,25 @@ impl App {
     // ----- Refreshing -----
 
     pub fn refresh(&mut self, what: u8) {
-        if what & REFRESH_REFS != 0 {
-            if self.refs_inflight {
-                self.refs_again = true;
-            } else {
-                self.load_refs();
-            }
+        if what & REFRESH_REFS != 0 && self.refs_load.request() {
+            self.load_refs();
         }
-        if what & REFRESH_WORKDIR != 0 {
-            if self.workdir_inflight {
-                self.workdir_again = true;
-            } else {
-                self.load_workdir();
-            }
+        if what & REFRESH_WORKDIR != 0 && self.workdir_load.request() {
+            self.load_workdir();
         }
         self.repo_state = rebase::state_in(&self.repo.git_dir);
     }
 
     fn load_refs(&mut self) {
-        self.refs_inflight = true;
-        self.refs_generation += 1;
-        let generation = self.refs_generation;
         let repo = self.repo.clone();
         let tx = self.tx.clone();
         self.spawn(async move {
             let r = Refs::load(&repo.git).await;
-            let _ = tx.send(AppEvent::Refs(generation, r));
+            let _ = tx.send(AppEvent::Refs(r));
         });
     }
 
     fn load_workdir(&mut self) {
-        self.workdir_inflight = true;
-        self.workdir_generation += 1;
-        let generation = self.workdir_generation;
         let repo = self.repo.clone();
         let tx = self.tx.clone();
         let ctx = self.cfg.context_lines;
@@ -521,14 +536,12 @@ impl App {
             if let (Ok(w), Some(updates)) = (&r, updates) {
                 updates.send(&w.status);
             }
-            let _ = tx.send(AppEvent::Workdir(generation, Box::new(r)));
+            let _ = tx.send(AppEvent::Workdir(Box::new(r)));
         });
     }
 
     fn start_history_walk(&mut self, tips: Vec<ObjectId>) {
-        let generation = self.history.generation + 1;
-        self.history.generation = generation;
-        self.history_current.store(generation, Ordering::Relaxed);
+        let generation = self.history.generation.next();
         self.history.loading = true;
         self.history.replace_on_next = true;
         self.history.tips = tips.clone();
@@ -537,10 +550,10 @@ impl App {
         }
         let repo = self.repo.clone();
         let tx = self.tx.clone();
-        let current = self.history_current.clone();
+        let walks = self.history.generation.clone();
         self.spawn(crate::util::blocking(move || {
             let tx2 = tx.clone();
-            let r = log::walk(&repo.gix, tips, generation, &current, move |b| {
+            let r = log::walk(&repo.gix, tips, generation, &walks, move |b| {
                 let _ = tx2.send(AppEvent::History(b));
             });
             if let Err(e) = r {
@@ -560,32 +573,26 @@ impl App {
             AppEvent::ReadDone(apply) => apply(self),
             AppEvent::History(batch) => self.on_history(batch),
             AppEvent::HistoryError(generation, e) => {
-                if generation == self.history.generation {
+                if self.history.generation.is_current(generation) {
                     self.history.loading = false;
                     self.history.error = Some(e);
                 }
             }
-            AppEvent::Refs(generation, r) => {
-                self.refs_inflight = false;
-                if generation == self.refs_generation {
-                    match r {
-                        Ok(refs) => self.on_refs(refs),
-                        Err(e) => self.set_status(format!("Reading refs failed: {e:#}"), Level::Error),
-                    }
+            AppEvent::Refs(r) => {
+                match r {
+                    Ok(refs) => self.on_refs(refs),
+                    Err(e) => self.set_status(format!("Reading refs failed: {e:#}"), Level::Error),
                 }
-                if std::mem::take(&mut self.refs_again) {
+                if self.refs_load.finish() {
                     self.load_refs();
                 }
             }
-            AppEvent::Workdir(generation, r) => {
-                self.workdir_inflight = false;
-                if generation == self.workdir_generation {
-                    match *r {
-                        Ok(w) => self.on_workdir(w),
-                        Err(e) => self.set_status(format!("Reading status failed: {e:#}"), Level::Error),
-                    }
+            AppEvent::Workdir(r) => {
+                match *r {
+                    Ok(w) => self.on_workdir(w),
+                    Err(e) => self.set_status(format!("Reading status failed: {e:#}"), Level::Error),
                 }
-                if std::mem::take(&mut self.workdir_again) {
+                if self.workdir_load.finish() {
                     self.load_workdir();
                 }
             }
@@ -607,7 +614,7 @@ impl App {
                 }
             }
             AppEvent::Highlight(key, hl) => {
-                if key.generation == self.detail.generation {
+                if self.detail.generation.is_current(key.generation) {
                     self.detail
                         .highlights
                         .insert((key.section, key.file), Arc::new(hl));
@@ -677,13 +684,13 @@ impl App {
         };
         self.refs = refs;
         self.rebuild_sidebar();
-        if changed_tips || self.history.generation == 0 {
+        if changed_tips || self.history.generation.current() == 0 {
             self.start_history_walk(tips);
         }
     }
 
     fn on_history(&mut self, batch: log::Batch) {
-        if batch.generation != self.history.generation {
+        if !self.history.generation.is_current(batch.generation) {
             return;
         }
         let h = &mut self.history;
@@ -781,8 +788,6 @@ impl App {
     }
 
     pub fn rebuild_doc(&mut self) {
-        // Highlighting requested for files as they were before is wasted.
-        self.highlighter.set_generation(self.detail.generation);
         let workdir = self.workdir.as_ref();
         self.detail.rebuild(workdir, &self.labels, &self.theme, self.split_diff, &self.cfg);
     }
@@ -927,7 +932,7 @@ impl App {
             .unwrap_or_default();
         self.highlighter.request(highlight::Job {
             key: highlight::Key {
-                generation: self.detail.generation,
+                generation: self.detail.generation.current(),
                 section: sec as u8,
                 file,
             },
@@ -973,5 +978,27 @@ async fn detail_worker(
         if tx.send(AppEvent::Commit(request, id, Box::new(r))).is_err() {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Reload;
+
+    #[test]
+    fn reload_runs_one_copy_and_one_more_after_it() {
+        let mut r = Reload::default();
+        assert!(r.request());
+        // Requests while it runs don't start another copy, and however
+        // many there are, they add up to one more load.
+        assert!(!r.request());
+        assert!(!r.request());
+        assert!(r.finish());
+        assert!(!r.request());
+        assert!(r.finish());
+        assert!(!r.finish());
+        // Once idle, the next request starts right away.
+        assert!(r.request());
+        assert!(!r.finish());
     }
 }

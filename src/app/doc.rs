@@ -17,7 +17,7 @@ use crate::git::words::{Marks, hunk_marks};
 use crate::git::workdir::Workdir;
 use crate::highlight::FileHighlight;
 use crate::theme::Theme;
-use crate::util::format_date;
+use crate::util::{Generation, format_date};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -146,9 +146,9 @@ pub struct Detail {
     pub source: Source,
     pub commit: Option<Arc<CommitDetail>>,
     pub loading: bool,
-    /// Bumped whenever the files shown change, so stale highlight results
-    /// can be dropped.
-    pub generation: u64,
+    /// Moves on whenever the files shown change, so stale highlight results
+    /// can be dropped. The highlighter shares it.
+    pub generation: Generation,
     /// The id of the latest commit load request.
     pub request: u64,
     pub rows: Vec<Row>,
@@ -176,7 +176,7 @@ impl Default for Detail {
             source: Source::None,
             commit: None,
             loading: false,
-            generation: 1,
+            generation: Generation::default(),
             request: 0,
             rows: Vec::new(),
             meta: Vec::new(),
@@ -247,7 +247,7 @@ impl Detail {
 
     /// The files changed, so cached per-file data is no longer valid.
     pub fn reset_for_reload(&mut self) {
-        self.generation += 1;
+        self.generation.next();
         self.highlights.clear();
         self.requested.clear();
         self.marks.clear();

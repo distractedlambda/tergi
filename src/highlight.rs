@@ -6,7 +6,6 @@
 //! and new side on its own.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use ratatui::style::Color;
@@ -15,6 +14,7 @@ use syntect::highlighting::Theme;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 
 use crate::git::diff::{Hunk, LineKind};
+use crate::util::Generation;
 
 /// Foreground color spans for one line, as byte ranges into the line text.
 pub type LineSpans = Vec<(u32, u32, Color)>;
@@ -45,25 +45,20 @@ const FULL_FILE_LINES: usize = 20_000;
 
 pub struct Highlighter {
     tx: UnboundedSender<Job>,
-    current: Arc<AtomicU64>,
 }
 
 impl Highlighter {
     /// The returned future does the work. The caller should spawn it. It
-    /// ends when the `Highlighter` is dropped.
+    /// ends when the `Highlighter` is dropped. Jobs whose key has a
+    /// generation that is no longer current in `files` are skipped.
     pub fn new(
         dark: bool,
+        files: Generation,
         done: impl Fn(Key, FileHighlight) + Send + Sync + 'static,
     ) -> (Self, impl Future<Output = ()> + Send + 'static) {
         let (tx, rx) = unbounded_channel::<Job>();
-        let current = Arc::new(AtomicU64::new(0));
-        let worker = worker(rx, current.clone(), dark, Arc::new(done));
-        (Highlighter { tx, current }, worker)
-    }
-
-    /// Jobs from older generations are skipped.
-    pub fn set_generation(&self, generation: u64) {
-        self.current.store(generation, Ordering::Relaxed);
+        let worker = worker(rx, files, dark, Arc::new(done));
+        (Highlighter { tx }, worker)
     }
 
     pub fn request(&self, job: Job) {
@@ -73,7 +68,7 @@ impl Highlighter {
 
 async fn worker(
     mut rx: UnboundedReceiver<Job>,
-    current: Arc<AtomicU64>,
+    files: Generation,
     dark: bool,
     done: Arc<dyn Fn(Key, FileHighlight) + Send + Sync>,
 ) {
@@ -94,7 +89,7 @@ async fn worker(
     .await;
     let loaded = Arc::new(loaded);
     while let Some(job) = rx.recv().await {
-        if job.key.generation < current.load(Ordering::Relaxed) {
+        if !files.is_current(job.key.generation) {
             continue;
         }
         let loaded = loaded.clone();

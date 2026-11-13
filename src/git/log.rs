@@ -1,13 +1,11 @@
 //! Walking the history with gitoxide, in batches, on a background thread.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use anyhow::{Context, Result};
 use gix::ObjectId;
 use gix::traverse::commit::topo;
 
 use super::graph::{GraphBuilder, GraphRow};
+use crate::util::Generation;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitInfo {
@@ -28,13 +26,13 @@ pub struct Batch {
 }
 
 /// Walk all commits reachable from `tips` in topological order, sending
-/// them to `sink` in batches. The walk stops early when `current` no longer
-/// matches `generation`, which means a newer walk has replaced this one.
+/// them to `sink` in batches. The walk stops early when `generation` is no
+/// longer current in `walks`, which means a newer walk has replaced this one.
 pub fn walk(
     repo: &gix::ThreadSafeRepository,
     tips: Vec<ObjectId>,
     generation: u64,
-    current: &Arc<AtomicU64>,
+    walks: &Generation,
     mut sink: impl FnMut(Batch),
 ) -> Result<()> {
     let mut repo = repo.to_thread_local();
@@ -59,7 +57,7 @@ pub fn walk(
             .build()
             .context("could not start the history walk")?;
         for info in walk {
-            if current.load(Ordering::Relaxed) != generation {
+            if !walks.is_current(generation) {
                 return Ok(());
             }
             let info = info.context("history walk failed")?;
