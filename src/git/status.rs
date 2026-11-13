@@ -67,18 +67,26 @@ pub struct Status {
     pub ahead: u32,
     pub behind: u32,
     pub entries: Vec<Entry>,
+    /// Paths git ignores. Folders end in a slash and stand for everything in
+    /// them. The file watcher uses these.
+    pub ignored: Vec<String>,
 }
 
 impl Status {
+    /// The arguments to `git` that `load` uses. With `--ignored=matching`,
+    /// git lists an ignored folder once instead of every file in it.
+    pub const ARGS: &[&str] = &[
+        "status",
+        "--porcelain=v2",
+        "--branch",
+        "-z",
+        "--untracked-files=all",
+        "--ignore-submodules=dirty",
+        "--ignored=matching",
+    ];
+
     pub async fn load(git: &Git) -> Result<Status> {
-        let out = git.read(&[
-            "status",
-            "--porcelain=v2",
-            "--branch",
-            "-z",
-            "--untracked-files=all",
-            "--ignore-submodules=dirty",
-        ]).await?;
+        let out = git.read(Self::ARGS).await?;
         Ok(parse(&out.text()))
     }
 
@@ -170,6 +178,7 @@ pub fn parse(text: &str) -> Status {
             b'?' => st.entries.push(Entry::Untracked {
                 path: rec[2..].to_string(),
             }),
+            b'!' => st.ignored.push(rec[2..].to_string()),
             _ => {}
         }
     }
@@ -187,7 +196,7 @@ mod tests {
 1 A. N... 000000 100644 100644 000 bbb new.rs\0\
 2 R. N... 100644 100644 100644 ccc ccc R100 to.rs\0from.rs\0\
 u UU N... 100644 100644 100644 100644 d1 d2 d3 conflict.rs\0\
-? untracked file\0";
+? untracked file\0! target/\0";
         let st = parse(text);
         assert_eq!(st.branch.as_deref(), Some("main"));
         assert_eq!(st.upstream.as_deref(), Some("origin/main"));
@@ -199,6 +208,7 @@ u UU N... 100644 100644 100644 100644 d1 d2 d3 conflict.rs\0\
         assert!(matches!(&st.entries[2], Entry::Changed { orig_path: Some(p), .. } if p == "from.rs"));
         assert_eq!(st.conflicted().count(), 1);
         assert_eq!(st.untracked().next().map(Entry::path), Some("untracked file"));
+        assert_eq!(st.ignored, ["target/"]);
     }
 
     #[test]

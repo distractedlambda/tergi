@@ -18,6 +18,10 @@ The watcher reports two kinds of events:
   `WORKTREE`, `INDEX`, `REFS` and `STATE`.
 - `Event::Degraded(message)` says that watching the working tree failed.
 
+The handle also gives out `Updates`. After each status the app loads, it
+sends the status to the watcher through them. The watcher only uses the
+paths git lists as ignored.
+
 The app turns `WORKTREE` and `INDEX` into a reload of the working
 directory, and `REFS` into a reload of the refs and history. It reads the
 rebase or merge state again on every refresh, so it doesn't look at
@@ -45,6 +49,8 @@ common directory are the same folder, except in a linked worktree.
 - `reftable/` in each of them, if the repository uses the reftable
   format. All refs and reflogs live in there, and every change ends with
   replacing `reftable/tables.list`.
+- `info/` in the common directory, without subfolders, for
+  `info/exclude`.
 - `logs/refs/` in the common directory, without subfolders. This is for
   the stash reflog. Dropping a stash other than the newest one doesn't
   change `refs/stash`. Tools built on libgit2 only rewrite the reflog.
@@ -57,7 +63,8 @@ common directory are the same folder, except in a linked worktree.
 | --- | --- |
 | `index` | `INDEX` |
 | `HEAD`, `ORIG_HEAD`, `FETCH_HEAD`, `packed-refs`, `refs/…` | `REFS`, `INDEX` |
-| `config` | `REFS`, because remotes and upstreams live there |
+| `config`, `config.worktree` | `REFS`, `WORKTREE` |
+| `info/exclude` | `WORKTREE` |
 | `logs/refs/stash` | `REFS` |
 | `reftable/tables.list` | `REFS`, `INDEX` |
 | `rebase-merge/`, `rebase-apply/`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `sequencer/` | `STATE`, `REFS`, `INDEX` |
@@ -65,194 +72,131 @@ common directory are the same folder, except in a linked worktree.
 
 Git writes a `.lock` file and then renames it over the real file, so the
 rename shows up as a change to the real file. Objects are ignored because
-a new object on its own changes nothing we show.
+a new object on its own changes nothing we show. The config holds remotes
+and upstreams, and it can set `core.excludesFile`, so a change there
+reloads both refs and the working directory.
 
 ## The working tree
 
-Linux and macOS watch the working tree in different ways, because inotify
-and FSEvents work differently. Every platform other than Linux takes the
-macOS path.
+We don't read ignore rules ourselves. We ask git, through the status the
+app loads anyway. The app runs `git status` with `--ignored=matching`,
+which lists ignored paths too. An ignored folder appears once, with a
+trailing slash, rather than every file in it. Git doesn't count a folder
+as ignored if it holds tracked files, so such a folder doesn't appear.
+
+The watcher keeps these paths in `Ignored` and drops events from them, on
+every platform. That covers build output, and also ignored files that sit
+next to tracked ones, such as a `*.log` file in `src/`.
+
+When the rules change, the next status shows the result. A `.gitignore`
+in the working tree and `info/exclude` are watched like any other file,
+so editing them causes that status. Rules from anywhere else, such as the
+global excludes file or the system config, take effect at the next
+refresh for some other reason. The app also refreshes when the terminal
+gets focus, which is usually right after the user changed them.
+
+Git can only list ignored folders that exist. Build tools often delete
+their output folder and make it again. If we forgot such a folder while
+it was gone, we would see everything the build writes until the next
+status. So `Ignored::new` keeps ignored folders from the previous status
+as long as they don't exist.
+
+A path git hasn't seen yet can't be in the list. When a build folder
+appears for the first time after startup, or a new `*.log` file is
+written, it causes one refresh. That status lists it, and later events
+from it are dropped.
 
 ### Linux
 
-inotify watches single folders, not whole trees. So we walk the working
-tree with the `ignore` crate and watch each folder that git doesn't
-ignore. We never watch build output such as `target/` or `node_modules/`.
-That keeps us well under the inotify limit, and builds don't cause a
-storm of refreshes.
+inotify watches single folders, not whole trees. At startup we only
+watch the root. When the first status arrives, `Watches::rewatch_tree`
+walks the working tree and watches each folder that isn't ignored. We
+never watch build output such as `target/` or `node_modules/`. That keeps
+us well under the inotify limit, and builds don't cause a storm of
+refreshes.
 
 - We skip `.git` folders, nested repositories and submodules. Changes
   inside them don't show up in our status, apart from the commit a
   submodule points at.
-- A folder can appear by being created or by being moved in. When the
-  watcher reports a batch, it first asks `git check-ignore` about each
-  new folder and watches the ones git doesn't ignore.
-- The `Watches` struct remembers which folders of the tree we watch, in
-  `tree`. That lets us remove watches later.
-- If adding a watch fails at startup, usually because we hit the inotify
-  limit, we report `Degraded` and the app falls back to polling. When
-  adding a watch fails later, for a new folder or after the rules
-  changed, we ignore the failure and report nothing.
+- We don't follow symlinks, because git doesn't either.
+- The `Watches` struct remembers which folders we watch, in `tree`. That
+  lets us remove watches later.
+- When a later status lists different ignored folders, we walk the whole
+  tree again. We add watches for folders that are no longer ignored, and
+  remove the watches for folders that now are. If that added any
+  watches, we report `WORKTREE`. Files in those folders may have changed
+  after git looked at them and before we watched them, and the next
+  status catches that. If the walk fails partway, we remove nothing,
+  because we can't tell which folders should stay.
+- A folder can appear by being created or by being moved in. Before the
+  watcher reports a batch, it walks each new folder and watches it and
+  its subfolders, unless they are ignored. Doing this before the report
+  means the status that follows can't miss a file written to the new
+  folder. A new folder that git ignores but hasn't listed yet gets
+  watched too, until the next status.
+- If adding a watch fails, usually because we hit the inotify limit, we
+  report `Degraded` once and the app falls back to polling.
 
 ### macOS
 
 FSEvents watches a whole tree cheaply, so we watch the working directory
-with all its subfolders. That means we get events from ignored folders
-too, and we have to filter them out.
-
-At startup we ask git for the ignored folders with
-`git ls-files --others --ignored --exclude-standard --directory`. We
-drop events from inside those folders straight away. This is cheap, but
-the list can go out of date, so we don't trust it alone.
-
-Other changes in the working tree are collected per batch. Before
-reporting the batch, `check_changes` sends the changed paths to
-`git check-ignore --stdin`, together with every folder above each path.
-That gives us two answers:
-
-- If every changed path is ignored, we don't report a change.
-- If an ignored path is a folder, or lies inside an ignored folder, then
-  a folder we don't know about is ignored. That happens when a build
-  folder appears after startup, or when a folder becomes ignored. We
-  rebuild the list with `git ls-files`, so later events from that folder
-  are dropped without asking git.
-
-A lone ignored file in a normal folder, such as `.DS_Store`, doesn't make
-us rebuild the list. Git doesn't count a folder as ignored if it holds
-tracked files, and both `check-ignore` and `ls-files` agree on that.
-
-`check-ignore` answers each path as soon as it reads it. We write the
-paths from a separate thread. If we wrote all of them before reading, a
-long list would fill both pipes, and git and tergi would wait on each
-other forever. If git fails, we treat every path as not ignored, so the
-worst case is an extra refresh.
-
-## Ignore rules
-
-Git reads ignore rules from several places:
-
-- `.gitignore` files in the working tree.
-- `info/exclude` in the common directory.
-- The global excludes file. That is `core.excludesFile` if it's set, and
-  otherwise `$XDG_CONFIG_HOME/git/ignore`, or `~/.config/git/ignore`
-  without `XDG_CONFIG_HOME`. Git uses this default on macOS too.
-
-When any of these change, two things follow. First, the set of untracked
-files git shows can change, so we report `WORKTREE`. Second, folders can
-become ignored or stop being ignored, so we redo the work that depends on
-that:
-
-- On Linux, `Watches::rewatch_tree` walks the whole tree again. It adds
-  watches for folders that are no longer ignored, and removes the watches
-  for folders that now are. If the walk fails partway, it removes
-  nothing, because it can't tell which folders are ignored now.
-- On macOS, we rebuild the list of ignored folders.
-
-We notice `.gitignore` changes as ordinary working tree events. The other
-two files are outside the working tree, or at least not where we look for
-.gitignore files, so we watch them separately. `rules_files` finds them,
-and `Watches::rules` holds them.
-
-The global excludes file can move. Which file it is depends on
-`core.excludesFile`, which can be set in the repository config or the
-global config. So we also watch the global config files, in
-`Watches::configs`. These are `~/.gitconfig` and
-`$XDG_CONFIG_HOME/git/config` (or `~/.config/git/config`). If
-`GIT_CONFIG_GLOBAL` is set, git reads only that file, and so do we.
-When the repository config or a global config file changes, we ask git
-again which excludes file it uses. If the answer changed, we watch the
-new file and treat the change as a change of rules.
-
-### Watching single files
-
-`watch_file` watches one file. It has to deal with a few details:
-
-- Editors often save by writing a new file and renaming it over the old
-  one. On Linux that ends a watch on the file itself, so we watch its
-  folder instead.
-- On macOS, watching a folder without its subfolders still makes FSEvents
-  watch all of them. For `~/.gitconfig` that would be the whole home
-  folder. So on macOS we watch the file itself if it exists. FSEvents
-  follows paths, not files, so it should keep working after a rename.
-  Nobody has checked that on a Mac yet.
-- Dotfile managers often make these files symlinks. We resolve the path
-  first, because events use the real path.
-- The file may not exist yet. Then we watch its folder, if that exists.
-  If the folder doesn't exist either, we try again each time the watcher
-  reports a batch. When we start watching a file late, we treat it as
-  changed, because it may have changed before we started.
+with all its subfolders, and rely on `Ignored` to drop the events we
+don't care about.
 
 ## How a batch is reported
 
-The future runs on the async threads, but most of the work at the end of
-a batch is blocking. It walks folders, adds watches and runs git. So the
-watcher moves its state, the `Watches` struct, to a blocking thread with
-`util::blocking`, and gets it back when the work is done. In order, that
-work is:
+The future runs on the async threads, but walking folders and adding
+watches is blocking work. So the watcher moves its state, the `Watches`
+struct, to a blocking thread with `util::blocking`, and gets it back
+when the work is done. It does this in two places.
+
+When a batch is ready to report, it does two things first:
 
 1. Watch the stash reflog folder, if it might have appeared.
-2. Watch any global config files that appeared, and look up the rules
-   files again if a config file changed.
-3. Watch any rules files that aren't watched yet.
-4. On Linux, walk the whole tree again if the rules changed. Otherwise
-   watch the new folders.
-5. On macOS, run `check_changes` on the changed paths.
+2. On Linux, watch the new folders and everything under them.
 
-Then the watcher reports the flags, if there are any.
+Then it reports the flags, if there are any.
+
+When a status arrives, it builds the new `Ignored` and, on Linux, walks
+the tree again if the ignored folders changed.
 
 ## Tests
 
 The tests are at the bottom of `src/watch.rs`. Most of them start a real
-watcher on a scratch repository and check what it reports. They run on
-both platforms, but the code that differs between platforms only runs on
-one of them. The macOS-only parts have been tested less, because the
-development container runs Linux. `check_changes` doesn't depend on
-FSEvents, so its test runs everywhere.
+watcher on a scratch repository and check what it reports. The `tell`
+helper runs `git status` with the same arguments as the app and sends
+the result to the watcher, the way the app does after a refresh.
 
-`follows_the_global_config` needs its own `GIT_CONFIG_GLOBAL`. Tests run
-in parallel threads of one process and share its environment, and
-changing the environment needs `unsafe`, which the crate forbids. So the
-test runs the test binary again in a child process, with the variable
-set, and runs `follows_the_global_config_in_this_process` there. That
-inner test is marked `#[ignore]` so it doesn't run on its own.
+The tests run on both platforms, but the code that differs between
+platforms only runs on one of them. The macOS-only parts have been tested
+less, because the development container runs Linux.
 
 ## Known gaps and future work
 
 These are things the watcher doesn't handle yet, roughly from most to
 least likely to matter.
 
-- **Tracked files in ignored folders on Linux.** The `ignore` crate
-  decides which folders we watch, and it doesn't know about the index.
-  If a folder matches an ignore rule but holds files that were added with
-  `git add -f`, we don't watch it, and changes to those files go
-  unnoticed until the next refresh. Git itself doesn't count such a
-  folder as ignored, so macOS gets this right.
-- **Two sources of ignore rules on Linux.** The tree walk uses the
-  `ignore` crate's reading of git's rules, while the rest of the watcher
-  asks git. They can disagree in unusual setups, for example on how the
-  global excludes file is found.
-- **Ignored files in watched folders on Linux.** On Linux, a change to an
-  ignored file in a folder we watch, such as a `*.log` file next to the
-  source, still causes a refresh. macOS filters these out with
-  `check-ignore`. Linux could do the same.
+- **Rule changes outside the working tree.** When the global excludes
+  file or the system config changes, nothing reloads the status until
+  something else does, often the terminal getting focus. Until then, a
+  folder that stopped being ignored isn't watched on Linux, and events
+  from it are dropped on both platforms.
+- **Startup on Linux.** Until the first status arrives, we only watch the
+  root of the working tree. A change in a subfolder after git looked at
+  it and before we watch it goes unnoticed until the next refresh. The
+  window is about as long as one `git status`.
+- **Ignored folders that come back after the rules changed.** We keep
+  ignored folders that are gone. If one comes back after the rules
+  stopped ignoring it, we drop its events until the next status. The
+  same happens when a nested repository is deleted, because events from
+  inside `.git` folders are always dropped.
 - **Nested repositories on macOS.** On Linux we don't watch nested
   repositories or submodules. On macOS we get their events, and they
-  cause refreshes unless git ignores them.
-- **The system git config.** We don't watch `/etc/gitconfig`, or the
-  system config of another git install, such as Homebrew's under
-  `/opt/homebrew/etc`. Setting `core.excludesFile` there takes effect
-  after a restart.
-- **Included config files.** Config files pulled in with `include.path`
-  or `includeIf` aren't watched.
-- **`config.worktree`.** With `extensions.worktreeConfig`, a linked
-  worktree can have its own `config.worktree` in its git directory. We
-  don't treat a change there as a config change.
-- **Watch failures after startup.** If a watch for a new folder fails
-  on Linux, nobody hears about it, and changes in that folder go
-  unnoticed. Reporting `Degraded` would turn on polling.
-- **Old watches.** When the global excludes file moves, we keep watching
-  the old one. That only costs a few events. Likewise, a deleted folder
-  stays in `Watches::tree` until the next walk of the whole tree.
+  cause refreshes unless git ignores them. The status lists an untracked
+  nested repository as a folder with a trailing slash, so we could drop
+  those too.
+- **Old watches.** A deleted folder stays in `Watches::tree` until the
+  next walk of the whole tree.
 - **Other platforms.** Everything that isn't Linux takes the macOS path.
   On a BSD, notify uses kqueue, which needs a file descriptor for every
   watched file, so a recursive watch of a large tree would hit the

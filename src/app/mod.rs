@@ -275,7 +275,7 @@ pub struct App {
     /// Something the event loop has to do outside of `handle`, such as
     /// running an editor in the terminal.
     pub suspend: Option<Suspend>,
-    _watcher: Option<watch::Handle>,
+    watcher: Option<watch::Handle>,
     pub watch_degraded: bool,
     last_poll: Instant,
 }
@@ -373,7 +373,7 @@ impl App {
             last_click: None,
             size: (80, 24),
             suspend: None,
-            _watcher: None,
+            watcher: None,
             watch_degraded: false,
             last_poll: Instant::now(),
         };
@@ -394,7 +394,7 @@ impl App {
             },
         ) {
             Ok((h, run)) => {
-                self._watcher = Some(h);
+                self.watcher = Some(h);
                 self.spawn(run);
             }
             Err(e) => {
@@ -512,8 +512,12 @@ impl App {
         let repo = self.repo.clone();
         let tx = self.tx.clone();
         let ctx = self.cfg.context_lines;
+        let updates = self.watcher.as_ref().map(watch::Handle::updates);
         self.spawn(async move {
             let r = Workdir::load(&repo.git, ctx, DEFAULT_LINE_LIMIT).await;
+            if let (Ok(w), Some(updates)) = (&r, updates) {
+                updates.send(&w.status);
+            }
             let _ = tx.send(AppEvent::Workdir(generation, Box::new(r)));
         });
     }
