@@ -150,16 +150,28 @@ the same path under `~/.config`. Every setting is optional.
 theme = "one-half-dark" # see the list below
 context_lines = 3       # lines of context around each change
 tab_width = 4
-relative_dates = true   # "3 days ago" instead of a date
+relative_dates = true   # "3 days ago" instead of a date in the history
 ```
+
+You can also change each setting from the command palette (Ctrl+P):
+"Choose theme…", "Set context lines…", "Set tab width…", and "Show full
+dates in history" or "Show relative dates in history". tergi saves the
+change to the config file. It only rewrites the line for that setting,
+so your comments and the rest of the file stay as they are.
+
+tergi watches the config file while it runs, so edits you make by hand
+take effect right away. If an edit leaves the file broken, for example
+with a TOML syntax error or a theme that doesn't exist, tergi keeps the
+settings it had and says so in the status bar. If the config file is a
+symlink, tergi writes to the file the link points to.
 
 ## Themes
 
 Each theme uses the colors that a popular color scheme publishes, and
 the same scheme's syntax highlighting. To try them out, press Ctrl+P and
 run "Choose theme…". The theme changes as you move through the list.
-Press Enter to keep one, or Esc to go back. tergi doesn't save your
-choice, so put the theme's name in the config file to keep it.
+Press Enter to keep one and save it to the config file, or Esc to go
+back.
 
 | Name in the config | Theme |
 | --- | --- |

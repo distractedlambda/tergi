@@ -110,6 +110,9 @@ pub enum AppEvent {
     OpDone(OpResult),
     Progress(String),
     Watch(watch::Event),
+    /// The config file changed. This holds the new config, or why the
+    /// change can't be used.
+    ConfigChanged(Result<Config, String>),
     AskPass(String, oneshot::Sender<Option<String>>),
     /// A read started by `App::spawn_read` finished. This applies its
     /// result.
@@ -255,6 +258,10 @@ pub struct App {
     /// panics makes `next` and `try_recv` panic too.
     tasks: JoinSet<()>,
     pub cfg: Config,
+    /// Where the config file is. Without one, settings aren't saved or
+    /// watched.
+    pub config_path: Option<PathBuf>,
+    config_watcher: Option<notify::RecommendedWatcher>,
     pub theme: Theme,
     pub quit: bool,
 
@@ -271,7 +278,7 @@ pub struct App {
     pub focus: Focus,
     pub sidebar: SidebarState,
     pub detail: Detail,
-    detail_tx: tokio::sync::watch::Sender<Option<(u64, ObjectId)>>,
+    detail_tx: tokio::sync::watch::Sender<Option<DetailRequest>>,
     pub highlighter: Highlighter,
 
     pub overlays: Vec<cmd::Overlay>,
@@ -384,7 +391,7 @@ impl App {
         tasks.spawn_on(highlight, &rt);
         let repo = Arc::new(repo);
         let (detail_tx, detail_rx) = tokio::sync::watch::channel(None);
-        tasks.spawn_on(detail_worker(repo.clone(), detail_rx, tx.clone(), cfg.context_lines), &rt);
+        tasks.spawn_on(detail_worker(repo.clone(), detail_rx, tx.clone()), &rt);
         let mut message = TextArea::new(true);
         message.placeholder = "Commit message (Ctrl+Enter to commit)".into();
         let mut collapsed = HashSet::new();
@@ -396,6 +403,8 @@ impl App {
             rt,
             tasks,
             cfg,
+            config_path: None,
+            config_watcher: None,
             theme,
             quit: false,
             refs: Refs::default(),
@@ -462,6 +471,7 @@ impl App {
             }
         }
         self.spawn_ticker();
+        self.watch_config();
         self.repo_state = rebase::state_in(&self.repo.git_dir);
         self.refresh(REFRESH_ALL);
         self.select_history(0);
@@ -487,6 +497,25 @@ impl App {
                 }
             }
         });
+    }
+
+    /// Start watching the config file, unless we already are. Its folder
+    /// has to exist, so this is tried again after saving creates it.
+    fn watch_config(&mut self) {
+        let Some(path) = &self.config_path else { return };
+        if self.config_watcher.is_some() || !path.parent().is_some_and(std::path::Path::is_dir) {
+            return;
+        }
+        let tx = self.tx.clone();
+        match crate::config::watch(path, move |c| {
+            let _ = tx.send(AppEvent::ConfigChanged(c));
+        }) {
+            Ok((w, run)) => {
+                self.config_watcher = Some(w);
+                self.spawn(run);
+            }
+            Err(e) => self.set_status(format!("Changes to the config file won't be picked up: {e:#}"), Level::Warn),
+        }
     }
 
     /// Run `fut` in the background, as one of the App's tasks.
@@ -668,6 +697,18 @@ impl App {
                 self.watch_degraded = true;
                 self.set_status(msg, Level::Warn);
             }
+            AppEvent::ConfigChanged(Ok(cfg)) => {
+                if cfg != self.cfg {
+                    self.apply_config(cfg);
+                    self.set_status("Reloaded the settings from the config file", Level::Info);
+                }
+            }
+            AppEvent::ConfigChanged(Err(e)) => {
+                // A TOML error goes on to show where it is over several
+                // lines, which the status bar has no room for.
+                let first = e.lines().next().unwrap_or_default();
+                self.set_status(format!("Ignored the change to the config file: {first}"), Level::Warn);
+            }
             AppEvent::AskPass(prompt, reply) => {
                 let lower = prompt.to_lowercase();
                 let secret = lower.contains("password") || lower.contains("passphrase") || lower.contains("token");
@@ -792,11 +833,19 @@ impl App {
         let load = source.commit_id();
         self.detail.set_source(source);
         if let Some(id) = load {
-            self.detail.loading = true;
-            self.detail.request += 1;
-            self.detail_tx.send_replace(Some((self.detail.request, id)));
+            self.request_commit(id);
         }
         self.rebuild_doc();
+    }
+
+    fn request_commit(&mut self, id: ObjectId) {
+        self.detail.loading = true;
+        self.detail.request += 1;
+        self.detail_tx.send_replace(Some(DetailRequest {
+            request: self.detail.request,
+            id,
+            context: self.cfg.context_lines,
+        }));
     }
 
     /// Select a commit in the history by id, if it's loaded.
@@ -815,7 +864,43 @@ impl App {
         self.detail.rebuild(workdir, &self.labels, &self.theme, self.split_diff, &self.cfg);
     }
 
-    /// Switch to the theme with this id.
+    /// Use a new config, and redo whatever depends on the settings that
+    /// changed. This doesn't save it.
+    pub fn apply_config(&mut self, cfg: Config) {
+        let old = std::mem::replace(&mut self.cfg, cfg);
+        if old.theme != self.cfg.theme {
+            let id = self.cfg.theme.clone();
+            self.set_theme(&id);
+        }
+        if old.context_lines != self.cfg.context_lines {
+            self.refresh(REFRESH_WORKDIR);
+            if let Some(id) = self.detail.source.commit_id() {
+                self.request_commit(id);
+            }
+        }
+        // Drawing reads the other settings each frame.
+    }
+
+    /// Change the settings and save them to the config file.
+    pub fn change_config(&mut self, change: impl FnOnce(&mut Config)) {
+        let old = self.cfg.clone();
+        let mut cfg = old.clone();
+        change(&mut cfg);
+        if cfg == old {
+            return;
+        }
+        self.apply_config(cfg);
+        let Some(path) = self.config_path.clone() else { return };
+        // Unlike waiting for git, writing one small file is quick enough to
+        // do while handling an event. Doing it here also means the file
+        // always matches `cfg` by the time the watcher reads it.
+        match Config::save(&path, &old, &self.cfg) {
+            Ok(()) => self.watch_config(),
+            Err(e) => self.show_error("Couldn't save the settings", &e),
+        }
+    }
+
+    /// Switch to the theme with this id, without saving it.
     pub fn set_theme(&mut self, id: &str) {
         if self.theme.id == id {
             return;
@@ -986,20 +1071,26 @@ fn check_task(done: Result<(), tokio::task::JoinError>) {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DetailRequest {
+    request: u64,
+    id: ObjectId,
+    context: u32,
+}
+
 /// Load commit details as they are requested. The watch channel only keeps
 /// the newest request, so requests that were replaced while we were busy
 /// are skipped.
 async fn detail_worker(
     repo: Arc<Repo>,
-    mut requests: tokio::sync::watch::Receiver<Option<(u64, ObjectId)>>,
+    mut requests: tokio::sync::watch::Receiver<Option<DetailRequest>>,
     tx: UnboundedSender<AppEvent>,
-    context: u32,
 ) {
     // Keep one thread-local repository across loads, so its object cache
     // carries over from one commit to the next.
     let mut local = repo.gix.to_thread_local();
     while requests.changed().await.is_ok() {
-        let Some((request, id)) = *requests.borrow_and_update() else {
+        let Some(DetailRequest { request, id, context }) = *requests.borrow_and_update() else {
             continue;
         };
         let (back, r) = crate::util::blocking(move || {

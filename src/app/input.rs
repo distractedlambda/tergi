@@ -298,7 +298,7 @@ impl App {
                     if m.preview.is_some()
                         && let Some(a) = m.items.get(i).filter(|a| a.enabled)
                     {
-                        let cmd = a.cmd.clone();
+                        let cmd = a.cmd.preview();
                         self.run_cmd(cmd);
                     }
                 } else if k.code == KeyCode::Enter {

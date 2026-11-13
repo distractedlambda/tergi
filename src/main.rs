@@ -57,10 +57,12 @@ fn main() -> ExitCode {
 
 async fn run(path: &Path) -> Result<()> {
     let repo = Repo::open(path)?;
-    let (cfg, config_error) = Config::load();
+    let config_path = Config::path();
+    let (cfg, config_error) = config_path.as_deref().map(Config::load).unwrap_or_default();
     terminal::install_panic_hook();
     let mut term = terminal::setup().context("could not set up the terminal")?;
     let mut app = App::new(repo, cfg, config_error);
+    app.config_path = config_path;
     app.start();
 
     let result = async {

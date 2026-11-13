@@ -14,6 +14,7 @@ use super::doc::{Row, Section, Source};
 use super::planner::{PlanAction, Planner};
 use super::{After, App, Focus, Level, Suspend};
 use super::input::Target;
+use crate::config;
 use crate::git::commit::FileTexts;
 use crate::git::diff::FileDiff;
 use crate::git::ops::{self, ApplyMode, ResetMode};
@@ -67,7 +68,15 @@ pub enum Cmd {
     ToggleSidebar,
     ToggleSplit,
     ChooseTheme,
+    /// Switch to a theme and save it.
     SetTheme(&'static str),
+    /// Show a theme without saving it.
+    PreviewTheme(&'static str),
+    /// Go back to the saved theme.
+    RevertTheme,
+    ChooseContextLines,
+    ChooseTabWidth,
+    ToggleRelativeDates,
     FocusNext,
     FocusPrev,
     Focus(Focus),
@@ -143,6 +152,17 @@ pub enum Cmd {
     PlanMove(bool),
     PlanStart,
     PlanCancel,
+}
+
+impl Cmd {
+    /// What a menu with `Menu::preview` set runs when this item is
+    /// selected but not yet chosen.
+    pub fn preview(&self) -> Cmd {
+        match self {
+            Cmd::SetTheme(id) => Cmd::PreviewTheme(id),
+            other => other.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,9 +266,9 @@ pub struct Menu {
     pub selected: usize,
     pub anchor: (u16, u16),
     pub scroll: usize,
-    /// When set, moving the selection runs the selected item's command
-    /// right away, and closing the menu without choosing runs this one to
-    /// undo that.
+    /// When set, moving the selection runs the preview of the selected
+    /// item's command (`Cmd::preview`) right away, and closing the menu
+    /// without choosing runs this one to undo that.
     pub preview: Option<Cmd>,
 }
 
@@ -261,6 +281,8 @@ pub enum Purpose {
     StashPush,
     SetUpstream(String),
     PlannerMessage(usize),
+    ContextLines,
+    TabWidth,
     AskPass(oneshot::Sender<Option<String>>),
 }
 
@@ -382,6 +404,14 @@ impl App {
             act(Some(Key::ch('S')), "Stash changes", Cmd::StashPush).no_menu(),
             act(Some(Key::ch('t')), "Toggle side-by-side diff", Cmd::ToggleSplit).no_menu(),
             act(None, "Choose theme…", Cmd::ChooseTheme).no_menu(),
+            act(None, "Set context lines…", Cmd::ChooseContextLines).no_menu(),
+            act(None, "Set tab width…", Cmd::ChooseTabWidth).no_menu(),
+            act(
+                None,
+                if self.cfg.relative_dates { "Show full dates in history" } else { "Show relative dates in history" },
+                Cmd::ToggleRelativeDates,
+            )
+            .no_menu(),
             act(Some(Key::ch('w')), "Show working directory", Cmd::ShowWorkdir).no_menu(),
             act(Some(Key::ch('@')), "Command log", Cmd::CommandLog).no_menu(),
             act(Some(Key::ctrl('b')), "Toggle sidebar", Cmd::ToggleSidebar).no_menu(),
@@ -728,10 +758,26 @@ impl App {
                     selected,
                     anchor: (w.saturating_sub(24) / 2, h / 4),
                     scroll: 0,
-                    preview: Some(Cmd::SetTheme(current)),
+                    preview: Some(Cmd::RevertTheme),
                 }));
             }
-            Cmd::SetTheme(id) => self.set_theme(id),
+            Cmd::SetTheme(id) => self.change_config(|c| c.theme = id.to_string()),
+            Cmd::PreviewTheme(id) => self.set_theme(id),
+            Cmd::RevertTheme => {
+                let id = self.cfg.theme.clone();
+                self.set_theme(&id);
+            }
+            Cmd::ChooseContextLines => {
+                let hint = format!("Lines to show around each change, from 0 to {}", config::MAX_CONTEXT_LINES);
+                let current = self.cfg.context_lines.to_string();
+                self.open_input("Context lines", &hint, false, &current, Purpose::ContextLines);
+            }
+            Cmd::ChooseTabWidth => {
+                let hint = format!("Columns per tab, from 1 to {}", config::MAX_TAB_WIDTH);
+                let current = self.cfg.tab_width.to_string();
+                self.open_input("Tab width", &hint, false, &current, Purpose::TabWidth);
+            }
+            Cmd::ToggleRelativeDates => self.change_config(|c| c.relative_dates = !c.relative_dates),
             Cmd::FocusNext | Cmd::FocusPrev => {
                 let mut order = Vec::new();
                 if self.sidebar_shown() {
@@ -1192,6 +1238,14 @@ impl App {
                     r.message = Some(text);
                 }
             }
+            Purpose::ContextLines => match name.parse::<u32>() {
+                Ok(n) if n <= config::MAX_CONTEXT_LINES => self.change_config(|c| c.context_lines = n),
+                _ => self.set_status(format!("Context lines must be a number from 0 to {}", config::MAX_CONTEXT_LINES), Level::Error),
+            },
+            Purpose::TabWidth => match name.parse::<usize>() {
+                Ok(n) if (1..=config::MAX_TAB_WIDTH).contains(&n) => self.change_config(|c| c.tab_width = n),
+                _ => self.set_status(format!("The tab width must be a number from 1 to {}", config::MAX_TAB_WIDTH), Level::Error),
+            },
         }
     }
 

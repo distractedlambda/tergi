@@ -3,6 +3,7 @@
 
 mod common;
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -27,6 +28,12 @@ struct Ui {
 
 impl Ui {
     fn open(s: &Scratch) -> Ui {
+        Ui::open_with_config(s, None)
+    }
+
+    /// Open the app with a config file, which it saves settings to and
+    /// watches.
+    fn open_with_config(s: &Scratch, config: Option<&Path>) -> Ui {
         let mut repo = Repo::open(s.path()).expect("open repo");
         // Git calls back into tergi during a rebase. Here the current
         // executable is the test runner, so point it at the real one.
@@ -36,7 +43,9 @@ impl Ui {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         let app = {
             let _in_rt = rt.enter();
-            let mut app = App::new(repo, Config::default(), None);
+            let cfg = config.map(|p| Config::load(p).0).unwrap_or_default();
+            let mut app = App::new(repo, cfg, None);
+            app.config_path = config.map(Path::to_path_buf);
             app.start();
             app
         };
@@ -132,6 +141,13 @@ impl Ui {
     fn key_with(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         self.handle(AppEvent::Input(Event::Key(KeyEvent::new(code, modifiers))));
         self.draw();
+    }
+
+    /// Run a command from the command palette.
+    fn palette(&mut self, search: &str) {
+        self.key_with(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        self.type_text(search);
+        self.key(KeyCode::Enter);
     }
 
     fn type_text(&mut self, text: &str) {
@@ -640,21 +656,21 @@ fn selection_follows_its_commit_through_a_reload() {
 fn the_theme_menu_previews_themes() {
     let s = Scratch::new();
     s.write("main.rs", "fn main() {\n    let x = \"hi\";\n}\n");
-    let mut ui = Ui::open(&s);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("config.toml");
+    let mut ui = Ui::open_with_config(&s, Some(&config));
     ui.wait_loaded(0);
     let colors = |u: &Ui| u.app.detail.highlights.values().next().map(|h| format!("{:?}", h.lines));
     ui.wait("syntax highlighting", |u| colors(u).is_some());
     let first = ui.app.theme.id;
     let first_colors = colors(&ui);
     let open = |ui: &mut Ui| {
-        ui.key_with(KeyCode::Char('p'), KeyModifiers::CONTROL);
-        ui.type_text("choose theme");
-        ui.key(KeyCode::Enter);
+        ui.palette("choose theme");
         assert!(matches!(ui.app.overlays.last(), Some(Overlay::Menu(m)) if m.title.as_deref() == Some("Theme")));
     };
 
     // Moving through the menu switches themes, syntax colors included, and
-    // Esc goes back to the theme from before.
+    // Esc goes back to the theme from before. None of that is saved.
     open(&mut ui);
     ui.key(KeyCode::Down);
     let second = ui.app.theme.id;
@@ -664,13 +680,16 @@ fn the_theme_menu_previews_themes() {
     assert!(ui.app.overlays.is_empty());
     assert_eq!(ui.app.theme.id, first);
     ui.wait("the old syntax colors", |u| colors(u) == first_colors);
+    assert!(!config.exists());
 
-    // Enter keeps the theme.
+    // Enter keeps the theme and saves it.
     open(&mut ui);
     ui.key(KeyCode::Down);
     ui.key(KeyCode::Enter);
     assert!(ui.app.overlays.is_empty());
     assert_eq!(ui.app.theme.id, second);
+    let saved = format!("theme = \"{second}\"\n");
+    assert_eq!(std::fs::read_to_string(&config).expect("config"), saved);
 
     // Clicking outside the menu cancels it, like Esc.
     open(&mut ui);
@@ -679,4 +698,92 @@ fn the_theme_menu_previews_themes() {
     ui.click(MouseButton::Left, Rect::new(0, 35, 1, 1));
     assert!(ui.app.overlays.is_empty());
     assert_eq!(ui.app.theme.id, second);
+    assert_eq!(std::fs::read_to_string(&config).expect("config"), saved);
+}
+
+#[test]
+fn settings_follow_the_config_file() {
+    let s = repo_with_change();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "tab_width = 4\n").expect("write config");
+    let mut ui = Ui::open_with_config(&s, Some(&config));
+    ui.wait_loaded(2);
+    // Make the history wide enough to show dates.
+    ui.app.history_frac = 0.7;
+    let status = |u: &Ui| u.app.status.as_ref().map(|(m, ..)| m.clone()).unwrap_or_default();
+
+    std::fs::write(&config, "theme = \"nord\"\nrelative_dates = false\n").expect("write config");
+    ui.wait("the new settings", |u| u.app.theme.id == "nord" && !u.app.cfg.relative_dates);
+    let c = &ui.app.history.commits[0];
+    let day = tergi::util::format_day(c.time, c.offset);
+    ui.wait("full dates in the history", |u| u.screen().contains(&day));
+
+    // A change that breaks the file is ignored, and so is an unknown theme.
+    for broken in ["theme = \"dracula\"\ntab_width = [\n", "theme = \"plaid\"\ntab_width = 8\n"] {
+        ui.app.status = None;
+        std::fs::write(&config, broken).expect("write config");
+        ui.wait("a warning", |u| status(u).starts_with("Ignored the change to the config file"));
+        assert_eq!(ui.app.theme.id, "nord");
+        assert_eq!(ui.app.cfg.tab_width, 4);
+    }
+
+    // Fixing it applies the change.
+    std::fs::write(&config, "theme = \"dracula\"\ntab_width = 8\n").expect("write config");
+    ui.wait("the fixed settings", |u| u.app.theme.id == "dracula" && u.app.cfg.tab_width == 8 && u.app.cfg.relative_dates);
+}
+
+#[test]
+fn palette_commands_change_and_save_settings() {
+    let s = Scratch::new();
+    let lines = |name: &str, changed: usize| -> String {
+        (1..=20).map(|i| if i == changed { format!("{name} changed\n") } else { format!("{name} {i:02}\n") }).collect()
+    };
+    s.write("a.txt", &lines("a", 0));
+    s.write("b.txt", &lines("b", 0));
+    s.commit_all("Add files");
+    s.write("a.txt", &lines("a", 10));
+    s.commit_all("Change a");
+    s.write("b.txt", &lines("b", 10));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("tergi").join("config.toml");
+    let mut ui = Ui::open_with_config(&s, Some(&config));
+    ui.wait_loaded(2);
+    assert!(ui.screen().contains("b 07"), "{}", ui.screen());
+
+    // Context lines reload the working directory's diff.
+    ui.palette("context lines");
+    assert!(matches!(ui.app.overlays.last(), Some(Overlay::Input(_))));
+    ui.key(KeyCode::Backspace);
+    ui.type_text("1");
+    ui.key(KeyCode::Enter);
+    // The hunk header shows the line before the hunk, so look below it.
+    ui.wait("less context", |u| !u.screen().contains("b 12") && u.screen().contains("b 11"));
+    // Commits use the new number too.
+    ui.select_commit(1);
+    ui.wait("the commit's diff", |u| u.screen().contains("a changed"));
+    assert!(ui.screen().contains("a 11") && !ui.screen().contains("a 12"), "{}", ui.screen());
+
+    // Numbers out of range are refused.
+    ui.palette("tab width");
+    ui.key(KeyCode::Backspace);
+    ui.type_text("99");
+    ui.key(KeyCode::Enter);
+    assert_eq!(ui.app.cfg.tab_width, 4);
+    ui.palette("tab width");
+    ui.key(KeyCode::Backspace);
+    ui.type_text("2");
+    ui.key(KeyCode::Enter);
+    assert_eq!(ui.app.cfg.tab_width, 2);
+
+    ui.palette("full dates");
+    assert!(!ui.app.cfg.relative_dates);
+
+    // The folder didn't exist, so saving made it.
+    let saved = std::fs::read_to_string(&config).expect("config");
+    assert_eq!(saved, "context_lines = 1\ntab_width = 2\nrelative_dates = false\n");
+
+    // Saving also started watching the file.
+    std::fs::write(&config, "relative_dates = true\n").expect("write config");
+    ui.wait("relative dates again", |u| u.app.cfg.relative_dates && u.app.cfg.context_lines == 3);
 }
