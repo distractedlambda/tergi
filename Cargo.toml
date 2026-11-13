@@ -28,6 +28,7 @@ toml_edit = { version = "0.25", default-features = false, features = ["parse", "
 
 [dev-dependencies]
 insta = "1"
+proptest = "1"
 tempfile = "3"
 
 [lints.rust]

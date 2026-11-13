@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 81825252de8e62149218e993c4584ff66029950d48d91627fca210390f620611 # shrinks to case = Case { old: File { lines: ["a", "a", "a", "a", "a", "a", "a", "b", "b", "b", "c"], eol: false }, new: File { lines: ["a", "a", "a", "a", "a", "a", "a", "a", "b", "a", "b", "c"], eol: true }, exists: Both, mode: Unstage, context: 0, mask: [false, false, false, true, false] }
+cc fe65d7e2d7ec3e0d1e20b0ac1d8a7b21ae0ddd2d8740bb520866594165dc4d21 # shrinks to case = Case { old: File { lines: ["a", "a", "a", "a", "a", "a", "a", "a", "b", "b", "a", "a", "a", "a", "a", "a", "a", "a", "a", "c", "b", "b"], eol: false }, new: File { lines: ["a", "a", "a", "a", "a", "b", "a", "c", "c", "b", "b", "b", "a", "a", "a", "a", "a", "a", "a", "a", "a", "c", "b", "b"], eol: true }, exists: Both, mode: Stage, context: 0, mask: [false, false, false, false, false, false, true, false] }
