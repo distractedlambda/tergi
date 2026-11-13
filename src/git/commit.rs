@@ -32,7 +32,7 @@ pub struct CommitDetail {
     pub message: String,
     pub author: Person,
     pub committer: Person,
-    pub files: Vec<FileDiff>,
+    pub files: Vec<Arc<FileDiff>>,
     pub texts: Vec<FileTexts>,
 }
 
@@ -80,7 +80,7 @@ pub fn load(
         message,
         author,
         committer,
-        files,
+        files: files.into_iter().map(Arc::new).collect(),
         texts,
     })
 }

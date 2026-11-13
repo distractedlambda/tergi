@@ -920,7 +920,7 @@ impl App {
         }
     }
 
-    pub fn section_files(&self, sec: doc::Section) -> &[FileDiff] {
+    pub fn section_files(&self, sec: doc::Section) -> &[Arc<FileDiff>] {
         doc::section_files(self.workdir.as_ref(), self.detail.commit.as_deref(), sec)
     }
 

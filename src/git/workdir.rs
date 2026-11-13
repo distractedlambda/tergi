@@ -1,6 +1,8 @@
 //! Loading the working directory state: status plus the unstaged, staged
 //! and untracked diffs shown in the staging view.
 
+use std::sync::Arc;
+
 use anyhow::Result;
 
 use super::cli::{Git, RunOpts};
@@ -11,10 +13,10 @@ use super::status::{Entry, Status};
 #[derive(Debug, Clone, Default)]
 pub struct Workdir {
     pub status: Status,
-    pub unstaged: Vec<FileDiff>,
-    pub staged: Vec<FileDiff>,
-    pub untracked: Vec<FileDiff>,
-    pub conflicted: Vec<FileDiff>,
+    pub unstaged: Vec<Arc<FileDiff>>,
+    pub staged: Vec<Arc<FileDiff>>,
+    pub untracked: Vec<Arc<FileDiff>>,
+    pub conflicted: Vec<Arc<FileDiff>>,
     /// Full text of the working tree version of each unstaged and untracked
     /// file, for syntax highlighting. Indexed like the lists above.
     pub unstaged_texts: Vec<FileTexts>,
@@ -88,17 +90,18 @@ impl Workdir {
                 conflicted.push(f);
             }
 
-            let (untracked, untracked_texts) = untracked_files
+            let (untracked, untracked_texts): (Vec<_>, _) = untracked_files
                 .into_iter()
                 .map(|u| diff_untracked(u, context, line_limit))
                 .unzip();
 
+            let arcs = |files: Vec<FileDiff>| files.into_iter().map(Arc::new).collect();
             Workdir {
                 status,
-                unstaged,
-                staged,
-                untracked,
-                conflicted,
+                unstaged: arcs(unstaged),
+                staged: arcs(staged),
+                untracked: arcs(untracked),
+                conflicted: arcs(conflicted),
                 unstaged_texts: Vec::new(),
                 untracked_texts,
             }
@@ -122,7 +125,7 @@ impl Workdir {
     }
 }
 
-async fn read_text(path: &std::path::Path) -> Option<std::sync::Arc<str>> {
+async fn read_text(path: &std::path::Path) -> Option<Arc<str>> {
     let data = tokio::fs::read(path).await.ok()?;
     if data.len() > MAX_BLOB || is_binary(&data) {
         return None;
@@ -207,7 +210,7 @@ fn diff_untracked(u: Untracked, context: u32, line_limit: usize) -> (FileDiff, F
     match data {
         Some(data) if is_binary(&data) => f.binary = true,
         Some(data) => {
-            let text: std::sync::Arc<str> = String::from_utf8_lossy(&data).into();
+            let text: Arc<str> = String::from_utf8_lossy(&data).into();
             f.hunks = diff_texts("", &text, context);
             if f.line_count() > line_limit {
                 f.too_large = true;

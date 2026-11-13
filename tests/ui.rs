@@ -13,7 +13,7 @@ use ratatui::layout::Rect;
 
 use common::Scratch;
 use tergi::app::cmd::{Cmd, Overlay, Unit};
-use tergi::app::doc::Row;
+use tergi::app::doc::{Row, Section};
 use tergi::app::input::Target;
 use tergi::app::{After, App, AppEvent, Repo};
 use tergi::config::Config;
@@ -506,6 +506,67 @@ fn stages_selected_lines_and_discards_a_file() {
     ui.key(KeyCode::Char('y'));
     ui.settle();
     assert_eq!(s.sh(&["diff", "--name-only"]).trim(), "");
+}
+
+/// Put the cursor on a row in the detail pane and press `d`, which asks
+/// before discarding.
+fn ask_to_discard(ui: &mut Ui, row: impl Fn(&Ui, &Row) -> bool) {
+    let at = ui.app.detail.rows.iter().position(|r| row(ui, r)).expect("row in the detail pane");
+    ui.app.detail_move_to(at, false);
+    ui.key(KeyCode::Char('d'));
+    assert!(matches!(ui.app.overlays.last(), Some(Overlay::Confirm { .. })), "{}", ui.screen());
+}
+
+#[test]
+fn a_file_waiting_to_be_discarded_stays_the_same_file() {
+    let s = Scratch::new();
+    for f in ["a.txt", "b.txt", "c.txt"] {
+        s.write(f, "old\n");
+    }
+    s.commit_all("init");
+    s.write("b.txt", "new\n");
+    s.write("c.txt", "new\n");
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(1);
+    ui.key(KeyCode::Char('3'));
+    ask_to_discard(&mut ui, |u, r| {
+        matches!(r, Row::File { sec: Section::Unstaged, file } if u.app.section_files(Section::Unstaged)[*file].path() == "c.txt")
+    });
+
+    // While the dialog is open, a change shows up ahead of c.txt.
+    s.write("a.txt", "new\n");
+    ui.run_cmd(Cmd::Refresh);
+    ui.wait("a.txt to show up", |u| u.app.section_files(Section::Unstaged).len() == 3);
+    ui.key(KeyCode::Char('y'));
+    ui.settle();
+    assert_eq!(s.sh(&["diff", "--name-only"]).trim(), "a.txt\nb.txt");
+}
+
+#[test]
+fn a_hunk_waiting_to_be_discarded_stays_the_same_hunk() {
+    let s = Scratch::new();
+    let text = |changes: &[(usize, &str)]| {
+        let mut lines: Vec<String> = (1..=30).map(|i| i.to_string()).collect();
+        for &(n, t) in changes {
+            lines[n - 1] = t.to_string();
+        }
+        lines.join("\n") + "\n"
+    };
+    s.write("f.txt", &text(&[]));
+    s.commit_all("init");
+    s.write("f.txt", &text(&[(15, "fifteen"), (28, "twenty-eight")]));
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(1);
+    ui.key(KeyCode::Char('3'));
+    ask_to_discard(&mut ui, |_, r| matches!(r, Row::Hunk { sec: Section::Unstaged, hunk: 1, .. }));
+
+    // While the dialog is open, a new hunk shows up above it.
+    s.write("f.txt", &text(&[(2, "two"), (15, "fifteen"), (28, "twenty-eight")]));
+    ui.run_cmd(Cmd::Refresh);
+    ui.wait("the new hunk", |u| u.app.section_files(Section::Unstaged).first().is_some_and(|f| f.hunks.len() == 3));
+    ui.key(KeyCode::Char('y'));
+    ui.settle();
+    assert_eq!(s.read("f.txt"), text(&[(2, "two"), (15, "fifteen")]));
 }
 
 #[test]

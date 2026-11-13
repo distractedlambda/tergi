@@ -200,7 +200,7 @@ pub fn section_files<'a>(
     workdir: Option<&'a Workdir>,
     commit: Option<&'a CommitDetail>,
     sec: Section,
-) -> &'a [FileDiff] {
+) -> &'a [Arc<FileDiff>] {
     match sec {
         Section::Commit => commit.map_or(&[], |c| &c.files),
         Section::Conflicted => workdir.map_or(&[], |w| &w.conflicted),
@@ -474,7 +474,7 @@ impl Detail {
         push(Line::default(), None);
     }
 
-    fn build_files(&mut self, sec: Section, files: &[FileDiff], split: bool, staging: bool) {
+    fn build_files(&mut self, sec: Section, files: &[Arc<FileDiff>], split: bool, staging: bool) {
         let many = files.len() > 40;
         for (fi, f) in files.iter().enumerate() {
             let key = (sec, f.path().to_string());
@@ -531,7 +531,7 @@ impl Detail {
     /// The changed lines in the selection that belong to the cursor's file.
     pub fn selected_lines<'a>(
         &self,
-        files_of: impl Fn(Section) -> &'a [FileDiff],
+        files_of: impl Fn(Section) -> &'a [Arc<FileDiff>],
     ) -> Option<LineSelection> {
         let (lo, hi) = self.selection()?;
         let (sec, file) = self.rows.get(self.cursor)?.file()?;
@@ -565,27 +565,30 @@ impl Detail {
 
     /// The piece of the diff that "stage" or "discard" applies to, based on
     /// the cursor and the line selection.
-    pub fn unit_at_cursor<'a>(&self, files_of: impl Fn(Section) -> &'a [FileDiff]) -> Option<Unit> {
+    pub fn unit_at_cursor<'a>(&self, files_of: impl Fn(Section) -> &'a [Arc<FileDiff>]) -> Option<Unit> {
         let row = self.rows.get(self.cursor)?;
         if self.anchor.is_some()
             && let Some((s, f, lines)) = self.selected_lines(&files_of)
         {
-            return Some(Unit::Lines(s, f, lines));
+            return Some(Unit::Lines(s, files_of(s).get(f)?.clone(), lines));
         }
+        let file = |sec: Section, i: usize| files_of(sec).get(i).cloned();
         Some(match *row {
             Row::Section(s) => Unit::Section(s),
-            Row::File { sec, file } | Row::Notice { sec, file, .. } => Unit::File(sec, file),
-            Row::Hunk { sec, file, hunk } => Unit::Hunk(sec, file, hunk),
-            Row::Line { sec, file, hunk, line } => {
-                let kind = files_of(sec).get(file)?.hunks.get(hunk)?.lines.get(line)?.kind;
+            Row::File { sec, file: i } | Row::Notice { sec, file: i, .. } => Unit::File(sec, file(sec, i)?.path().to_string()),
+            Row::Hunk { sec, file: i, hunk } => Unit::Hunk(sec, file(sec, i)?, hunk),
+            Row::Line { sec, file: i, hunk, line } => {
+                let f = file(sec, i)?;
+                let kind = f.hunks.get(hunk)?.lines.get(line)?.kind;
                 if kind == LineKind::Context {
-                    Unit::Hunk(sec, file, hunk)
+                    Unit::Hunk(sec, f, hunk)
                 } else {
-                    Unit::Lines(sec, file, vec![(hunk, line)])
+                    Unit::Lines(sec, f, vec![(hunk, line)])
                 }
             }
-            Row::Split { sec, file, hunk, left, right } => {
-                let h = files_of(sec).get(file)?.hunks.get(hunk)?;
+            Row::Split { sec, file: i, hunk, left, right } => {
+                let f = file(sec, i)?;
+                let h = f.hunks.get(hunk)?;
                 let lines: Vec<(usize, usize)> = [left, right]
                     .into_iter()
                     .flatten()
@@ -593,9 +596,9 @@ impl Detail {
                     .map(|l| (hunk, l))
                     .collect();
                 if lines.is_empty() {
-                    Unit::Hunk(sec, file, hunk)
+                    Unit::Hunk(sec, f, hunk)
                 } else {
-                    Unit::Lines(sec, file, lines)
+                    Unit::Lines(sec, f, lines)
                 }
             }
             _ => return None,

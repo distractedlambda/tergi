@@ -1,5 +1,7 @@
 mod common;
 
+use std::sync::Arc;
+
 use common::Scratch;
 use tergi::git::diff::{FileDiff, LineKind};
 use tergi::git::ops::{ApplyMode, apply_lines};
@@ -7,16 +9,13 @@ use tergi::git::workdir::Workdir;
 
 async fn unstaged(s: &Scratch, path: &str) -> FileDiff {
     let wd = Workdir::load(&s.git, 3, 100_000).await.expect("load");
-    wd.unstaged
-        .into_iter()
-        .chain(wd.untracked)
-        .find(|f| f.path() == path)
-        .expect("file in diff")
+    let f = wd.unstaged.into_iter().chain(wd.untracked).find(|f| f.path() == path);
+    Arc::unwrap_or_clone(f.expect("file in diff"))
 }
 
 async fn staged(s: &Scratch, path: &str) -> FileDiff {
     let wd = Workdir::load(&s.git, 3, 100_000).await.expect("load");
-    wd.staged.into_iter().find(|f| f.path() == path).expect("file in diff")
+    Arc::unwrap_or_clone(wd.staged.into_iter().find(|f| f.path() == path).expect("file in diff"))
 }
 
 /// Select changed lines whose text is in `texts`.

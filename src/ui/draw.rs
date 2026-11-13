@@ -609,7 +609,7 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 let (adds, dels) = f.added_removed();
                 let items: Vec<(&str, Cmd, Option<Color>)> = if staging {
                     match sec {
-                        Section::Staged => vec![("Unstage", Cmd::Unstage(Unit::File(*sec, *file)), None)],
+                        Section::Staged => vec![("Unstage", Cmd::Unstage(Unit::File(*sec, f.path().to_string())), None)],
                         Section::Conflicted => {
                             let p = f.path().to_string();
                             vec![
@@ -619,8 +619,8 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                             ]
                         }
                         _ => vec![
-                            ("Stage", Cmd::Stage(Unit::File(*sec, *file)), None),
-                            ("Discard", Cmd::Discard(Unit::File(*sec, *file)), None),
+                            ("Stage", Cmd::Stage(Unit::File(*sec, f.path().to_string())), None),
+                            ("Discard", Cmd::Discard(Unit::File(*sec, f.path().to_string())), None),
                         ],
                     }
                 } else {
@@ -644,7 +644,8 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 put(buf, a.x + 3, y, text, a.width.saturating_sub(4), Style::default().bg(bg).fg(t.dim).add_modifier(Modifier::ITALIC));
             }
             Row::Hunk { sec, file, hunk } => {
-                let Some(h) = app.section_files(*sec).get(*file).and_then(|f| f.hunks.get(*hunk)) else { continue };
+                let Some(f) = app.section_files(*sec).get(*file) else { continue };
+                let Some(h) = f.hunks.get(*hunk) else { continue };
                 let bg = if is_cursor { t.sel } else { t.hunk_bg };
                 fill(buf, rr, bg);
                 let items: Vec<(&str, Cmd, Option<Color>)> = if staging && *sec != Section::Conflicted {
@@ -652,15 +653,15 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                         .selected_lines(|s| app.section_files(s))
                         .filter(|(s, f, l)| s == sec && f == file && l.iter().any(|(hh, _)| hh == hunk));
                     match (sec, lines) {
-                        (Section::Staged, Some((s, f, l))) => vec![("Unstage lines", Cmd::Unstage(Unit::Lines(s, f, l)), None)],
-                        (Section::Staged, None) => vec![("Unstage hunk", Cmd::Unstage(Unit::Hunk(*sec, *file, *hunk)), None)],
-                        (_, Some((s, f, l))) => vec![
-                            ("Stage lines", Cmd::Stage(Unit::Lines(s, f, l.clone())), None),
-                            ("Discard lines", Cmd::Discard(Unit::Lines(s, f, l)), None),
+                        (Section::Staged, Some((s, _, l))) => vec![("Unstage lines", Cmd::Unstage(Unit::Lines(s, f.clone(), l)), None)],
+                        (Section::Staged, None) => vec![("Unstage hunk", Cmd::Unstage(Unit::Hunk(*sec, f.clone(), *hunk)), None)],
+                        (_, Some((s, _, l))) => vec![
+                            ("Stage lines", Cmd::Stage(Unit::Lines(s, f.clone(), l.clone())), None),
+                            ("Discard lines", Cmd::Discard(Unit::Lines(s, f.clone(), l)), None),
                         ],
                         (_, None) => vec![
-                            ("Stage hunk", Cmd::Stage(Unit::Hunk(*sec, *file, *hunk)), None),
-                            ("Discard hunk", Cmd::Discard(Unit::Hunk(*sec, *file, *hunk)), None),
+                            ("Stage hunk", Cmd::Stage(Unit::Hunk(*sec, f.clone(), *hunk)), None),
+                            ("Discard hunk", Cmd::Discard(Unit::Hunk(*sec, f.clone(), *hunk)), None),
                         ],
                     }
                 } else {

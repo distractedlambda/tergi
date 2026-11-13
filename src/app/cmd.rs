@@ -5,6 +5,7 @@
 //! menu, the `?` help menu, the hint bar and the command palette.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use gix::ObjectId;
@@ -22,12 +23,20 @@ use crate::git::rebase::{self, Action, Outcome, RepoState};
 use crate::git::refs::Refs;
 use crate::ui::textarea::TextArea;
 
+/// Part of the working directory's changes, to stage, unstage or discard.
+///
+/// A unit can wait in a menu or a confirmation dialog while the status
+/// reloads and the file lists change. So it names a file by its path, not
+/// by its place in a list. Hunks and lines keep the diff they were chosen
+/// from, and the patch is built from that diff. If the file has changed
+/// since then where the patch applies, `git apply` refuses it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unit {
     Section(Section),
-    File(Section, usize),
-    Hunk(Section, usize, usize),
-    Lines(Section, usize, Vec<(usize, usize)>),
+    File(Section, String),
+    Hunk(Section, Arc<FileDiff>, usize),
+    /// `(hunk, line)` indexes into the diff.
+    Lines(Section, Arc<FileDiff>, Vec<(usize, usize)>),
 }
 
 impl Unit {
@@ -645,8 +654,7 @@ impl App {
                 let what = match u {
                     Unit::Section(Section::Untracked) => "all untracked files will be deleted".to_string(),
                     Unit::Section(_) => "all unstaged changes will be lost".to_string(),
-                    Unit::File(sec, i) => {
-                        let p = self.section_files(*sec).get(*i).map(|f| f.path().to_string()).unwrap_or_default();
+                    Unit::File(sec, p) => {
                         if *sec == Section::Untracked {
                             format!("{p} will be deleted")
                         } else {
@@ -1268,8 +1276,6 @@ impl App {
     }
 
     fn apply_unit(&mut self, unit: Unit, mode: ApplyMode, has_head: bool) {
-        let sec = unit.section();
-        let files: Vec<FileDiff> = self.section_files(sec).to_vec();
         let (label, past) = match mode {
             ApplyMode::Stage => ("Stage", "Staged"),
             ApplyMode::Unstage => ("Unstage", "Unstaged"),
@@ -1278,13 +1284,9 @@ impl App {
         let noun = unit.noun();
         let done = format!("{past} {noun}");
         let paths: Vec<String> = match &unit {
-            Unit::Section(_) => files.iter().map(|f| f.path().to_string()).collect(),
-            Unit::File(_, i) => files.get(*i).map(|f| vec![f.path().to_string()]).unwrap_or_default(),
+            Unit::Section(sec) => self.section_files(*sec).iter().map(|f| f.path().to_string()).collect(),
+            Unit::File(_, path) => vec![path.clone()],
             _ => Vec::new(),
-        };
-        let file = match &unit {
-            Unit::Hunk(_, i, _) | Unit::Lines(_, i, _) => files.get(*i).cloned(),
-            _ => None,
         };
         self.detail.anchor = None;
         self.spawn_op(label, After::Nothing, move |r, _| async move {
@@ -1301,13 +1303,11 @@ impl App {
                         ops::discard_paths(git, &refs).await?;
                     }
                 }
-                (Unit::Hunk(_, _, h), _) => {
-                    let f = file.as_ref().ok_or_else(|| anyhow::anyhow!("file is gone"))?;
+                (Unit::Hunk(_, f, h), _) => {
                     let h = *h;
                     ops::apply_lines(git, f, mode, &|hh, _| hh == h).await?;
                 }
-                (Unit::Lines(_, _, set), _) => {
-                    let f = file.as_ref().ok_or_else(|| anyhow::anyhow!("file is gone"))?;
+                (Unit::Lines(_, f, set), _) => {
                     ops::apply_lines(git, f, mode, &|h, l| set.contains(&(h, l))).await?;
                 }
             }
@@ -1373,24 +1373,23 @@ impl App {
             return;
         }
         let ctx = self.cfg.context_lines;
-        let path = f.path().to_string();
         match sec {
             Section::Unstaged | Section::Staged => {
                 let f = f.clone();
                 self.spawn_read(
                     move |r| async move { crate::git::workdir::load_full_diff(&r.git, &f, sec == Section::Staged, ctx).await },
                     move |app, full| match full {
-                        Ok(Some(full)) => app.put_full_diff(sec, fi, &path, full, None),
+                        Ok(Some(full)) => app.put_full_diff(sec, full, None),
                         Ok(None) => {}
                         Err(e) => app.show_error("Loading the diff failed", &e),
                     },
                 );
             }
             Section::Untracked => {
-                let p = path.clone();
+                let path = f.path().to_string();
                 self.spawn_read(
-                    move |r| async move { crate::git::workdir::load_full_untracked(&r.git, &p, ctx).await },
-                    move |app, (full, texts)| app.put_full_diff(sec, fi, &path, full, Some(texts)),
+                    move |r| async move { crate::git::workdir::load_full_untracked(&r.git, &path, ctx).await },
+                    move |app, (full, texts)| app.put_full_diff(sec, full, Some(texts)),
                 );
             }
             Section::Commit => {
@@ -1403,7 +1402,7 @@ impl App {
                         }
                         match full {
                             Ok(full) => {
-                                app.detail.set_commit(std::sync::Arc::new(full));
+                                app.detail.set_commit(Arc::new(full));
                                 app.rebuild_doc();
                             }
                             Err(e) => app.show_error("Loading the diff failed", &e),
@@ -1417,8 +1416,9 @@ impl App {
 
     /// Show the whole diff of a working directory file in place of the
     /// shortened one. The status may have reloaded while git worked, so
-    /// only do it if the same file is still in the same place.
-    fn put_full_diff(&mut self, sec: Section, fi: usize, path: &str, full: FileDiff, texts: Option<FileTexts>) {
+    /// look the file up again by its paths. If it's gone, or no longer cut
+    /// short, leave it alone.
+    fn put_full_diff(&mut self, sec: Section, full: FileDiff, texts: Option<FileTexts>) {
         let Some(w) = &mut self.workdir else { return };
         let list = match sec {
             Section::Staged => &mut w.staged,
@@ -1426,13 +1426,15 @@ impl App {
             Section::Untracked => &mut w.untracked,
             Section::Commit | Section::Conflicted => return,
         };
-        let Some(slot) = list.get_mut(fi) else { return };
-        if slot.path() != path || !slot.too_large {
+        let Some(i) = list
+            .iter()
+            .position(|f| f.too_large && f.old_path == full.old_path && f.new_path == full.new_path)
+        else {
             return;
-        }
-        *slot = full;
+        };
+        list[i] = Arc::new(full);
         if let Some(texts) = texts
-            && let Some(t) = w.untracked_texts.get_mut(fi)
+            && let Some(t) = w.untracked_texts.get_mut(i)
         {
             *t = texts;
         }
