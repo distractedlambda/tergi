@@ -34,6 +34,10 @@ use crate::ui::textarea::TextArea;
 pub enum Unit {
     Section(Section),
     File(Section, String),
+    /// Files by path. Discarding a whole section turns into this when the
+    /// dialog asking about it opens. That way it only discards the files
+    /// the dialog names, and not ones that show up while it's open.
+    Files(Section, Vec<String>),
     Hunk(Section, Arc<FileDiff>, usize),
     /// `(hunk, line)` indexes into the diff.
     Lines(Section, Arc<FileDiff>, Vec<(usize, usize)>),
@@ -42,7 +46,7 @@ pub enum Unit {
 impl Unit {
     pub fn section(&self) -> Section {
         match self {
-            Unit::Section(s) | Unit::File(s, _) | Unit::Hunk(s, ..) | Unit::Lines(s, ..) => *s,
+            Unit::Section(s) | Unit::File(s, _) | Unit::Files(s, _) | Unit::Hunk(s, ..) | Unit::Lines(s, ..) => *s,
         }
     }
 
@@ -50,6 +54,8 @@ impl Unit {
         match self {
             Unit::Section(_) => "all",
             Unit::File(..) => "file",
+            Unit::Files(_, p) if p.len() == 1 => "file",
+            Unit::Files(..) => "files",
             Unit::Hunk(..) => "hunk",
             Unit::Lines(_, _, l) if l.len() == 1 => "line",
             Unit::Lines(..) => "lines",
@@ -683,13 +689,8 @@ impl App {
                 let what = match u {
                     Unit::Section(Section::Untracked) => "all untracked files will be deleted".to_string(),
                     Unit::Section(_) => "all unstaged changes will be lost".to_string(),
-                    Unit::File(sec, p) => {
-                        if *sec == Section::Untracked {
-                            format!("{p} will be deleted")
-                        } else {
-                            format!("unstaged changes to {p} will be lost")
-                        }
-                    }
+                    Unit::File(sec, p) => discard_what(*sec, std::slice::from_ref(p)),
+                    Unit::Files(sec, paths) => discard_what(*sec, paths),
                     Unit::Hunk(..) => "this hunk's changes will be lost".to_string(),
                     Unit::Lines(..) => "the selected changes will be lost".to_string(),
                 };
@@ -730,6 +731,23 @@ impl App {
         let cmd = match cmd {
             Cmd::Confirmed(inner) => *inner,
             other => {
+                let other = match other {
+                    Cmd::Discard(Unit::Section(sec)) => {
+                        let mut seen = HashSet::new();
+                        let paths: Vec<String> = self
+                            .section_files(sec)
+                            .iter()
+                            .map(|f| f.path().to_string())
+                            .filter(|p| seen.insert(p.clone()))
+                            .collect();
+                        if paths.is_empty() {
+                            self.set_status("There's nothing to discard", Level::Info);
+                            return;
+                        }
+                        Cmd::Discard(Unit::Files(sec, paths))
+                    }
+                    other => other,
+                };
                 if let Some((title, body, yes_label)) = self.confirm_for(&other) {
                     self.overlays.push(Overlay::Confirm {
                         title,
@@ -1315,6 +1333,7 @@ impl App {
         let paths: Vec<String> = match &unit {
             Unit::Section(sec) => self.section_files(*sec).iter().map(|f| f.path().to_string()).collect(),
             Unit::File(_, path) => vec![path.clone()],
+            Unit::Files(_, paths) => paths.clone(),
             _ => Vec::new(),
         };
         self.detail.anchor = None;
@@ -1323,9 +1342,9 @@ impl App {
             let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
             match (&unit, mode) {
                 (Unit::Section(Section::Staged), ApplyMode::Unstage) => ops::unstage_all(git, has_head).await?,
-                (Unit::Section(_) | Unit::File(..), ApplyMode::Stage) => ops::stage_paths(git, &refs).await?,
-                (Unit::Section(_) | Unit::File(..), ApplyMode::Unstage) => ops::unstage_paths(git, &refs, has_head).await?,
-                (Unit::Section(s) | Unit::File(s, _), ApplyMode::Discard) => {
+                (Unit::Section(_) | Unit::File(..) | Unit::Files(..), ApplyMode::Stage) => ops::stage_paths(git, &refs).await?,
+                (Unit::Section(_) | Unit::File(..) | Unit::Files(..), ApplyMode::Unstage) => ops::unstage_paths(git, &refs, has_head).await?,
+                (Unit::Section(s) | Unit::File(s, _) | Unit::Files(s, _), ApplyMode::Discard) => {
                     if *s == Section::Untracked {
                         ops::delete_untracked(git, &refs).await?;
                     } else {
@@ -1471,6 +1490,22 @@ impl App {
             self.detail.reset_for_reload();
             self.rebuild_doc();
         }
+    }
+}
+
+/// What discarding `paths` in `sec` does, for the dialog that asks first.
+fn discard_what(sec: Section, paths: &[String]) -> String {
+    const SHOWN: usize = 5;
+    let list = match paths {
+        [] => String::new(),
+        [p] => p.clone(),
+        [rest @ .., last] if paths.len() <= SHOWN => format!("{} and {last}", rest.join(", ")),
+        _ => format!("{} and {} other files", paths[..SHOWN - 1].join(", "), paths.len() - (SHOWN - 1)),
+    };
+    if sec == Section::Untracked {
+        format!("{list} will be deleted")
+    } else {
+        format!("unstaged changes to {list} will be lost")
     }
 }
 

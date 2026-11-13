@@ -584,6 +584,31 @@ fn a_file_waiting_to_be_discarded_stays_the_same_file() {
 }
 
 #[test]
+fn discarding_a_section_spares_files_that_show_up_later() {
+    let s = Scratch::new();
+    s.write("base.txt", "base\n");
+    s.commit_all("init");
+    s.write("a.txt", "a\n");
+    s.write("b.txt", "b\n");
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(1);
+    ui.key(KeyCode::Char('3'));
+    ask_to_discard(&mut ui, |_, r| *r == Row::Section(Section::Untracked));
+    match ui.app.overlays.last() {
+        Some(Overlay::Confirm { body, .. }) => assert!(body.contains("a.txt and b.txt will be deleted"), "{body}"),
+        _ => panic!("no dialog\n{}", ui.screen()),
+    }
+
+    // A new file shows up while the dialog is open.
+    s.write("c.txt", "c\n");
+    ui.run_cmd(Cmd::Refresh);
+    ui.wait("c.txt to show up", |u| u.app.section_files(Section::Untracked).len() == 3);
+    ui.key(KeyCode::Char('y'));
+    ui.settle();
+    assert_eq!(s.sh(&["status", "--porcelain"]).trim(), "?? c.txt");
+}
+
+#[test]
 fn a_hunk_waiting_to_be_discarded_stays_the_same_hunk() {
     let s = Scratch::new();
     let text = |changes: &[(usize, &str)]| {
