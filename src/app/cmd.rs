@@ -338,6 +338,34 @@ pub enum SideRow {
     Empty(String),
 }
 
+/// What a sidebar row shows. Rows refer to refs by their place in the
+/// lists in `Refs`, which can change when the refs reload. This stays the
+/// same.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SideKey {
+    Header(String),
+    Branch(String),
+    Remote(String),
+    RemoteBranch(String),
+    Tag(String),
+    Stash(ObjectId),
+}
+
+impl SideRow {
+    /// What this row shows, given the refs it was built from.
+    pub fn key(&self, refs: &Refs) -> Option<SideKey> {
+        match self {
+            SideRow::Header { key, .. } => Some(SideKey::Header(key.clone())),
+            SideRow::Branch(i) => refs.branches.get(*i).map(|b| SideKey::Branch(b.name.clone())),
+            SideRow::Remote(r) => Some(SideKey::Remote(r.clone())),
+            SideRow::RemoteBranch(i) => refs.remote_branches.get(*i).map(|b| SideKey::RemoteBranch(b.full_name())),
+            SideRow::Tag(i) => refs.tags.get(*i).map(|t| SideKey::Tag(t.name.clone())),
+            SideRow::Stash(i) => refs.stashes.get(*i).map(|s| SideKey::Stash(s.id)),
+            SideRow::Empty(_) => None,
+        }
+    }
+}
+
 pub fn sidebar_rows(refs: &Refs, collapsed: &HashSet<String>) -> Vec<SideRow> {
     let mut rows = Vec::new();
     let header = |rows: &mut Vec<SideRow>, key: &str, title: &str, count: usize| {
@@ -550,7 +578,7 @@ impl App {
                 v.extend(nav);
                 v
             }
-            Source::Commit(id) | Source::Stash(_, id) => {
+            Source::Commit(id) | Source::Stash(id) => {
                 let mut v = vec![act(Some(Key::ch('y')), "Copy commit hash", Cmd::CopyHash(id))];
                 if let Some((sec, fi)) = self.detail.rows.get(self.detail.cursor).and_then(Row::file)
                     && let Some(f) = self.section_files(sec).get(fi)
@@ -1107,7 +1135,7 @@ impl App {
                 if !self.sidebar.collapsed.remove(&key) {
                     self.sidebar.collapsed.insert(key);
                 }
-                self.rebuild_sidebar();
+                self.rebuild_sidebar(None);
             }
 
             Cmd::ContinueOp => {

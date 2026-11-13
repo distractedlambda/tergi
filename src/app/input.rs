@@ -234,21 +234,15 @@ impl App {
 
     pub fn sidebar_select(&mut self, i: usize) {
         self.sidebar.selected = i.min(self.sidebar.rows.len().saturating_sub(1));
-        let h = usize::from(self.areas.sidebar.height.max(1));
-        if self.sidebar.selected < self.sidebar.scroll {
-            self.sidebar.scroll = self.sidebar.selected;
-        } else if self.sidebar.selected >= self.sidebar.scroll + h {
-            self.sidebar.scroll = self.sidebar.selected + 1 - h;
-        }
+        self.ensure_sidebar_visible();
         // Show what the selected ref points at.
         let target = match self.sidebar.rows.get(self.sidebar.selected) {
             Some(SideRow::Branch(i)) => self.refs.branches.get(*i).map(|b| b.target),
             Some(SideRow::RemoteBranch(i)) => self.refs.remote_branches.get(*i).map(|b| b.target),
             Some(SideRow::Tag(i)) => self.refs.tags.get(*i).map(|t| t.target),
             Some(SideRow::Stash(i)) => {
-                if let Some(s) = self.refs.stashes.get(*i) {
-                    let (idx, id) = (s.index, s.id);
-                    self.show_source(Source::Stash(idx, id));
+                if let Some(id) = self.refs.stashes.get(*i).map(|s| s.id) {
+                    self.show_source(Source::Stash(id));
                 }
                 None
             }
@@ -256,6 +250,15 @@ impl App {
         };
         if let Some(id) = target {
             self.jump_to(id);
+        }
+    }
+
+    pub fn ensure_sidebar_visible(&mut self) {
+        let h = usize::from(self.areas.sidebar.height.max(1));
+        if self.sidebar.selected < self.sidebar.scroll {
+            self.sidebar.scroll = self.sidebar.selected;
+        } else if self.sidebar.selected >= self.sidebar.scroll + h {
+            self.sidebar.scroll = self.sidebar.selected + 1 - h;
         }
     }
 

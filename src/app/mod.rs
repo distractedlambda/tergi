@@ -747,8 +747,7 @@ impl App {
             b.sort();
             a != b
         };
-        self.refs = refs;
-        self.rebuild_sidebar();
+        self.rebuild_sidebar(Some(refs));
         if changed_tips || self.history.generation.current() == 0 {
             self.start_history_walk(tips);
         }
@@ -913,11 +912,20 @@ impl App {
         self.rebuild_doc();
     }
 
-    pub fn rebuild_sidebar(&mut self) {
-        self.sidebar.rows = cmd::sidebar_rows(&self.refs, &self.sidebar.collapsed);
-        if self.sidebar.selected >= self.sidebar.rows.len() {
-            self.sidebar.selected = self.sidebar.rows.len().saturating_sub(1);
+    /// Rebuild the sidebar's rows, with new refs if there are any. The
+    /// selection stays on the same ref, wherever its row ends up. If the
+    /// ref is gone, the same row stays selected instead.
+    pub fn rebuild_sidebar(&mut self, refs: Option<Refs>) {
+        let selected = self.sidebar.rows.get(self.sidebar.selected).and_then(|r| r.key(&self.refs));
+        if let Some(refs) = refs {
+            self.refs = refs;
         }
+        self.sidebar.rows = cmd::sidebar_rows(&self.refs, &self.sidebar.collapsed);
+        let row = selected.and_then(|k| self.sidebar.rows.iter().position(|r| r.key(&self.refs).as_ref() == Some(&k)));
+        self.sidebar.selected = row
+            .unwrap_or(self.sidebar.selected)
+            .min(self.sidebar.rows.len().saturating_sub(1));
+        self.ensure_sidebar_visible();
     }
 
     pub fn section_files(&self, sec: doc::Section) -> &[Arc<FileDiff>] {

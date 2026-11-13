@@ -24,14 +24,14 @@ pub enum Source {
     None,
     Workdir,
     Commit(ObjectId),
-    Stash(usize, ObjectId),
+    Stash(ObjectId),
 }
 
 impl Source {
     /// The commit this source shows, if it shows one.
     pub fn commit_id(&self) -> Option<ObjectId> {
         match self {
-            Source::Commit(id) | Source::Stash(_, id) => Some(*id),
+            Source::Commit(id) | Source::Stash(id) => Some(*id),
             Source::None | Source::Workdir => None,
         }
     }

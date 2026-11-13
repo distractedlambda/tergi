@@ -12,7 +12,7 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 
 use common::Scratch;
-use tergi::app::cmd::{Cmd, Overlay, Unit};
+use tergi::app::cmd::{Cmd, Overlay, SideRow, Unit};
 use tergi::app::doc::{Row, Section};
 use tergi::app::input::Target;
 use tergi::app::{After, App, AppEvent, Repo};
@@ -711,6 +711,26 @@ fn selection_follows_its_commit_through_a_reload() {
     }
     assert_eq!(ui.app.history.selected_commit().map(|c| c.id), Some(id));
     assert_eq!(ui.app.history.index.get(&id), Some(&203));
+}
+
+#[test]
+fn sidebar_selection_follows_its_branch_through_a_reload() {
+    let s = repo_with_change();
+    s.sh(&["branch", "b"]);
+    s.sh(&["branch", "d"]);
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    let row_of = |u: &Ui, name: &str| {
+        u.app.sidebar.rows.iter().position(|r| matches!(r, SideRow::Branch(i) if u.app.refs.branches[*i].name == name))
+    };
+    let d = row_of(&ui, "d").expect("a row for d");
+    ui.app.sidebar_select(d);
+
+    // A new branch sorts in before d.
+    s.sh(&["branch", "c"]);
+    ui.run_cmd(Cmd::Refresh);
+    ui.wait("the new branch", |u| row_of(u, "c").is_some());
+    assert_eq!(Some(ui.app.sidebar.selected), row_of(&ui, "d"));
 }
 
 #[test]
