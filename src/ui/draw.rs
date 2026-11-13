@@ -20,7 +20,7 @@ use crate::git::rebase::RepoState;
 use crate::git::refs::LabelKind;
 use crate::highlight::LineSpans;
 use crate::theme::Theme;
-use crate::util::{char_width, short_date, truncate, width};
+use crate::util::{char_width, format_day, short_date, truncate, width};
 
 type Hits = Vec<(Rect, Target)>;
 
@@ -476,7 +476,7 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
         if show_meta {
             let ax = a.right().saturating_sub(date_w + author_w);
             put(buf, ax, y, &truncate(&c.author, usize::from(author_w.saturating_sub(1))), author_w, st.fg(t.dim));
-            let date = short_date(c.time, now);
+            let date = if app.cfg.relative_dates { short_date(c.time, now) } else { format_day(c.time, c.offset) };
             let dx = a.right().saturating_sub(date_w);
             put(buf, dx, y, &truncate(&date, usize::from(date_w - 1)), date_w, st.fg(t.dim));
         }

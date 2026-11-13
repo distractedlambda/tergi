@@ -85,6 +85,12 @@ pub fn format_date(secs: i64, offset: i32) -> String {
     )
 }
 
+/// The day, like "2026-03-04", in the commit's own time zone.
+pub fn format_day(secs: i64, offset: i32) -> String {
+    let (y, m, d) = civil((secs + i64::from(offset)).div_euclid(86_400));
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
 /// A short relative date for the history list.
 pub fn short_date(secs: i64, now: i64) -> String {
     let age = now - secs;
@@ -194,6 +200,8 @@ mod tests {
         assert_eq!(format_date(0, 0), "1970-01-01 00:00 +0000");
         assert_eq!(format_date(1_700_000_000, 3600), "2023-11-14 23:13 +0100");
         assert_eq!(format_date(1_700_000_000, -18_000), "2023-11-14 17:13 -0500");
+        assert_eq!(format_day(1_700_000_000, 3600), "2023-11-14");
+        assert_eq!(format_day(1_699_999_000, 36_000), "2023-11-15");
         let now = 1_700_000_000;
         assert_eq!(short_date(now - 30, now), "just now");
         assert_eq!(short_date(now - 3600 * 5, now), "5 hours ago");

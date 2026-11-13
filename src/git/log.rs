@@ -16,6 +16,8 @@ pub struct CommitInfo {
     pub email: String,
     /// Author time in seconds since the epoch.
     pub time: i64,
+    /// The author's time zone, in seconds east of UTC.
+    pub offset: i32,
 }
 
 pub struct Batch {
@@ -88,7 +90,7 @@ pub fn load_commit(repo: &gix::Repository, id: ObjectId) -> Result<CommitInfo> {
     let obj = repo.find_commit(id).context("missing commit")?;
     let c = obj.decode().context("bad commit")?;
     let author = c.author().context("bad author")?;
-    let time = author.time().map(|t| t.seconds).unwrap_or(0);
+    let (time, offset) = author.time().map(|t| (t.seconds, t.offset)).unwrap_or((0, 0));
     let summary = c
         .message
         .split(|&b| b == b'\n')
@@ -102,5 +104,6 @@ pub fn load_commit(repo: &gix::Repository, id: ObjectId) -> Result<CommitInfo> {
         author: String::from_utf8_lossy(author.name).trim().to_string(),
         email: String::from_utf8_lossy(author.email).trim().to_string(),
         time,
+        offset,
     })
 }
