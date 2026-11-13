@@ -243,6 +243,10 @@ fn waiting_color(spans: &[(usize, usize, u8)], lane: usize) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
+    use proptest::prelude::*;
+
     use super::*;
 
     fn id(n: u8) -> ObjectId {
@@ -334,5 +338,81 @@ mod tests {
         ● │ 3
         ●─╯ 2
         ");
+    }
+
+    /// A history in the order git lists it, newest first. Commit `i` has
+    /// parents `i + offset`. Parents past the end are never listed, as in a
+    /// shallow clone or a walk that stops early.
+    fn history() -> impl Strategy<Value = Vec<Vec<usize>>> {
+        prop::collection::vec(prop::collection::vec(1usize..6, 0..4), 1..16).prop_map(|commits| {
+            commits
+                .into_iter()
+                .enumerate()
+                .map(|(i, offsets)| offsets.into_iter().map(|o| i + o).collect())
+                .collect()
+        })
+    }
+
+    fn cell(row: &GraphRow, i: usize) -> Cell {
+        row.cells.get(i).copied().unwrap_or_default()
+    }
+
+    proptest! {
+        #[test]
+        fn lines_connect(commits in history()) {
+            let mut g = GraphBuilder::new();
+            let rows: Vec<GraphRow> = commits
+                .iter()
+                .enumerate()
+                .map(|(i, ps)| {
+                    let parents: Vec<ObjectId> = ps.iter().map(|&p| id(p as u8)).collect();
+                    g.push(id(i as u8), &parents)
+                })
+                .collect();
+            let shown: Vec<String> = rows.iter().map(GraphRow::render).collect();
+
+            let mut pending: HashSet<usize> = HashSet::new();
+            for (i, row) in rows.iter().enumerate() {
+                prop_assert!(row.cells.len() <= MAX_LANES * 2);
+                let node = usize::from(row.node_lane) * 2;
+                let nodes: Vec<usize> = (0..row.cells.len()).filter(|&c| cell(row, c).bits() & NODE != 0).collect();
+                prop_assert_eq!(nodes, vec![node], "{:#?}", shown);
+
+                // The node has a line above when a newer commit has it as a
+                // parent, and a line below when it has parents.
+                let bits = cell(row, node).bits();
+                prop_assert_eq!(bits & UP != 0, pending.remove(&i), "row {} of {:#?}", i, shown);
+                prop_assert_eq!(bits & DOWN != 0, !commits[i].is_empty(), "row {} of {:#?}", i, shown);
+                pending.extend(commits[i].iter().copied());
+
+                // Horizontal lines join up. The node itself has no
+                // horizontal bits.
+                for c in 0..row.cells.len() {
+                    let b = cell(row, c).bits();
+                    let joins = |other: Cell, side: u16| other.bits() & (side | NODE) != 0;
+                    if b & RIGHT != 0 {
+                        prop_assert!(joins(cell(row, c + 1), LEFT), "row {} cell {} of {:#?}", i, c, shown);
+                    }
+                    if b & LEFT != 0 {
+                        prop_assert!(c > 0 && joins(cell(row, c - 1), RIGHT), "row {} cell {} of {:#?}", i, c, shown);
+                    }
+                }
+
+                // Every lane going down continues in the next row, in the
+                // same color.
+                let down: Vec<usize> = (0..row.cells.len()).step_by(2).filter(|&c| cell(row, c).bits() & DOWN != 0).collect();
+                if let Some(next) = rows.get(i + 1) {
+                    let up: Vec<usize> = (0..next.cells.len()).step_by(2).filter(|&c| cell(next, c).bits() & UP != 0).collect();
+                    prop_assert_eq!(&down, &up, "rows {} and {} of {:#?}", i, i + 1, shown);
+                    for &c in &down {
+                        prop_assert_eq!(cell(row, c).color(), cell(next, c).color(), "lane {} in row {} of {:#?}", c / 2, i, shown);
+                    }
+                }
+                // Each commit we still wait for has a lane, and no lane
+                // waits for anything else.
+                prop_assert!(down.len() >= pending.len(), "row {} of {:#?}", i, shown);
+                prop_assert_eq!(down.is_empty(), pending.is_empty(), "row {} of {:#?}", i, shown);
+            }
+        }
     }
 }
