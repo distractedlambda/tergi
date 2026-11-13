@@ -193,6 +193,8 @@ pub fn fuzzy_score(needle: &str, hay: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -232,5 +234,49 @@ mod tests {
         assert!(fuzzy_score("rw", "Reword commit").is_some());
         assert!(fuzzy_score("xyz", "Reword commit").is_none());
         assert!(fuzzy_score("rew", "Reword").unwrap() < fuzzy_score("rwd", "Reword").unwrap());
+    }
+
+    fn days_in_month(y: i64, m: u32) -> u32 {
+        let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+        match m {
+            2 if leap => 29,
+            2 => 28,
+            4 | 6 | 9 | 11 => 30,
+            _ => 31,
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn civil_days_follow_each_other(days in -1_000_000i64..1_000_000) {
+            let (y, m, d) = civil(days);
+            let next = if d < days_in_month(y, m) {
+                (y, m, d + 1)
+            } else if m < 12 {
+                (y, m + 1, 1)
+            } else {
+                (y + 1, 1, 1)
+            };
+            prop_assert_eq!(civil(days + 1), next);
+        }
+
+        #[test]
+        fn truncate_fits(s in "[ab \t日é]{0,20}", max in 0usize..25) {
+            let t = truncate(&s, max);
+            prop_assert!(width(&t, 4) <= max, "{:?} is wider than {}", t, max);
+            if width(&s, 4) <= max {
+                prop_assert_eq!(t, s);
+            } else if max > 0 {
+                let kept = t.strip_suffix('…');
+                prop_assert!(kept.is_some_and(|k| s.starts_with(k)), "{:?} from {:?}", t, s);
+            }
+        }
+
+        #[test]
+        fn fuzzy_matches_letters_in_order(needle in "[abAB]{0,4}", hay in "[abAB ]{0,10}") {
+            let mut hay_chars = hay.to_lowercase().chars().collect::<Vec<_>>().into_iter();
+            let in_order = needle.to_lowercase().chars().all(|n| hay_chars.any(|h| h == n));
+            prop_assert_eq!(fuzzy_score(&needle, &hay).is_some(), in_order);
+        }
     }
 }

@@ -115,6 +115,8 @@ pub fn line_marks(old: &str, new: &str) -> (Ranges, Ranges) {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -134,5 +136,43 @@ mod tests {
     fn no_marks_when_everything_changed() {
         let (a, b) = line_marks("completely different", "nothing alike here");
         assert!(a.is_empty() && b.is_empty());
+    }
+
+    /// What's left of a line after cutting out the marked ranges.
+    fn unmarked(s: &str, marks: &[(usize, usize)]) -> String {
+        let mut out = String::new();
+        let mut pos = 0;
+        for &(a, b) in marks {
+            out.push_str(&s[pos..a]);
+            pos = b;
+        }
+        out.push_str(&s[pos..]);
+        out
+    }
+
+    proptest! {
+        #[test]
+        fn tokens_cover_the_line(s in "[ab_1 \t.(é日]{0,30}") {
+            let t = tokens(&s);
+            prop_assert!(t.iter().all(|t| !t.is_empty()));
+            prop_assert_eq!(t.concat(), s);
+        }
+
+        #[test]
+        fn marks_are_the_difference(old in "[ab_1 .(é]{0,30}", new in "[ab_1 .(é]{0,30}") {
+            let (a, b) = line_marks(&old, &new);
+            for (s, marks) in [(&old, &a), (&new, &b)] {
+                for &(x, y) in marks.iter() {
+                    prop_assert!(x < y && y <= s.len());
+                    prop_assert!(s.is_char_boundary(x) && s.is_char_boundary(y));
+                }
+                // In order, and separated by at least one unmarked byte.
+                prop_assert!(marks.windows(2).all(|w| w[0].1 < w[1].0), "{:?}", marks);
+            }
+            if !a.is_empty() || !b.is_empty() {
+                prop_assert_eq!(unmarked(&old, &a), unmarked(&new, &b));
+            }
+            prop_assert_eq!(line_marks(&old, &old), (Vec::new(), Vec::new()));
+        }
     }
 }

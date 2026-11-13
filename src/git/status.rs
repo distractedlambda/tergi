@@ -187,6 +187,8 @@ pub fn parse(text: &str) -> Status {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -216,5 +218,107 @@ u UU N... 100644 100644 100644 100644 d1 d2 d3 conflict.rs\0\
         let st = parse("# branch.oid (initial)\0# branch.head (detached)\0");
         assert_eq!(st.head_oid, None);
         assert_eq!(st.branch, None);
+    }
+
+    fn letter(c: Change) -> char {
+        match c {
+            Change::Unmodified => '.',
+            Change::Modified => 'M',
+            Change::TypeChange => 'T',
+            Change::Added => 'A',
+            Change::Deleted => 'D',
+            Change::Renamed => 'R',
+            Change::Copied => 'C',
+        }
+    }
+
+    /// Print a status the way `git status --porcelain=v2 --branch -z` does.
+    fn render(st: &Status) -> String {
+        let mut out = String::new();
+        let oid = st.head_oid.as_deref().unwrap_or("(initial)");
+        out.push_str(&format!("# branch.oid {oid}\0"));
+        out.push_str(&format!("# branch.head {}\0", st.branch.as_deref().unwrap_or("(detached)")));
+        if let Some(u) = &st.upstream {
+            out.push_str(&format!("# branch.upstream {u}\0# branch.ab +{} -{}\0", st.ahead, st.behind));
+        }
+        for e in &st.entries {
+            match e {
+                Entry::Changed { path, orig_path, staged, unstaged, submodule } => {
+                    let xy = format!("{}{}", letter(*staged), letter(*unstaged));
+                    let sub = if *submodule { "SC.." } else { "N..." };
+                    let ids = "100644 100644 100644 1111111 2222222";
+                    match orig_path {
+                        Some(o) => out.push_str(&format!("2 {xy} {sub} {ids} R100 {path}\0{o}\0")),
+                        None => out.push_str(&format!("1 {xy} {sub} {ids} {path}\0")),
+                    }
+                }
+                Entry::Unmerged { path, code } => {
+                    out.push_str(&format!("u {code} N... 100644 100644 100644 100644 1 2 3 {path}\0"));
+                }
+                Entry::Untracked { path } => out.push_str(&format!("? {path}\0")),
+            }
+        }
+        for p in &st.ignored {
+            out.push_str(&format!("! {p}\0"));
+        }
+        out
+    }
+
+    fn change() -> impl Strategy<Value = Change> {
+        prop::sample::select(vec![
+            Change::Unmodified,
+            Change::Modified,
+            Change::TypeChange,
+            Change::Added,
+            Change::Deleted,
+            Change::Renamed,
+            Change::Copied,
+        ])
+    }
+
+    /// With `-z`, git doesn't quote paths, so they can hold spaces and
+    /// newlines.
+    const PATH: &str = "[a-z \n\té/]{1,12}";
+
+    fn entry() -> impl Strategy<Value = Entry> {
+        prop_oneof![
+            (PATH, prop::option::of(PATH), change(), change(), any::<bool>()).prop_map(
+                |(path, orig_path, staged, unstaged, submodule)| Entry::Changed {
+                    path,
+                    orig_path,
+                    staged,
+                    unstaged,
+                    submodule,
+                }
+            ),
+            (PATH, prop::sample::select(vec!["UU", "AA", "DD", "AU", "UD"]))
+                .prop_map(|(path, code)| Entry::Unmerged { path, code: code.to_string() }),
+            PATH.prop_map(|path| Entry::Untracked { path }),
+        ]
+    }
+
+    fn status() -> impl Strategy<Value = Status> {
+        let branch = "[a-z][a-z/._-]{0,10}";
+        (
+            prop::option::of("[0-9a-f]{40}"),
+            prop::option::of(branch),
+            prop::option::of((branch, any::<u32>(), any::<u32>())),
+            prop::collection::vec(entry(), 0..8),
+            prop::collection::vec(PATH, 0..3),
+        )
+            .prop_map(|(head_oid, branch, upstream, entries, ignored)| {
+                let (upstream, ahead, behind) = match upstream {
+                    Some((u, a, b)) => (Some(u), a, b),
+                    None => (None, 0, 0),
+                };
+                Status { head_oid, branch, upstream, ahead, behind, entries, ignored }
+            })
+    }
+
+    proptest! {
+        #[test]
+        fn parse_reads_back_what_git_prints(st in status()) {
+            prop_assert_eq!(parse(&render(&st)), st);
+        }
     }
 }
