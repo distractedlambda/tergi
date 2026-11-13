@@ -170,7 +170,7 @@ impl App {
         };
         let id = p.rows[i].id;
         if let Some(m) = p.rows[i].message.clone() {
-            self.open_planner_input(title, &m, i);
+            self.open_planner_input(title, &m, id);
             return;
         }
         let below = p.rows.get(i + 1).map(|b| (b.id, b.message.clone()));
@@ -189,25 +189,32 @@ impl App {
                 }
             },
             move |app, initial| {
-                // Only ask for the message if the row still wants one.
-                let current = app
-                    .planner
-                    .as_ref()
-                    .and_then(|p| p.rows.get(i))
-                    .is_some_and(|r| r.id == id && r.action == action && r.message.is_none());
-                if current && app.overlays.is_empty() {
-                    app.open_planner_input(title, &initial, i);
+                // The rows may have moved in the meantime, so find this one
+                // by its commit. Only ask if it still wants a message.
+                let Some(row) = app.planner.as_mut().and_then(|p| p.rows.iter_mut().find(|r| r.id == id)) else {
+                    return;
+                };
+                if row.action != action || row.message.is_some() {
+                    return;
+                }
+                if app.overlays.is_empty() {
+                    app.open_planner_input(title, &initial, id);
+                } else {
+                    // Another dialog opened, so the user has moved on. As
+                    // when the dialog is cancelled, a row can't keep reword
+                    // or squash without a message.
+                    row.action = PlanAction::Pick;
                 }
             },
         );
     }
 
-    fn open_planner_input(&mut self, title: &str, initial: &str, row: usize) {
+    fn open_planner_input(&mut self, title: &str, initial: &str, id: ObjectId) {
         self.overlays.push(super::cmd::Overlay::Input(super::cmd::InputBox {
             title: title.into(),
             hint: "Ctrl+Enter to save, Esc to cancel".into(),
             text: crate::ui::textarea::TextArea::with_text(true, initial),
-            purpose: Purpose::PlannerMessage(row),
+            purpose: Purpose::PlannerMessage(id),
         }));
     }
 

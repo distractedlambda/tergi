@@ -289,7 +289,8 @@ pub enum Purpose {
     Squash(ObjectId),
     StashPush,
     SetUpstream(String),
-    PlannerMessage(usize),
+    /// The message for the planner row with this commit.
+    PlannerMessage(ObjectId),
     ContextLines,
     TabWidth,
     AskPass(oneshot::Sender<Option<String>>),
@@ -1267,9 +1268,9 @@ impl App {
             Purpose::StashPush => self.spawn_op("Stash", After::Nothing, move |r, _| async move {
                 ops::stash_push(&r.git, &name, true, false).await.map(|()| "Stashed changes".into())
             }),
-            Purpose::PlannerMessage(row) => {
+            Purpose::PlannerMessage(id) => {
                 if let Some(p) = &mut self.planner
-                    && let Some(r) = p.rows.get_mut(row)
+                    && let Some(r) = p.rows.iter_mut().find(|r| r.id == id)
                 {
                     r.message = Some(text);
                 }
@@ -1290,10 +1291,10 @@ impl App {
             Purpose::AskPass(reply) => {
                 let _ = reply.send(None);
             }
-            Purpose::PlannerMessage(row) => {
+            Purpose::PlannerMessage(id) => {
                 // Without a message, reword and squash make no sense.
                 if let Some(p) = &mut self.planner
-                    && let Some(r) = p.rows.get_mut(row)
+                    && let Some(r) = p.rows.iter_mut().find(|r| r.id == id)
                     && r.message.is_none()
                 {
                     r.action = PlanAction::Pick;

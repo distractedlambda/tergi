@@ -15,6 +15,7 @@ use common::Scratch;
 use tergi::app::cmd::{Cmd, Overlay, SideRow, Unit};
 use tergi::app::doc::{Row, Section};
 use tergi::app::input::Target;
+use tergi::app::planner::PlanAction;
 use tergi::app::{After, App, AppEvent, Repo};
 use tergi::config::Config;
 use tergi::ui::draw::draw;
@@ -456,6 +457,46 @@ fn rewords_a_commit_and_runs_a_plan() {
     assert!(ui.app.planner.is_none());
     assert_eq!(s.log(), ["Add a fourth note!", "Add notes file"]);
     assert!(s.file("more.txt").exists());
+}
+
+/// Open the planner on three commits. Its rows are newest first.
+fn open_planner(s: &Scratch) -> Ui {
+    s.sh(&["stash", "-q"]);
+    s.write("more.txt", "more\n");
+    s.commit_all("Add more");
+    let mut ui = Ui::open(s);
+    ui.wait_loaded(3);
+    ui.app.select_history(3);
+    ui.key(KeyCode::Char('i'));
+    ui.wait("the planner", |u| u.app.planner.is_some());
+    ui
+}
+
+#[test]
+fn the_planner_asks_for_a_message_after_its_row_moves() {
+    let s = repo_with_change();
+    let mut ui = open_planner(&s);
+    // Move the row down before git has answered with its message.
+    ui.key(KeyCode::Char('r'));
+    ui.key(KeyCode::Char('J'));
+    ui.wait("the message dialog", |u| matches!(u.app.overlays.last(), Some(Overlay::Input(_))));
+    ui.type_text("!");
+    ui.key_with(KeyCode::Enter, KeyModifiers::CONTROL);
+    let row = &ui.app.planner.as_ref().expect("the planner").rows[1];
+    assert_eq!(row.summary, "Add more");
+    assert_eq!(row.action, PlanAction::Reword);
+    assert!(row.message.as_deref().is_some_and(|m| m.contains('!')), "{row:?}");
+}
+
+#[test]
+fn a_reword_without_its_dialog_goes_back_to_pick() {
+    let s = repo_with_change();
+    let mut ui = open_planner(&s);
+    // Another dialog opens before git has answered with the message.
+    ui.key(KeyCode::Char('r'));
+    ui.key(KeyCode::Char('@'));
+    ui.wait("the row to go back to pick", |u| u.app.planner.as_ref().is_some_and(|p| p.rows[0].action == PlanAction::Pick));
+    assert!(matches!(ui.app.overlays.as_slice(), [Overlay::Log { .. }]));
 }
 
 #[test]
