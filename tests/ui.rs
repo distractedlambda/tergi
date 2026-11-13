@@ -575,3 +575,63 @@ fn a_panic_in_the_background_reaches_the_caller() {
     ui.app.spawn_op("Explode", After::Nothing, |_, _| explode());
     ui.wait("the operation", |u| u.app.busy.is_none());
 }
+
+/// Make `n` empty commits on main in one go. Running git for each one
+/// would be slow.
+fn many_commits(s: &Scratch, n: usize) {
+    use std::io::Write as _;
+    let mut stream = String::new();
+    for i in 1..=n {
+        let msg = format!("Commit {i}\n");
+        stream.push_str(&format!(
+            "commit refs/heads/main\nmark :{i}\ncommitter Test User <test@example.com> {} +0000\ndata {}\n{msg}",
+            1_700_000_000 + i,
+            msg.len()
+        ));
+        if i > 1 {
+            stream.push_str(&format!("from :{}\n", i - 1));
+        }
+        stream.push('\n');
+    }
+    let mut child = std::process::Command::new("git")
+        .args(["fast-import", "--quiet"])
+        .current_dir(s.path())
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("run git fast-import");
+    child.stdin.take().expect("stdin").write_all(stream.as_bytes()).expect("write the stream");
+    assert!(child.wait().expect("git fast-import").success());
+}
+
+#[test]
+fn selection_follows_its_commit_through_a_reload() {
+    let s = Scratch::new();
+    many_commits(&s, 210);
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(210);
+    // The walk sends the first 200 commits on their own. Select one near
+    // the end of them, then add commits on top, so the next walk sends it
+    // in its second batch.
+    ui.app.select_history(199);
+    let id = ui.app.history.selected_commit().map(|c| c.id).expect("a selected commit");
+    for i in 0..5 {
+        s.commit_all(&format!("New {i}"));
+    }
+    ui.run_cmd(Cmd::Refresh);
+
+    // Between the batches, the selection may be missing, but it must never
+    // be some other commit.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while ui.app.history.loading || ui.app.history.commits.len() != 215 {
+        assert!(Instant::now() < deadline, "timed out waiting for the reload");
+        match ui.app.try_recv() {
+            Some(ev) => ui.handle(ev),
+            None => std::thread::sleep(Duration::from_millis(5)),
+        }
+        if let Some(c) = ui.app.history.selected_commit() {
+            assert_eq!(c.id, id, "the selection moved to {}", c.summary);
+        }
+    }
+    assert_eq!(ui.app.history.selected_commit().map(|c| c.id), Some(id));
+    assert_eq!(ui.app.history.index.get(&id), Some(&203));
+}

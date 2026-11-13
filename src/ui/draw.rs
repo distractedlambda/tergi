@@ -409,12 +409,12 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
     let show_meta = a.width >= 70;
     let date_w: u16 = if show_meta { 13 } else { 0 };
     let author_w: u16 = if show_meta { (a.width / 6).clamp(8, 18) } else { 0 };
-    let selected = h.selected.min(h.row_count().saturating_sub(1));
+    let selected = h.selected_row();
 
     for i in start..end {
         let y = a.y + (i - start) as u16;
         let rr = Rect::new(a.x, y, a.width, 1);
-        let bg = row_bg(app, i == selected, focused, rr, t.bg);
+        let bg = row_bg(app, selected == Some(i), focused, rr, t.bg);
         fill(buf, rr, bg);
         hits.push((rr, Target::HistoryRow(i)));
         let st = Style::default().bg(bg).fg(t.fg);

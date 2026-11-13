@@ -44,10 +44,24 @@ over an unbounded channel. If a task panics, the panic comes back out of
 `App::next` or `App::try_recv`. Blocking work, such as the gix history
 walk, goes through `util::blocking`.
 
-Loads of refs, the working directory, history and commit details carry a
-generation number. The handler drops results whose generation is stale.
-Refs and workdir loads also coalesce: a refresh that arrives while a load
-is running sets an "again" flag instead of starting a second load.
+`App::handle` and everything it calls are plain functions, so handling
+an event never waits for git. When a handler needs to read something
+from git first, it uses `App::spawn_read`. That runs the read in the
+background and applies the result when it comes back as an event. The
+user may have moved on by then, so the code that applies it checks that
+its target is still there.
+
+Refs and working directory loads run one at a time, which `Reload`
+keeps track of. A refresh that arrives while a load is running makes it
+run once more afterwards instead of starting a second copy. The history
+walk and syntax highlighting number their requests with
+`util::Generation` and drop results from older requests. The running
+walk holds a clone of its counter and stops early once a newer walk
+starts. Commit details go through a watch channel that only keeps the
+newest request.
+
+The history selection is a commit id (`Selected`), not a row, because a
+reload can move rows around while it runs.
 
 ### Reading with gix, writing with the git CLI
 

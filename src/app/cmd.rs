@@ -1108,7 +1108,7 @@ impl App {
         let anchor = at.unwrap_or_else(|| {
             let a = match self.focus {
                 Focus::Sidebar => (self.areas.sidebar, self.sidebar.selected.saturating_sub(self.sidebar.scroll)),
-                Focus::History => (self.areas.history, self.history.selected.saturating_sub(self.history.scroll)),
+                Focus::History => (self.areas.history, self.history.current_row().saturating_sub(self.history.scroll)),
                 _ => (self.areas.doc, self.detail.cursor.saturating_sub(self.detail.scroll)),
             };
             (a.0.x + 4, a.0.y + (a.1 as u16).min(a.0.height.saturating_sub(1)) + 1)

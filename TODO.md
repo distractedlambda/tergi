@@ -8,6 +8,3 @@ Known problems that nobody has fixed yet.
 
 - Combining characters are overwritten when drawing code lines, in
   `draw_code` in `src/ui/draw.rs`.
-
-- The history selection can briefly point at the wrong commit while a
-  reload is in flight.

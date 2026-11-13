@@ -133,7 +133,6 @@ pub enum After {
     Nothing,
     ClearMessage,
     OpenPlannerDone,
-    SelectHead,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,12 +168,15 @@ pub struct History {
     pub generation: Generation,
     pub loading: bool,
     pub tips: Vec<ObjectId>,
-    /// Row selected in the list. Row 0 is the working directory, row `i + 1`
-    /// is `commits[i]`.
-    pub selected: usize,
+    /// We keep the selected commit rather than its row, because a reload
+    /// can move rows around. Row 0 is the working directory, and row
+    /// `i + 1` is `commits[i]`.
+    pub selected: Selected,
+    /// The row the selection was last seen in. While the selected commit
+    /// isn't loaded, moving with the keys starts from here. If the commit
+    /// is gone after a reload, the row stays selected instead.
+    pub last_row: usize,
     pub scroll: usize,
-    /// A commit to select once the walk reaches it.
-    pub pending_select: Option<ObjectId>,
     /// The new walk replaces the list when its first batch arrives, so the
     /// old list stays on screen until then.
     pub replace_on_next: bool,
@@ -188,9 +190,33 @@ impl History {
         self.commits.len() + 1
     }
 
-    pub fn selected_commit(&self) -> Option<&CommitInfo> {
-        self.selected.checked_sub(1).and_then(|i| self.commits.get(i))
+    /// The row of the selection, or `None` while the selected commit isn't
+    /// in the list, for example while a reload hasn't reached it yet.
+    pub fn selected_row(&self) -> Option<usize> {
+        match self.selected {
+            Selected::Workdir => Some(0),
+            Selected::Commit(id) => self.index.get(&id).map(|i| i + 1),
+        }
     }
+
+    /// The row of the selection, or the row it was last in.
+    pub fn current_row(&self) -> usize {
+        self.selected_row().unwrap_or(self.last_row)
+    }
+
+    pub fn selected_commit(&self) -> Option<&CommitInfo> {
+        match self.selected {
+            Selected::Workdir => None,
+            Selected::Commit(id) => self.index.get(&id).and_then(|&i| self.commits.get(i)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Selected {
+    #[default]
+    Workdir,
+    Commit(ObjectId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -545,9 +571,6 @@ impl App {
         self.history.loading = true;
         self.history.replace_on_next = true;
         self.history.tips = tips.clone();
-        if let Some(c) = self.history.selected_commit() {
-            self.history.pending_select = Some(c.id);
-        }
         let repo = self.repo.clone();
         let tx = self.tx.clone();
         let walks = self.history.generation.clone();
@@ -710,18 +733,16 @@ impl App {
         if batch.done {
             h.loading = false;
         }
-        if let Some(id) = h.pending_select {
+        if let Selected::Commit(id) = h.selected {
             if let Some(&i) = h.index.get(&id) {
-                h.pending_select = None;
-                let changed = h.selected != i + 1;
-                h.selected = i + 1;
-                if changed {
+                if h.last_row != i + 1 {
+                    h.last_row = i + 1;
                     self.ensure_history_visible();
                 }
             } else if batch.done {
                 // The commit is gone, usually because a rebase rewrote it.
                 // Staying on the same row keeps the user near where they were.
-                let row = h.selected;
+                let row = h.last_row;
                 self.select_history(row);
             }
         }
@@ -741,20 +762,21 @@ impl App {
     pub fn select_history(&mut self, row: usize) {
         let len = self.history.row_count();
         let row = row.min(len.saturating_sub(1));
-        self.history.selected = row;
-        self.history.pending_select = None;
+        self.history.last_row = row;
         self.ensure_history_visible();
         if row == 0 {
+            self.history.selected = Selected::Workdir;
             self.show_source(doc::Source::Workdir);
         } else if let Some(c) = self.history.commits.get(row - 1) {
             let id = c.id;
+            self.history.selected = Selected::Commit(id);
             self.show_source(doc::Source::Commit(id));
         }
     }
 
     pub fn ensure_history_visible(&mut self) {
         let h = usize::from(self.areas.history.height.max(1));
-        let sel = self.history.selected.min(self.history.row_count().saturating_sub(1));
+        let sel = self.history.current_row().min(self.history.row_count().saturating_sub(1));
         if sel < self.history.scroll {
             self.history.scroll = sel;
         } else if sel >= self.history.scroll + h {
@@ -868,9 +890,6 @@ impl App {
                         self.message_before_amend = None;
                     }
                     After::OpenPlannerDone => self.planner = None,
-                    After::SelectHead => {
-                        self.history.pending_select = None;
-                    }
                     After::Nothing => {}
                 }
             }

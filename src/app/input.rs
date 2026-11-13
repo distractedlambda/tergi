@@ -135,7 +135,7 @@ impl App {
         if let Some(mv) = mv {
             let (area, len, cur) = match self.focus {
                 Focus::Sidebar => (self.areas.sidebar, self.sidebar.rows.len(), self.sidebar.selected),
-                Focus::History => (self.areas.history, self.history.row_count(), self.history.selected),
+                Focus::History => (self.areas.history, self.history.row_count(), self.history.current_row()),
                 _ => (self.areas.doc, self.detail.rows.len(), self.detail.cursor),
             };
             let p = page(area) as isize;
