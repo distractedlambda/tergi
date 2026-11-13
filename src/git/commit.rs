@@ -331,7 +331,10 @@ pub fn diff_texts(old: &str, new: &str, context: u32) -> Vec<Hunk> {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+    use crate::git::diff::parse_unified;
 
     fn render(hunks: &[Hunk]) -> String {
         let mut s = String::new();
@@ -374,6 +377,97 @@ mod tests {
         +eleven
         \ No newline at end of file
         ");
+    }
+
+    /// Some lines look like diff syntax, to check that the parser goes by
+    /// the hunk headers and not by what lines look like.
+    fn text() -> impl Strategy<Value = String> {
+        let line = prop::sample::select(vec![
+            "a", "b", "c", "", " ", "x\r", "+a", "-a", "\\ b", "@@ -1 +1 @@", "diff --git a/f b/f", "--- a/f",
+        ]);
+        (prop::collection::vec(line, 0..30), any::<bool>()).prop_map(|(lines, eol)| {
+            let mut s = lines.join("\n");
+            if eol && !lines.is_empty() {
+                s.push('\n');
+            }
+            s
+        })
+    }
+
+    /// Apply hunks to the old text.
+    fn apply(old: &str, hunks: &[Hunk]) -> String {
+        let old: Vec<&str> = old.split_inclusive('\n').collect();
+        let mut out = String::new();
+        let mut pos = 0;
+        for h in hunks {
+            let first = if h.old_len == 0 { h.old_start } else { h.old_start - 1 } as usize;
+            assert!(first >= pos, "hunks overlap or are out of order");
+            out.extend(old[pos..first].iter().copied());
+            pos = first;
+            for l in &h.lines {
+                if l.kind != LineKind::Add {
+                    assert_eq!(old[pos].strip_suffix('\n').unwrap_or(old[pos]), l.text);
+                    pos += 1;
+                }
+                if l.kind != LineKind::Del {
+                    out.push_str(&l.text);
+                    if !l.no_eol {
+                        out.push('\n');
+                    }
+                }
+            }
+        }
+        out.extend(old[pos..].iter().copied());
+        out
+    }
+
+    proptest! {
+        #[test]
+        fn hunks_turn_old_into_new(old in text(), new in text(), context in 0u32..5) {
+            let hunks = diff_texts(&old, &new, context);
+            prop_assert_eq!(hunks.is_empty(), old == new);
+            prop_assert_eq!(apply(&old, &hunks), new);
+
+            let ctx = context as usize;
+            for h in &hunks {
+                let count = |k: LineKind| h.lines.iter().filter(|l| l.kind == k).count() as u32;
+                prop_assert_eq!(h.old_len, count(LineKind::Context) + count(LineKind::Del));
+                prop_assert_eq!(h.new_len, count(LineKind::Context) + count(LineKind::Add));
+                // Line numbers count up from the header, on each side.
+                let (mut o, mut n) = (h.old_start.max(1), h.new_start.max(1));
+                for l in &h.lines {
+                    let want_old = (l.kind != LineKind::Add).then_some(o);
+                    let want_new = (l.kind != LineKind::Del).then_some(n);
+                    prop_assert_eq!((l.old_no, l.new_no), (want_old, want_new));
+                    o += u32::from(want_old.is_some());
+                    n += u32::from(want_new.is_some());
+                }
+                // Runs of context are at most `context` long at the ends of
+                // a hunk, and at most twice that between changes.
+                let runs: Vec<usize> = h
+                    .lines
+                    .split(|l| l.kind != LineKind::Context)
+                    .map(<[DiffLine]>::len)
+                    .collect();
+                prop_assert!(runs[0] <= ctx && runs[runs.len() - 1] <= ctx, "{:?}", runs);
+                prop_assert!(runs.iter().all(|&r| r <= 2 * ctx), "{:?}", runs);
+                prop_assert!(h.lines.iter().any(|l| l.kind != LineKind::Context));
+            }
+            // Hunks that would touch are merged into one.
+            let first = |h: &Hunk| if h.old_len == 0 { h.old_start } else { h.old_start - 1 };
+            for w in hunks.windows(2) {
+                prop_assert!(first(&w[1]) > first(&w[0]) + w[0].old_len, "hunks touch");
+            }
+
+            // Printed as a unified diff, the parser reads the same hunks back.
+            let text = format!("diff --git a/f b/f\n--- a/f\n+++ b/f\n{}", render(&hunks));
+            let parsed = parse_unified(&text, usize::MAX);
+            if hunks.is_empty() {
+                prop_assert!(parsed[0].hunks.is_empty());
+            } else {
+                prop_assert_eq!(&parsed[0].hunks, &hunks);
+            }
+        }
     }
 
     #[test]

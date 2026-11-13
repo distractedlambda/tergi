@@ -210,19 +210,22 @@ pub fn parse_unified(text: &str, line_limit: usize) -> Vec<FileDiff> {
                 LineKind::Context => {
                     old_left = old_left.saturating_sub(1);
                     new_left = new_left.saturating_sub(1);
-                    old_no += 1;
-                    new_no += 1;
-                    (Some(old_no - 1), Some(new_no - 1))
+                    let nos = (Some(old_no), Some(new_no));
+                    old_no = old_no.saturating_add(1);
+                    new_no = new_no.saturating_add(1);
+                    nos
                 }
                 LineKind::Del => {
                     old_left = old_left.saturating_sub(1);
-                    old_no += 1;
-                    (Some(old_no - 1), None)
+                    let nos = (Some(old_no), None);
+                    old_no = old_no.saturating_add(1);
+                    nos
                 }
                 LineKind::Add => {
                     new_left = new_left.saturating_sub(1);
-                    new_no += 1;
-                    (None, Some(new_no - 1))
+                    let nos = (None, Some(new_no));
+                    new_no = new_no.saturating_add(1);
+                    nos
                 }
             };
             if !file.too_large
@@ -268,10 +271,10 @@ pub fn parse_unified(text: &str, line_limit: usize) -> Vec<FileDiff> {
                     new_no = h.new_start;
                     // For empty ranges git prints the line before the change.
                     if h.old_len == 0 {
-                        old_no += 1;
+                        old_no = old_no.saturating_add(1);
                     }
                     if h.new_len == 0 {
-                        new_no += 1;
+                        new_no = new_no.saturating_add(1);
                     }
                     if !file.too_large {
                         file.hunks.push(h);
@@ -479,7 +482,10 @@ pub fn unquote(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+    use crate::git::patch::quote_path;
 
     const SAMPLE: &str = "\
 diff --git a/src/a.rs b/src/a.rs
@@ -608,5 +614,65 @@ diff --git a/x b/x
         let (a, b) = split_git_paths("a/a b b/a b");
         assert_eq!(a.as_deref(), Some("a b"));
         assert_eq!(b.as_deref(), Some("a b"));
+    }
+
+    /// Text made of pieces of diff syntax, in any order, with some made-up
+    /// lines mixed in.
+    fn diffish() -> impl Strategy<Value = String> {
+        let piece = prop_oneof![
+            prop::sample::select(vec![
+                "diff --git a/f b/f",
+                "diff --git \"a/x\\ty\" \"b/x\\ty\"",
+                "diff --cc f",
+                "--- a/f",
+                "+++ b/f",
+                "--- /dev/null",
+                "@@ -1,2 +1,3 @@ fn",
+                "@@ -0,0 +1 @@",
+                "@@ -4294967295,0 +4294967295,0 @@",
+                "@@@ -1 -1 +1 @@@",
+                "+x",
+                "-x",
+                " x",
+                "",
+                "\\ No newline at end of file",
+                "new file mode 100644",
+                "deleted file mode 100755",
+                "old mode 100644",
+                "new mode 120000",
+                "rename from \"\\303\"",
+                "rename to b",
+                "similarity index 100%",
+                "index 0000000..1111111 100644",
+                "Binary files a/f and b/f differ",
+            ])
+            .prop_map(str::to_string),
+            "[ -~é\t]{0,12}",
+        ];
+        prop::collection::vec(piece, 0..40).prop_map(|v| v.join("\n"))
+    }
+
+    proptest! {
+        #[test]
+        fn parsing_never_panics(text in diffish(), limit in 0usize..20) {
+            for f in parse_unified(&text, limit) {
+                if f.too_large {
+                    prop_assert!(f.hunks.is_empty());
+                }
+            }
+        }
+
+        #[test]
+        fn quoting_round_trips(path in any::<String>()) {
+            prop_assert_eq!(unquote(&quote_path(&path)), path);
+        }
+
+        #[test]
+        fn git_paths_split(path in "[a-z \"\\\té]{1,10}(/[a-z \"\\\té]{1,10}){0,2}") {
+            let line = format!("{} {}", quote_path(&format!("a/{path}")), quote_path(&format!("b/{path}")));
+            let (a, b) = split_git_paths(&line);
+            prop_assert_eq!(a.as_deref(), Some(path.as_str()));
+            prop_assert_eq!(b.as_deref(), Some(path.as_str()));
+        }
     }
 }
