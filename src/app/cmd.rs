@@ -104,7 +104,8 @@ pub enum Cmd {
     Fetch,
     Pull(PullMode),
     PullMenu,
-    Push { force: bool },
+    /// Push the branch, which was checked out when the user chose this.
+    Push { branch: String, force: bool },
     PushMenu,
 
     Reword(ObjectId),
@@ -721,7 +722,7 @@ impl App {
                 s("Drop stash?", format!("{what} will be deleted."), "Drop")
             }
             Cmd::AbortOp => s("Abort?", "Everything done since the operation started will be undone.".into(), "Abort"),
-            Cmd::Push { force: true } => s("Force push?", "Commits on the remote that you don't have will be lost. tergi uses --force-with-lease, which refuses if the remote changed since you last fetched.".into(), "Force push"),
+            Cmd::Push { branch, force: true } => s("Force push?", format!("This force pushes {branch}. Commits on the remote that you don't have will be lost. tergi uses --force-with-lease, which refuses if the remote changed since you last fetched."), "Force push"),
             Cmd::CommitAll => s("Nothing is staged", "Stage all changes and commit them?".into(), "Stage all and commit"),
             _ => None,
         }
@@ -907,15 +908,19 @@ impl App {
                 });
             }
             Cmd::PushMenu => {
-                let items = vec![
-                    act(Some(Key::ch('P')), "Push", Cmd::Push { force: false }),
-                    act(Some(Key::ch('f')), "Force push (with lease)", Cmd::Push { force: true }),
-                ];
-                self.open_menu("Push", items, Some(&Cmd::PushMenu));
-            }
-            Cmd::Push { force } => {
-                let Some(branch) = self.refs.current_branch().cloned() else {
+                let Some(branch) = self.refs.current_branch().map(|b| b.name.clone()) else {
                     self.set_status("Can't push: no branch is checked out", Level::Error);
+                    return;
+                };
+                let items = vec![
+                    act(Some(Key::ch('P')), "Push", Cmd::Push { branch: branch.clone(), force: false }),
+                    act(Some(Key::ch('f')), "Force push (with lease)", Cmd::Push { branch: branch.clone(), force: true }),
+                ];
+                self.open_menu(&format!("Push {branch}"), items, Some(&Cmd::PushMenu));
+            }
+            Cmd::Push { branch, force } => {
+                let Some(branch) = self.refs.branches.iter().find(|b| b.name == branch).cloned() else {
+                    self.set_status(format!("Can't push: {branch} doesn't exist any more"), Level::Error);
                     return;
                 };
                 let remote = if self.refs.remotes.iter().any(|r| r == "origin") {
@@ -930,6 +935,12 @@ impl App {
                 };
                 let env = self.repo.remote_env();
                 self.spawn_op("Push", After::Nothing, move |r, progress| async move {
+                    // Without a refspec, git pushes whatever is checked out
+                    // when it runs. We leave the refspec out so that settings
+                    // like pushRemote work, so check the branch instead.
+                    if ops::head_branch(&r.git).await.as_deref() != Some(branch.name.as_str()) {
+                        return Err(anyhow::anyhow!("{} isn't checked out any more, so nothing was pushed.", branch.name));
+                    }
                     let mut args = vec!["push".to_string(), "--progress".to_string()];
                     if force {
                         args.push("--force-with-lease".into());

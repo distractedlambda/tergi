@@ -105,6 +105,12 @@ pub async fn unstage_all(git: &Git, has_head: bool) -> Result<()> {
     Ok(())
 }
 
+/// The branch that is checked out, or `None` when HEAD is detached.
+pub async fn head_branch(git: &Git) -> Option<String> {
+    let name = git.read_text(&["symbolic-ref", "--quiet", "--short", "HEAD"]).await.ok()?;
+    Some(name.trim().to_string())
+}
+
 /// Throw away unstaged changes to tracked files.
 pub async fn discard_paths(git: &Git, paths: &[&str]) -> Result<()> {
     run_on_paths(git, &["restore", "--worktree"], paths).await

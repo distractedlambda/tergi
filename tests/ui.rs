@@ -800,6 +800,43 @@ fn sidebar_selection_follows_its_branch_through_a_reload() {
 }
 
 #[test]
+fn force_push_only_pushes_the_branch_it_asked_about() {
+    let remote = tempfile::tempdir().expect("tempdir");
+    let s = repo_with_change();
+    s.sh(&["stash", "-q"]);
+    s.sh(&["init", "-q", "--bare", &remote.path().to_string_lossy()]);
+    s.sh(&["remote", "add", "origin", &remote.path().to_string_lossy()]);
+    s.sh(&["branch", "other"]);
+    s.sh(&["push", "-q", "-u", "origin", "main", "other"]);
+    s.sh(&["commit", "-q", "--amend", "-m", "Amended on main"]);
+    s.sh(&["checkout", "-q", "other"]);
+    s.sh(&["commit", "-q", "--amend", "-m", "Amended on other"]);
+    s.sh(&["checkout", "-q", "main"]);
+    let on_remote = |b: &str| s.sh(&["--git-dir", &remote.path().to_string_lossy(), "rev-parse", b]);
+    let (main_before, other_before) = (on_remote("main"), on_remote("other"));
+
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(4);
+    ui.key(KeyCode::Char('P'));
+    ui.key(KeyCode::Char('f'));
+    match ui.app.overlays.last() {
+        Some(Overlay::Confirm { body, .. }) => assert!(body.contains("force pushes main"), "{body}"),
+        _ => panic!("no dialog\n{}", ui.screen()),
+    }
+
+    // Another branch gets checked out while the dialog is open.
+    s.sh(&["checkout", "-q", "other"]);
+    ui.key(KeyCode::Char('y'));
+    ui.settle();
+    match ui.app.overlays.last() {
+        Some(Overlay::Message { body, error: true, .. }) => assert!(body.contains("main isn't checked out"), "{body}"),
+        _ => panic!("no error\n{}", ui.screen()),
+    }
+    assert_eq!(on_remote("main"), main_before);
+    assert_eq!(on_remote("other"), other_before);
+}
+
+#[test]
 fn the_theme_menu_previews_themes() {
     let s = Scratch::new();
     s.write("main.rs", "fn main() {\n    let x = \"hi\";\n}\n");
