@@ -768,8 +768,21 @@ fn draw_code(
     let w = usize::from(w);
     let mut col = 0usize;
     let mut span_i = 0;
+    // The cell of the last character we drew. Zero-width characters such as
+    // combining accents go into that cell along with it, because a terminal
+    // cell holds a whole grapheme.
+    let mut last: Option<u16> = None;
     for (bi, ch) in text.char_indices() {
         let cw = char_width(ch, col, tab);
+        if cw == 0 && !ch.is_control() {
+            if let Some(lx) = last
+                && let Some(c) = buf.cell_mut((lx, y))
+            {
+                let joined = format!("{}{ch}", c.symbol());
+                c.set_symbol(&joined);
+            }
+            continue;
+        }
         if col >= skip + w {
             break;
         }
@@ -788,6 +801,7 @@ fn draw_code(
         if marks.is_some_and(|m| m.iter().any(|&(s, e)| s <= bi && bi < e)) {
             style = style.bg(emph);
         }
+        last = None;
         if col >= skip && col + cw <= skip + w {
             let cx = x + (col - skip) as u16;
             if ch == '\t' {
@@ -799,6 +813,9 @@ fn draw_code(
             } else if let Some(c) = buf.cell_mut((cx, y)) {
                 let shown = if ch.is_control() { '�' } else { ch };
                 c.set_char(shown).set_style(style);
+                if !ch.is_control() {
+                    last = Some(cx);
+                }
                 if cw == 2
                     && let Some(c2) = buf.cell_mut((cx + 1, y))
                 {
@@ -1144,5 +1161,34 @@ fn request_visible_highlights(app: &mut App) {
     }
     for (sec, file) in files {
         app.request_highlight(sec, file);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn code(text: &str, w: u16, skip: usize) -> Vec<String> {
+        let mut buf = Buffer::empty(Rect::new(0, 0, w + 1, 1));
+        buf[(0, 0)].set_char('|');
+        draw_code(&mut buf, 1, 0, w, text, skip, Style::default(), None, None, Color::Reset, 4);
+        buf.content().iter().map(|c| c.symbol().to_string()).collect()
+    }
+
+    #[test]
+    fn combining_characters_join_the_previous_cell() {
+        assert_eq!(code("e\u{301}x", 4, 0), ["|", "e\u{301}", "x", " ", " "]);
+        assert_eq!(code("a\u{301}\u{323}", 2, 0), ["|", "a\u{301}\u{323}", " "]);
+        assert_eq!(code("你\u{301}x", 4, 0), ["|", "你\u{301}", "", "x", " "]);
+        // The last character that fits still gets its marks.
+        assert_eq!(code("ae\u{301}x", 2, 0), ["|", "a", "e\u{301}"]);
+    }
+
+    #[test]
+    fn combining_characters_of_hidden_characters_stay_hidden() {
+        // The base character is scrolled off, so its mark must not join the
+        // gutter or the next character.
+        assert_eq!(code("e\u{301}x", 2, 1), ["|", "x", " "]);
+        assert_eq!(code("\u{301}x", 2, 0), ["|", "x", " "]);
     }
 }
