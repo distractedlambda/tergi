@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Run blocking work on Tokio's blocking pool. If `f` panics, the panic
 /// carries on in the caller, so it reaches whoever is waiting on the task.
@@ -137,6 +138,33 @@ pub fn char_width(c: char, col: usize, tab: usize) -> usize {
     }
 }
 
+/// Split a line into the pieces that each start a new terminal cell, with
+/// the byte offset of each one.
+///
+/// A character and the zero-width characters after it, such as combining
+/// accents, stay together in one piece. Some graphemes are wider in a
+/// terminal than the sum of their characters, which is how `width`
+/// measures them. Emoji joined by zero-width joiners are an example. We
+/// split those into their characters, so that the terminal draws them in
+/// as many columns as we count. Zero-width characters that end up on
+/// their own are dropped. That keeps format characters such as bidi
+/// overrides away from the terminal.
+pub fn cells(line: &str) -> impl Iterator<Item = (usize, &str)> {
+    line.grapheme_indices(true)
+        .flat_map(|(gi, g)| {
+            let whole = !g.contains(char::is_control)
+                && g.width() == g.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>();
+            g.char_indices().filter_map(move |(ci, c)| {
+                if whole {
+                    (ci == 0).then_some((gi, g))
+                } else {
+                    Some((gi + ci, &g[ci..ci + c.len_utf8()]))
+                }
+            })
+        })
+        .filter(|(_, s)| width(s, 1) > 0)
+}
+
 /// Cut a string to at most `max` columns, adding an ellipsis if it was cut.
 pub fn truncate(s: &str, max: usize) -> String {
     if width(s, 4) <= max {
@@ -229,6 +257,10 @@ mod tests {
         assert_eq!(width("a\tb", 4), 5);
         assert_eq!(width("日本", 4), 4);
         assert_eq!(width("a\x07\0b", 4), 4);
+        let pieces = |s| cells(s).collect::<Vec<_>>();
+        assert_eq!(pieces("e\u{301}\u{323}x"), [(0, "e\u{301}\u{323}"), (5, "x")]);
+        assert_eq!(pieces("\u{301}a\u{202e}"), [(2, "a")]);
+        assert_eq!(pieces("❤\u{fe0f}"), [(0, "❤")]);
         assert_eq!(truncate("hello world", 6), "hello…");
         assert_eq!(truncate("hi", 6), "hi");
     }
@@ -262,6 +294,18 @@ mod tests {
                 (y + 1, 1, 1)
             };
             prop_assert_eq!(civil(days + 1), next);
+        }
+
+        #[test]
+        fn cells_cover_the_width(s in "[a\t\u{7}é日❤👨\u{301}\u{200b}\u{200d}\u{202e}\u{fe0f}]{0,20}") {
+            let mut end = 0;
+            let mut total = 0;
+            for (i, piece) in cells(&s) {
+                prop_assert!(i >= end && s[i..].starts_with(piece), "{:?} at {} in {:?}", piece, i, s);
+                end = i + piece.len();
+                total += width(piece, 1);
+            }
+            prop_assert_eq!(total, width(&s, 1));
         }
 
         #[test]

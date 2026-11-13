@@ -20,7 +20,7 @@ use crate::git::rebase::RepoState;
 use crate::git::refs::LabelKind;
 use crate::highlight::LineSpans;
 use crate::theme::Theme;
-use crate::util::{char_width, format_day, short_date, truncate, width};
+use crate::util::{cells, char_width, format_day, short_date, truncate, width};
 
 type Hits = Vec<(Rect, Target)>;
 
@@ -768,21 +768,9 @@ fn draw_code(
     let w = usize::from(w);
     let mut col = 0usize;
     let mut span_i = 0;
-    // The cell of the last character we drew. Zero-width characters such as
-    // combining accents go into that cell along with it, because a terminal
-    // cell holds a whole grapheme.
-    let mut last: Option<u16> = None;
-    for (bi, ch) in text.char_indices() {
-        let cw = char_width(ch, col, tab);
-        if cw == 0 {
-            if let Some(lx) = last
-                && let Some(c) = buf.cell_mut((lx, y))
-            {
-                let joined = format!("{}{ch}", c.symbol());
-                c.set_symbol(&joined);
-            }
-            continue;
-        }
+    for (bi, piece) in cells(text) {
+        let Some(ch) = piece.chars().next() else { continue };
+        let cw = if ch == '\t' { char_width(ch, col, tab) } else { width(piece, tab) };
         if col >= skip + w {
             break;
         }
@@ -801,7 +789,6 @@ fn draw_code(
         if marks.is_some_and(|m| m.iter().any(|&(s, e)| s <= bi && bi < e)) {
             style = style.bg(emph);
         }
-        last = None;
         if col >= skip && col + cw <= skip + w {
             let cx = x + (col - skip) as u16;
             if ch == '\t' {
@@ -811,15 +798,16 @@ fn draw_code(
                     }
                 }
             } else if let Some(c) = buf.cell_mut((cx, y)) {
-                let shown = if ch.is_control() { '�' } else { ch };
-                c.set_char(shown).set_style(style);
-                if !ch.is_control() {
-                    last = Some(cx);
+                if ch.is_control() {
+                    c.set_char('�');
+                } else {
+                    c.set_symbol(piece);
                 }
-                if cw == 2
-                    && let Some(c2) = buf.cell_mut((cx + 1, y))
-                {
-                    c2.set_symbol("").set_style(style);
+                c.set_style(style);
+                for k in 1..cw {
+                    if let Some(c) = buf.cell_mut((cx + k as u16, y)) {
+                        c.set_symbol("").set_style(style);
+                    }
                 }
             }
         }
@@ -1182,6 +1170,19 @@ mod tests {
         assert_eq!(code("你\u{301}x", 4, 0), ["|", "你\u{301}", "", "x", " "]);
         // The last character that fits still gets its marks.
         assert_eq!(code("ae\u{301}x", 2, 0), ["|", "a", "e\u{301}"]);
+    }
+
+    #[test]
+    fn graphemes_wider_than_their_characters_are_split() {
+        // Terminals draw these two characters as one emoji two columns wide.
+        assert_eq!(code("❤\u{fe0f}x", 3, 0), ["|", "❤", "x", " "]);
+        let family = "👨\u{200d}👧";
+        assert_eq!(code(family, 4, 0), ["|", "👨", "", "👧", ""]);
+    }
+
+    #[test]
+    fn format_characters_are_dropped() {
+        assert_eq!(code("a\u{202e}b\u{200b}c", 4, 0), ["|", "a", "b", "c", " "]);
     }
 
     #[test]
