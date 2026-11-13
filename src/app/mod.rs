@@ -374,10 +374,11 @@ impl App {
             repo.askpass_socket = Some(path);
             tasks.spawn_on(serve, &rt);
         }
-        let theme = Theme::new(cfg.theme);
+        // The config checked the name when it loaded.
+        let theme = Theme::named(&cfg.theme).unwrap_or_default();
         let detail = Detail::default();
         let tx2 = tx.clone();
-        let (highlighter, highlight) = Highlighter::new(theme.dark, detail.generation.clone(), move |k, h| {
+        let (highlighter, highlight) = Highlighter::new(theme.syntax, detail.generation.clone(), move |k, h| {
             let _ = tx2.send(AppEvent::Highlight(k, h));
         });
         tasks.spawn_on(highlight, &rt);
@@ -812,6 +813,19 @@ impl App {
     pub fn rebuild_doc(&mut self) {
         let workdir = self.workdir.as_ref();
         self.detail.rebuild(workdir, &self.labels, &self.theme, self.split_diff, &self.cfg);
+    }
+
+    /// Switch to the theme with this id.
+    pub fn set_theme(&mut self, id: &str) {
+        if self.theme.id == id {
+            return;
+        }
+        let Some(theme) = Theme::named(id) else { return };
+        self.highlighter.set_theme(theme.syntax);
+        self.theme = theme;
+        self.detail.reset_highlights();
+        // The commit details have colors in them.
+        self.rebuild_doc();
     }
 
     pub fn rebuild_sidebar(&mut self) {

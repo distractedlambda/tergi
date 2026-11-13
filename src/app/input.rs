@@ -285,7 +285,7 @@ impl App {
             Overlay::Menu(m) => {
                 let n = m.items.len();
                 if k.code == KeyCode::Esc || k.code == KeyCode::Char('q') {
-                    self.overlays.pop();
+                    self.cancel_menu();
                 } else if up || down {
                     let mut i = m.selected;
                     for _ in 0..n {
@@ -295,6 +295,12 @@ impl App {
                         }
                     }
                     m.selected = i;
+                    if m.preview.is_some()
+                        && let Some(a) = m.items.get(i).filter(|a| a.enabled)
+                    {
+                        let cmd = a.cmd.clone();
+                        self.run_cmd(cmd);
+                    }
                 } else if k.code == KeyCode::Enter {
                     let item = m.items.get(m.selected).cloned();
                     self.overlays.pop();
@@ -362,6 +368,15 @@ impl App {
         }
     }
 
+    /// Close the top menu without choosing anything from it.
+    fn cancel_menu(&mut self) {
+        if let Some(Overlay::Menu(m)) = self.overlays.pop()
+            && let Some(undo) = m.preview
+        {
+            self.run_cmd(undo);
+        }
+    }
+
     /// The mouse pointer shape for whatever is under the mouse.
     pub fn pointer_shape(&self) -> &'static str {
         match self.target_at(self.mouse.0, self.mouse.1) {
@@ -424,8 +439,12 @@ impl App {
         // Clicking outside a menu closes it. Other dialogs stay open. The hit
         // map only holds the top overlay's targets, so any hit is inside it.
         let Some(target) = target else {
-            if matches!(self.overlays.last(), Some(Overlay::Menu(_) | Overlay::Palette { .. } | Overlay::Log { .. })) {
-                self.overlays.pop();
+            match self.overlays.last() {
+                Some(Overlay::Menu(_)) => self.cancel_menu(),
+                Some(Overlay::Palette { .. } | Overlay::Log { .. }) => {
+                    self.overlays.pop();
+                }
+                _ => {}
             }
             return;
         };
@@ -623,6 +642,7 @@ impl App {
             selected: 0,
             anchor: (x, y),
             scroll: 0,
+            preview: None,
         }));
     }
 

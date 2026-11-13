@@ -12,6 +12,7 @@ use ratatui::style::Color;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::Theme;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
+use two_face::theme::EmbeddedThemeName;
 
 use crate::git::diff::{Hunk, LineKind};
 use crate::util::Generation;
@@ -44,7 +45,13 @@ pub struct Job {
 const FULL_FILE_LINES: usize = 20_000;
 
 pub struct Highlighter {
-    tx: UnboundedSender<Job>,
+    tx: UnboundedSender<Msg>,
+}
+
+enum Msg {
+    Job(Job),
+    /// Use this syntax theme for the jobs that follow.
+    Theme(EmbeddedThemeName),
 }
 
 impl Highlighter {
@@ -52,50 +59,51 @@ impl Highlighter {
     /// ends when the `Highlighter` is dropped. Jobs whose key has a
     /// generation that is no longer current in `files` are skipped.
     pub fn new(
-        dark: bool,
+        theme: EmbeddedThemeName,
         files: Generation,
         done: impl Fn(Key, FileHighlight) + Send + Sync + 'static,
     ) -> (Self, impl Future<Output = ()> + Send + 'static) {
-        let (tx, rx) = unbounded_channel::<Job>();
-        let worker = worker(rx, files, dark, Arc::new(done));
+        let (tx, rx) = unbounded_channel::<Msg>();
+        let worker = worker(rx, files, theme, Arc::new(done));
         (Highlighter { tx }, worker)
     }
 
     pub fn request(&self, job: Job) {
-        let _ = self.tx.send(job);
+        let _ = self.tx.send(Msg::Job(job));
+    }
+
+    /// Switch syntax themes. Jobs already sent still get the old one, so the
+    /// caller should move its generation on.
+    pub fn set_theme(&self, theme: EmbeddedThemeName) {
+        let _ = self.tx.send(Msg::Theme(theme));
     }
 }
 
 async fn worker(
-    mut rx: UnboundedReceiver<Job>,
+    mut rx: UnboundedReceiver<Msg>,
     files: Generation,
-    dark: bool,
+    mut theme: EmbeddedThemeName,
     done: Arc<dyn Fn(Key, FileHighlight) + Send + Sync>,
 ) {
     // Loading the syntaxes takes a while, so do it once, off the async
-    // threads.
-    let loaded = crate::util::blocking(move || {
-        let ss = two_face::syntax::extra_newlines();
-        let themes = two_face::theme::extra();
-        let theme = themes
-            .get(if dark {
-                two_face::theme::EmbeddedThemeName::OneHalfDark
-            } else {
-                two_face::theme::EmbeddedThemeName::OneHalfLight
-            })
-            .clone();
-        (ss, theme)
-    })
-    .await;
+    // threads. The theme set only loads a theme the first time it's used.
+    let loaded = crate::util::blocking(|| (two_face::syntax::extra_newlines(), two_face::theme::extra())).await;
     let loaded = Arc::new(loaded);
-    while let Some(job) = rx.recv().await {
+    while let Some(msg) = rx.recv().await {
+        let job = match msg {
+            Msg::Job(job) => job,
+            Msg::Theme(t) => {
+                theme = t;
+                continue;
+            }
+        };
         if !files.is_current(job.key.generation) {
             continue;
         }
         let loaded = loaded.clone();
         let done = done.clone();
         crate::util::blocking(move || {
-            let (ss, theme) = &*loaded;
+            let (ss, themes) = &*loaded;
             let first_line = job
                 .new
                 .as_deref()
@@ -105,7 +113,7 @@ async fn worker(
             let Some(syntax) = find_syntax(ss, &job.path, first_line) else {
                 return;
             };
-            let hl = highlight_job(ss, syntax, theme, &job);
+            let hl = highlight_job(ss, syntax, themes.get(theme), &job);
             done(job.key, hl);
         })
         .await;

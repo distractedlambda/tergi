@@ -66,6 +66,8 @@ pub enum Cmd {
     ContextMenu,
     ToggleSidebar,
     ToggleSplit,
+    ChooseTheme,
+    SetTheme(&'static str),
     FocusNext,
     FocusPrev,
     Focus(Focus),
@@ -244,6 +246,10 @@ pub struct Menu {
     pub selected: usize,
     pub anchor: (u16, u16),
     pub scroll: usize,
+    /// When set, moving the selection runs the selected item's command
+    /// right away, and closing the menu without choosing runs this one to
+    /// undo that.
+    pub preview: Option<Cmd>,
 }
 
 pub enum Purpose {
@@ -375,6 +381,7 @@ impl App {
             act(Some(Key::ch('P')), "Push", Cmd::PushMenu).no_menu(),
             act(Some(Key::ch('S')), "Stash changes", Cmd::StashPush).no_menu(),
             act(Some(Key::ch('t')), "Toggle side-by-side diff", Cmd::ToggleSplit).no_menu(),
+            act(None, "Choose theme…", Cmd::ChooseTheme).no_menu(),
             act(Some(Key::ch('w')), "Show working directory", Cmd::ShowWorkdir).no_menu(),
             act(Some(Key::ch('@')), "Command log", Cmd::CommandLog).no_menu(),
             act(Some(Key::ctrl('b')), "Toggle sidebar", Cmd::ToggleSidebar).no_menu(),
@@ -689,6 +696,7 @@ impl App {
                     selected: 0,
                     anchor: (w / 2, h / 4),
                     scroll: 0,
+                    preview: None,
                 }));
             }
             Cmd::Palette => {
@@ -709,6 +717,21 @@ impl App {
                 self.split_diff = !self.split_diff;
                 self.rebuild_doc();
             }
+            Cmd::ChooseTheme => {
+                let current = self.theme.id;
+                let items: Vec<ActionDef> = crate::theme::Theme::list().map(|(id, name)| act(None, name, Cmd::SetTheme(id))).collect();
+                let selected = items.iter().position(|a| a.cmd == Cmd::SetTheme(current)).unwrap_or(0);
+                let (w, h) = self.size;
+                self.overlays.push(Overlay::Menu(Menu {
+                    title: Some("Theme".into()),
+                    items,
+                    selected,
+                    anchor: (w.saturating_sub(24) / 2, h / 4),
+                    scroll: 0,
+                    preview: Some(Cmd::SetTheme(current)),
+                }));
+            }
+            Cmd::SetTheme(id) => self.set_theme(id),
             Cmd::FocusNext | Cmd::FocusPrev => {
                 let mut order = Vec::new();
                 if self.sidebar_shown() {
@@ -1095,6 +1118,7 @@ impl App {
             selected: 0,
             anchor,
             scroll: 0,
+            preview: None,
         }));
     }
 
@@ -1119,6 +1143,7 @@ impl App {
             selected: 0,
             anchor,
             scroll: 0,
+            preview: None,
         }));
     }
 

@@ -247,11 +247,16 @@ impl Detail {
 
     /// The files changed, so cached per-file data is no longer valid.
     pub fn reset_for_reload(&mut self) {
+        self.reset_highlights();
+        self.marks.clear();
+        self.anchor = None;
+    }
+
+    /// Drop the syntax highlighting, so that drawing asks for it again.
+    pub fn reset_highlights(&mut self) {
         self.generation.next();
         self.highlights.clear();
         self.requested.clear();
-        self.marks.clear();
-        self.anchor = None;
     }
 
     pub fn rebuild(

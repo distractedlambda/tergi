@@ -304,7 +304,7 @@ fn draw_banner(app: &App, buf: &mut Buffer, r: Rect, hits: &mut Hits) {
     if !matches!(app.repo_state, RepoState::Merge) {
         items.push(("Skip", Cmd::SkipOp, None));
     }
-    items.push(("Abort", Cmd::AbortOp, Some(t.error)));
+    items.push(("Abort", Cmd::AbortOp, Some(t.badge_danger)));
     let start = buttons_right(app, buf, hits, r.x + 20, r.right().saturating_sub(1), r.y, items);
     put(buf, r.x + 1, r.y, &text, start.saturating_sub(r.x + 2), style.add_modifier(Modifier::BOLD));
 }
@@ -370,7 +370,7 @@ fn draw_sidebar(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 put(buf, a.x + 6, y, &truncate(&rb.name, usize::from(w.saturating_sub(6))), w.saturating_sub(6), st);
             }
             SideRow::Tag(i) => {
-                put(buf, a.x + 2, y, "◇", 1, st.fg(t.badge_tag));
+                put(buf, a.x + 2, y, "◇", 1, st.fg(t.tag_fg));
                 put(buf, a.x + 4, y, &truncate(&refs.tags[*i].name, usize::from(w.saturating_sub(4))), w.saturating_sub(4), st);
             }
             SideRow::Stash(i) => {
@@ -544,7 +544,7 @@ fn status_color(t: &Theme, s: FileStatus) -> Color {
     match s {
         FileStatus::Added | FileStatus::Untracked => t.add_fg,
         FileStatus::Deleted => t.del_fg,
-        FileStatus::Renamed | FileStatus::Copied => t.badge_remote,
+        FileStatus::Renamed | FileStatus::Copied => t.rename_fg,
         FileStatus::Conflicted => t.warn,
         FileStatus::Modified | FileStatus::TypeChange => t.accent,
     }
@@ -829,7 +829,7 @@ fn draw_planner(app: &App, buf: &mut Buffer, hits: &mut Hits) {
             PlanAction::Pick => t.button,
             PlanAction::Reword => t.badge_head,
             PlanAction::Squash | PlanAction::Fixup => t.badge_tag,
-            PlanAction::Drop => t.error,
+            PlanAction::Drop => t.badge_danger,
             PlanAction::Edit => t.badge_local,
         };
         let ar = Rect::new(a.x + 1, y, 9, 1);
@@ -1003,7 +1003,7 @@ fn draw_overlays(app: &mut App, buf: &mut Buffer, area: Rect, hits: &mut Hits) -
                 let by = r.bottom().saturating_sub(2);
                 let yes = yes.clone();
                 let yes_label = format!("{yes_label} (y)");
-                draw_dialog_buttons(t, mouse, buf, hits, r.right().saturating_sub(2), by, vec![("Cancel (n)", Cmd::CloseOverlay, None), (&yes_label, yes, Some(t.error))], top);
+                draw_dialog_buttons(t, mouse, buf, hits, r.right().saturating_sub(2), by, vec![("Cancel (n)", Cmd::CloseOverlay, None), (&yes_label, yes, Some(t.badge_danger))], top);
             }
             Overlay::Input(b) => {
                 let w = if b.text.multiline { 80u16 } else { 60 }.min(area.width.saturating_sub(4));

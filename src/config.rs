@@ -1,7 +1,7 @@
 //! User configuration, read from `~/.config/tergi/config.toml`.
 //!
 //! ```toml
-//! theme = "dark"          # or "light"
+//! theme = "one-half-dark" # see `Theme::list` for the others
 //! context_lines = 3       # lines of context around changes
 //! tab_width = 4
 //! relative_dates = true   # "3 days ago" instead of "2026-11-08"
@@ -11,12 +11,13 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use crate::theme::ThemeName;
+use crate::theme::Theme;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    pub theme: ThemeName,
+    /// A theme id. Unknown ones are reported when loading.
+    pub theme: String,
     pub context_lines: u32,
     pub tab_width: usize,
     pub relative_dates: bool,
@@ -25,7 +26,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            theme: ThemeName::Dark,
+            theme: Theme::DEFAULT.to_string(),
             context_lines: 3,
             tab_width: 4,
             relative_dates: true,
@@ -52,6 +53,12 @@ impl Config {
                 Ok(mut c) => {
                     c.tab_width = c.tab_width.clamp(1, 16);
                     c.context_lines = c.context_lines.min(50);
+                    if Theme::named(&c.theme).is_none() {
+                        let known: Vec<&str> = Theme::list().map(|(id, _)| id).collect();
+                        let msg = format!("{}: there's no theme called \"{}\". The themes are {}.", path.display(), c.theme, known.join(", "));
+                        c.theme = Theme::DEFAULT.to_string();
+                        return (c, Some(msg));
+                    }
                     (c, None)
                 }
                 Err(e) => (Config::default(), Some(format!("{}: {e}", path.display()))),

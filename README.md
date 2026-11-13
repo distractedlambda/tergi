@@ -147,11 +147,31 @@ tergi reads `~/.config/tergi/config.toml` on Linux. On macOS it uses
 the same path under `~/.config`. Every setting is optional.
 
 ```toml
-theme = "dark"          # or "light"
+theme = "one-half-dark" # see the list below
 context_lines = 3       # lines of context around each change
 tab_width = 4
 relative_dates = true   # "3 days ago" instead of a date
 ```
+
+## Themes
+
+Each theme uses the colors that a popular color scheme publishes, and
+the same scheme's syntax highlighting. To try them out, press Ctrl+P and
+run "Choose theme…". The theme changes as you move through the list.
+Press Enter to keep one, or Esc to go back. tergi doesn't save your
+choice, so put the theme's name in the config file to keep it.
+
+| Name in the config | Theme |
+| --- | --- |
+| `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha` | [Catppuccin](https://catppuccin.com) |
+| `dracula` | [Dracula](https://draculatheme.com) |
+| `gruvbox-dark`, `gruvbox-light` | [Gruvbox](https://github.com/morhetz/gruvbox) |
+| `nord` | [Nord](https://www.nordtheme.com) |
+| `one-half-dark`, `one-half-light` | [One Half](https://github.com/sonph/onehalf) |
+| `solarized-dark`, `solarized-light` | [Solarized](https://ethanschoonover.com/solarized) |
+
+`dark` and `light` also work. They mean `one-half-dark` and
+`one-half-light`.
 
 ## Limitations
 

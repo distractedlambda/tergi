@@ -635,3 +635,48 @@ fn selection_follows_its_commit_through_a_reload() {
     assert_eq!(ui.app.history.selected_commit().map(|c| c.id), Some(id));
     assert_eq!(ui.app.history.index.get(&id), Some(&203));
 }
+
+#[test]
+fn the_theme_menu_previews_themes() {
+    let s = Scratch::new();
+    s.write("main.rs", "fn main() {\n    let x = \"hi\";\n}\n");
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(0);
+    let colors = |u: &Ui| u.app.detail.highlights.values().next().map(|h| format!("{:?}", h.lines));
+    ui.wait("syntax highlighting", |u| colors(u).is_some());
+    let first = ui.app.theme.id;
+    let first_colors = colors(&ui);
+    let open = |ui: &mut Ui| {
+        ui.key_with(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        ui.type_text("choose theme");
+        ui.key(KeyCode::Enter);
+        assert!(matches!(ui.app.overlays.last(), Some(Overlay::Menu(m)) if m.title.as_deref() == Some("Theme")));
+    };
+
+    // Moving through the menu switches themes, syntax colors included, and
+    // Esc goes back to the theme from before.
+    open(&mut ui);
+    ui.key(KeyCode::Down);
+    let second = ui.app.theme.id;
+    assert_ne!(second, first);
+    ui.wait("new syntax colors", |u| colors(u).is_some_and(|c| Some(c) != first_colors));
+    ui.key(KeyCode::Esc);
+    assert!(ui.app.overlays.is_empty());
+    assert_eq!(ui.app.theme.id, first);
+    ui.wait("the old syntax colors", |u| colors(u) == first_colors);
+
+    // Enter keeps the theme.
+    open(&mut ui);
+    ui.key(KeyCode::Down);
+    ui.key(KeyCode::Enter);
+    assert!(ui.app.overlays.is_empty());
+    assert_eq!(ui.app.theme.id, second);
+
+    // Clicking outside the menu cancels it, like Esc.
+    open(&mut ui);
+    ui.key(KeyCode::Up);
+    assert_eq!(ui.app.theme.id, first);
+    ui.click(MouseButton::Left, Rect::new(0, 35, 1, 1));
+    assert!(ui.app.overlays.is_empty());
+    assert_eq!(ui.app.theme.id, second);
+}
