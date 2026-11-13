@@ -139,3 +139,10 @@ in detail. Read it before changing the watcher.
   with a timeout.
 - Some tests need git 2.45 or newer for reftable repositories. With an
   older git they skip themselves.
+- Property tests use `proptest`. The most important one is
+  `tests/patch_props.rs`, which stages, unstages and discards random line
+  selections with the real git and checks the result against a model.
+  They run 256 cases by default. Set `PROPTEST_CASES=5000` to search
+  harder after changing the code they cover. When one fails, proptest
+  saves the case under `proptest-regressions/` (or next to the file in
+  `tests/`) and runs it first from then on. Check those files in.
