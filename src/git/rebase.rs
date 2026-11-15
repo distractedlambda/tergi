@@ -214,8 +214,25 @@ pub async fn run(git: &Git, plan: &Plan, exe: &Path) -> Result<Outcome> {
     finish(git, result.map(|_| ())).await
 }
 
+/// Delete `.git/tergi/` once no rebase is in progress. A stopped rebase
+/// still needs it, because its `exec` lines read the message files.
+async fn remove_scratch_dir(git: &Git) {
+    let Ok(git_dir) = git.read_text(&["rev-parse", "--absolute-git-dir"]).await else {
+        return;
+    };
+    let git_dir = PathBuf::from(git_dir.trim());
+    if matches!(state_in(&git_dir), RepoState::Rebase { .. }) {
+        return;
+    }
+    // Leftover files do no harm, so a failure here isn't worth reporting.
+    let _ = tokio::fs::remove_dir_all(git_dir.join("tergi")).await;
+}
+
 async fn finish(git: &Git, result: Result<()>) -> Result<Outcome> {
     let stopped = matches!(state(git).await, RepoState::Rebase { .. });
+    if !stopped {
+        remove_scratch_dir(git).await;
+    }
     match result {
         Ok(()) if stopped => Ok(Outcome::Stopped),
         Ok(()) => Ok(Outcome::Done),
@@ -283,6 +300,7 @@ pub async fn skip_rebase(git: &Git) -> Result<Outcome> {
 
 pub async fn abort_rebase(git: &Git) -> Result<()> {
     git.run(&["rebase", "--abort"]).await?;
+    remove_scratch_dir(git).await;
     Ok(())
 }
 

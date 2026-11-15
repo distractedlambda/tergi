@@ -134,6 +134,34 @@ async fn edit_stops_and_continues() {
     assert_eq!(s.log(), ["four", "three", "two", "one"]);
 }
 
+/// The message files are only needed while the rebase runs.
+#[tokio::test]
+async fn message_files_are_removed_when_the_rebase_ends() {
+    let (s, ids) = four();
+    let scratch = s.file(".git/tergi");
+    let mut plan = rebase::plan_from(&s.git, id(&ids[1])).await.expect("plan");
+    plan.steps[0].action = Action::Reword("TWO".into());
+    plan.steps[1].action = Action::Edit;
+    plan.steps[2].action = Action::Squash("three and four".into());
+    let r = rebase::run(&s.git, &plan, &exe()).await.expect("run");
+    assert_eq!(r, Outcome::Stopped);
+    assert!(scratch.join("msg-2").exists(), "the squash still needs it");
+    let r = rebase::continue_rebase(&s.git).await.expect("continue");
+    assert_eq!(r, Outcome::Done);
+    assert_eq!(s.log(), ["three and four", "TWO", "one"]);
+    assert!(!scratch.exists());
+
+    let (s, ids) = four();
+    let scratch = s.file(".git/tergi");
+    let mut plan = rebase::plan_from(&s.git, id(&ids[1])).await.expect("plan");
+    plan.steps[0].action = Action::Edit;
+    plan.steps[1].action = Action::Reword("THREE".into());
+    rebase::run(&s.git, &plan, &exe()).await.expect("run");
+    assert!(scratch.exists());
+    rebase::abort_rebase(&s.git).await.expect("abort");
+    assert!(!scratch.exists());
+}
+
 #[tokio::test]
 async fn planner_style_plan() {
     let (s, ids) = four();

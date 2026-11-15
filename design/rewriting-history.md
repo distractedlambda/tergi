@@ -92,6 +92,12 @@ than taking over the terminal.
 them again at the end. Without it, git would refuse to start when the
 working tree isn't clean.
 
+The message files have to stay while the rebase is stopped, because the
+`exec` lines that read them haven't run yet. So `finish` deletes
+`.git/tergi/` only once no rebase is in progress, and `abort_rebase`
+deletes it too. A rebase that the user continues on the command line
+leaves the folder behind until tergi's next rebase ends.
+
 ## How a rebase ends
 
 A rebase can finish, or stop partway. It stops at an `edit` step, and on
@@ -180,6 +186,8 @@ commit, message lines that start with `#`, drop, fixup, squash, moves,
 edit with continue, a planner-style plan, autostash, a conflict that
 stops and aborts, amending staged changes into an older commit, refusing
 merges in the range, and refusing to start during another rebase.
+`message_files_are_removed_when_the_rebase_ends` checks that the message
+files stay while the rebase is stopped and go away when it ends.
 
 `src/app/planner.rs` has unit tests for the row order and the oldest
 commit check. In `tests/ui.rs`,

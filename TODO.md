@@ -2,10 +2,6 @@
 
 Known problems that nobody has fixed yet.
 
-- **Rebase message files are left behind.** Rewording and squashing
-  write each new message to a file in `.git/tergi/`, and nothing removes
-  them after the rebase. The next rebase overwrites them, but files from
-  a longer plan can stay. See `build_todo` in `src/git/rebase.rs`.
 - **Stashes don't show their untracked files.** A stash is shown as its
   commit diffed against its first parent. Untracked files saved with
   `--include-untracked` live in its third parent, so they don't appear.
