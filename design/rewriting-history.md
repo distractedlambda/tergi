@@ -1,0 +1,199 @@
+# Rewriting history
+
+tergi can reword, squash, fix up, drop, edit and reorder commits, either
+one at a time from the history or several at once from the rebase
+planner. All of it runs `git rebase -i`, but git never opens an editor.
+This document explains how that works and what tergi refuses to do.
+
+The git side is in `src/git/rebase.rs`. The planner is in
+`src/app/planner.rs`, and the commands that start each action are in
+`run_cmd` in `src/app/cmd.rs`.
+
+## Why `git rebase -i`
+
+We could rewrite commits ourselves with gitoxide, but then hooks,
+signing, `rebase.*` settings and the reflog would behave differently
+from the command line. Running git keeps them the same. It also means a
+rebase that stops on a conflict is an ordinary git rebase. The user can
+finish it in tergi, or from a shell with `git rebase --continue`.
+
+## A plan
+
+Every rewrite starts as a `Plan`. That is a list of `Step`s, oldest
+first, and a `base` commit to replay them onto. A `base` of `None` means
+the range starts at the root commit, and the rebase runs with `--root`.
+
+`plan_from(oldest)` makes a plan with every commit from `oldest` up to
+HEAD, all set to `Pick`. It refuses in these cases:
+
+- `oldest` is a merge commit.
+- `oldest` isn't an ancestor of HEAD, so it isn't on the current branch.
+- There is a merge commit anywhere in the range.
+
+tergi doesn't try to recreate merges. `git rebase` would flatten them by
+default, and `--rebase-merges` needs a todo list that this code doesn't
+build.
+
+## The todo list
+
+`build_todo` writes the todo list for a plan. Most actions map straight
+to a todo verb:
+
+| Action | Todo lines |
+| --- | --- |
+| `Pick` | `pick <id>` |
+| `Drop` | `drop <id>` |
+| `Edit` | `edit <id>` |
+| `Fixup` | `fixup <id>` |
+| `Reword(msg)` | `pick <id>`, then `exec git commit --amend … -F <file>` |
+| `Squash(msg)` | `fixup <id>`, then `exec git commit --amend … -F <file>` |
+
+Git's own `reword` and `squash` verbs open an editor for the message, and
+we don't want git to take over the terminal. So a reword picks the commit
+and then amends it with the new message, which we wrote to a file in
+`.git/tergi/`. A squash melds the commit in with `fixup`, which keeps the
+older commit's message, and then amends it with the combined message.
+
+The amend runs with these options:
+
+- `--allow-empty`, so rewording an empty commit works.
+- `--no-verify`, because git doesn't run the commit hooks for the other
+  commits it replays either.
+- `--cleanup=whitespace`, so a message line that starts with `#`, such
+  as `#42 Fix the crash`, isn't taken for a comment. `ops::commit` uses
+  the same setting for the same reason.
+
+The oldest step can't be a squash or a fixup, because there is nothing
+before it to meld into. `build_todo` refuses such a plan.
+
+## The sequence editor
+
+`run` writes the todo list to `.git/tergi/todo` and starts
+
+```sh
+git rebase -i --autostash <base>
+```
+
+with `GIT_SEQUENCE_EDITOR` set to `tergi __seq-editor <our todo>`. Git
+writes its own todo list and runs that command with the list's path
+added. `main` sees `__seq-editor` before it parses any arguments, and
+calls `seq_editor_main`, which replaces git's list with ours.
+
+Before it does, it checks that both lists name the same commits. Git's
+list uses short ids, so it matches them by prefix. If they differ, the
+branch moved after tergi made the plan. Then the editor fails, git
+doesn't start the rebase, and the user sees why.
+
+`Git` sets `GIT_EDITOR=true` on every command. So if git does want an
+editor for something we didn't plan for, it gets an empty answer rather
+than taking over the terminal.
+
+`--autostash` stashes uncommitted changes before the rebase and applies
+them again at the end. Without it, git would refuse to start when the
+working tree isn't clean.
+
+## How a rebase ends
+
+A rebase can finish, or stop partway. It stops at an `edit` step, and on
+a conflict. git exits with an error on a conflict, but that isn't a
+failure from the user's point of view. So `finish` doesn't trust the
+exit code alone. It looks at the repository afterwards with `state`. If
+a rebase is still in progress, the outcome is `Stopped`, whatever git
+returned. If not, git's result stands.
+
+That only works if no rebase was in progress before we started. So
+`ensure_idle` refuses to start while a rebase, merge, cherry-pick or
+revert is unfinished. Git would refuse too, but `finish` would then see
+the old rebase and report that the new one stopped.
+
+## The state banner
+
+`state_in` reads the git directory to find out whether something is in
+progress. It looks for `rebase-merge/` or `rebase-apply/`, and then for
+`MERGE_HEAD`, `CHERRY_PICK_HEAD` and `REVERT_HEAD`. For a rebase it also
+reads the branch name, the step and the commit it stopped at. These are
+small files, so the app reads them while it handles an event, on every
+refresh.
+
+When the state isn't `Clean`, the banner shows it, with Continue, Skip
+and Abort buttons. A merge has no Skip. Each button runs `continue_op`,
+`skip_op` or `abort_op`, which call the matching git command. Continue
+and Skip for a rebase go through `finish` again, so they can stop once
+more.
+
+## Single-commit actions
+
+The actions in the history menu each build a plan and change one step:
+
+- `reword` amends HEAD directly when the commit is HEAD. It uses
+  `--only`, so staged changes stay out of the commit. Otherwise it runs a
+  plan from the commit with that step set to `Reword`.
+- `single` sets one step to `Fixup`, `Drop` or `Edit`. A fixup melds the
+  commit into its parent, so the plan starts at the parent.
+- `move_commit` swaps the commit with the one above or below it. Moving
+  it down needs the parent in the plan, so the plan starts there.
+- `fixup_staged_into` commits the staged changes with
+  `git commit --fixup=<target>`, then runs `git rebase -i --autosquash`
+  with `GIT_SEQUENCE_EDITOR=true`, which accepts git's own todo list. If
+  the rebase didn't start, it resets the fixup commit away, so the
+  changes are staged again as they were.
+
+Reword and squash need a message first. `run_cmd` reads the current
+message in the background and opens a dialog with it. For a squash, the
+dialog starts with the parent's message followed by this one. The dialog
+only opens if no other dialog opened in the meantime, because then the
+user has moved on.
+
+## The planner
+
+The planner (`i` in the history) edits a whole plan before running it.
+`Planner::new` takes a plan from `plan_from` and shows the rows newest
+first, like the history. `to_plan` turns them back, oldest first.
+
+Each row has a `PlanAction` and, for reword and squash, a message.
+Choosing reword or squash asks for the message right away. `planner_set`
+reads the commit's message in the background. For a squash, it puts the
+message of the row below first, using the message already written for
+that row if there is one. When the read comes back, the row may have
+moved. So the code finds the row again by its commit id, and only opens
+the dialog if the row still wants a message. If another dialog opened in
+the meantime, it sets the row back to `Pick`, as cancelling the dialog
+would.
+
+Changing a row's action drops its message, because a message written
+for a reword doesn't fit a squash.
+
+`to_plan` checks what a reorder can break:
+
+- A reword or squash row without a message.
+- A squash or fixup at the bottom, with nothing below it.
+- A squash or fixup on top of a dropped commit.
+
+Enter runs the plan with `rebase::run` through `spawn_op`, and the
+planner closes.
+
+## Tests
+
+`tests/rebase.rs` runs each action against a scratch repository with
+four commits. It covers rewording HEAD, an older commit and the root
+commit, message lines that start with `#`, drop, fixup, squash, moves,
+edit with continue, a planner-style plan, autostash, a conflict that
+stops and aborts, amending staged changes into an older commit, refusing
+merges in the range, and refusing to start during another rebase.
+
+`src/app/planner.rs` has unit tests for the row order and the oldest
+commit check. In `tests/ui.rs`,
+`the_planner_asks_for_a_message_after_its_row_moves` and
+`a_reword_without_its_dialog_goes_back_to_pick` cover the dialogs, and
+`rewords_a_commit_and_runs_a_plan` runs the whole flow from the keyboard.
+
+The tests set `repo.exe` to `CARGO_BIN_EXE_tergi`, because during a test
+the current executable is the test runner, not tergi.
+
+## Known gaps
+
+- Ranges with merge commits are refused.
+- The message files in `.git/tergi/` are left there after the rebase.
+  They are small, and each rebase overwrites them.
+- Moving a commit with Ctrl+J or Ctrl+K runs a whole rebase for one
+  step. The planner is the way to make several moves at once.
