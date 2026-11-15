@@ -56,6 +56,12 @@ Some files aren't diffed:
   limits.
 - A submodule shows up as `Subproject commit <id>`, as git shows it.
 
+A stash made with `--include-untracked` keeps its untracked files in a
+third parent, a root commit with only those files. Diffing against the
+first parent would leave them out. So `stash_untracked` recognizes such
+a stash by its parents and the third parent's message, and `load` adds
+that commit's files as untracked, with status `?`.
+
 Files are sorted by path. The full text of both sides is kept in
 `FileTexts`, for syntax highlighting.
 
@@ -207,6 +213,7 @@ Selected lines get the selection background instead.
   that quoting round-trips, and that `diff --git` paths split correctly.
 - `src/git/commit.rs` checks that `diff_texts` matches git's output
   style, and has the property test `hunks_turn_old_into_new`.
+- `tests/ops.rs` has `a_stash_shows_its_untracked_files`.
 - `src/git/words.rs` has property tests that the words cover the whole
   line, and that the unmarked text on both sides is the same.
 - `tests/ui.rs` has `folds_do_not_carry_over_to_other_commits`.

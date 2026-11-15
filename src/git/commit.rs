@@ -73,7 +73,17 @@ pub fn load(
             .context("parent has no tree")?,
         None => repo.empty_tree(),
     };
-    let (files, texts) = diff_trees(repo, &old_tree, &new_tree, context, line_limit)?;
+    let (mut files, mut texts) = diff_trees(repo, &old_tree, &new_tree, context, line_limit)?;
+    if let Some(untracked) = stash_untracked(repo, &parents)? {
+        let tree = untracked.tree().context("stash has no tree")?;
+        let (more, more_texts) = diff_trees(repo, &repo.empty_tree(), &tree, context, line_limit)?;
+        for mut f in more {
+            f.status = FileStatus::Untracked;
+            files.push(f);
+        }
+        texts.extend(more_texts);
+        (files, texts) = sort_by_path(files, texts);
+    }
     Ok(CommitDetail {
         id,
         parents,
@@ -228,10 +238,42 @@ pub fn diff_trees(
         }
         files.push(f);
     }
-    // Sort by path, keeping `texts` in the same order as `files`.
+    Ok(sort_by_path(files, texts))
+}
+
+/// Sort the files by path, keeping `texts` in the same order as `files`.
+fn sort_by_path(files: Vec<FileDiff>, texts: Vec<FileTexts>) -> (Vec<FileDiff>, Vec<FileTexts>) {
     let mut paired: Vec<(FileDiff, FileTexts)> = files.into_iter().zip(texts).collect();
     paired.sort_by(|a, b| a.0.path().cmp(b.0.path()));
-    Ok(paired.into_iter().unzip())
+    paired.into_iter().unzip()
+}
+
+/// If these are the parents of a stash made with `--include-untracked`,
+/// the commit that holds its untracked files.
+///
+/// Such a stash has three parents: the commit it was made on, a commit
+/// with the staged changes on top of that, and a root commit with the
+/// untracked files. Git always gives the last one a message that starts
+/// with "untracked files on ". We check all of that, so an ordinary merge
+/// with three parents isn't mistaken for a stash.
+fn stash_untracked<'r>(
+    repo: &'r gix::Repository,
+    parents: &[ObjectId],
+) -> Result<Option<gix::Commit<'r>>> {
+    let [base, index, untracked] = parents else {
+        return Ok(None);
+    };
+    let index = repo.find_commit(*index).context("parent not found")?;
+    if index.parent_ids().map(|p| p.detach()).ne([*base]) {
+        return Ok(None);
+    }
+    let untracked = repo.find_commit(*untracked).context("parent not found")?;
+    let c = untracked.decode().context("bad commit")?;
+    if c.parents().next().is_some() || !c.message.starts_with(b"untracked files on ") {
+        return Ok(None);
+    }
+    drop(c);
+    Ok(Some(untracked))
 }
 
 /// The text of a blob, or `None` if it looks binary. Submodule entries are

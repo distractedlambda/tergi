@@ -4,6 +4,7 @@ mod common;
 
 use common::Scratch;
 use gix::ObjectId;
+use tergi::git::commit;
 use tergi::git::ops::{self, ApplyMode, apply_lines};
 use tergi::git::workdir::Workdir;
 
@@ -174,4 +175,51 @@ async fn stash_actions_follow_the_stash_when_others_are_added() {
     );
 
     assert!(ops::stash_drop(&s.git, one).await.is_err());
+}
+
+/// The untracked files of a stash live in its third parent, not in the
+/// diff against the first one.
+#[test]
+fn a_stash_shows_its_untracked_files() {
+    let s = Scratch::new();
+    s.write("a.txt", "a\n");
+    s.commit_all("init");
+    s.write("a.txt", "changed\n");
+    s.write("b.txt", "staged\n");
+    s.sh(&["add", "b.txt"]);
+    s.write("c.txt", "untracked\n");
+    s.write("dir/d.txt", "deep\n");
+    s.sh(&["stash", "push", "-q", "--include-untracked"]);
+    let repo = gix::open(s.path()).expect("open");
+    let load = |rev: &str| {
+        let id = ObjectId::from_hex(s.sh(&["rev-parse", rev]).trim().as_bytes()).expect("id");
+        commit::load(&repo, id, 3, usize::MAX).expect("load")
+    };
+    let files = |c: &commit::CommitDetail| -> Vec<(char, String)> {
+        c.files
+            .iter()
+            .map(|f| (f.status.letter(), f.path().to_string()))
+            .collect()
+    };
+
+    let c = load("stash@{0}");
+    assert_eq!(
+        files(&c),
+        [
+            ('M', "a.txt".to_string()),
+            ('A', "b.txt".to_string()),
+            ('?', "c.txt".to_string()),
+            ('?', "dir/d.txt".to_string()),
+        ]
+    );
+    assert_eq!(c.texts[2].new.as_deref(), Some("untracked\n"));
+
+    // A stash without untracked files has only two parents.
+    s.sh(&["stash", "pop", "-q"]);
+    s.sh(&["stash", "push", "-q"]);
+    let c = load("stash@{0}");
+    assert_eq!(
+        files(&c),
+        [('M', "a.txt".to_string()), ('A', "b.txt".to_string())]
+    );
 }
