@@ -1,0 +1,5 @@
+# Commits that only reformat code. To skip them in git blame, run
+# git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# Run cargo fmt over the whole repository
+889fe13660910ce14114ebf7c01fd0f2a491b7c2

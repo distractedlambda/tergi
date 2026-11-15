@@ -27,6 +27,10 @@ Clippy lints are set in `Cargo.toml`. `unwrap_used` warns outside tests,
 and `unsafe_code` is forbidden. Both dev and release builds use
 `panic = "abort"`.
 
+Code is formatted with rustfmt's default settings. `rustfmt.toml` is empty
+so that nobody's personal config applies. `tests/fmt.rs` runs
+`cargo fmt --check`, so `cargo test` fails until you run `cargo fmt`.
+
 To try the app by hand, run it inside tmux in the dev container, so you
 can send it keys and capture the screen.
 
