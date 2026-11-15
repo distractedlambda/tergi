@@ -411,3 +411,75 @@ async fn every_selection_with_every_context_size() {
         }
     }
 }
+
+/// The staged content of a file, as bytes.
+fn index_bytes(s: &Scratch, path: &str) -> Vec<u8> {
+    let out = std::process::Command::new("git")
+        .current_dir(s.path())
+        .args(["show", &format!(":{path}")])
+        .output()
+        .expect("run git");
+    assert!(out.status.success(), "git show :{path} failed");
+    out.stdout
+}
+
+#[tokio::test]
+async fn lines_in_a_file_that_is_not_utf8() {
+    // Latin-1, where "\xe9" is "é". Lines show up with U+FFFD in place of
+    // the bytes that aren't UTF-8, but the patch must use the real bytes.
+    let old: &[u8] = b"caf\xe9\nna\xefve\nr\xe9sum\xe9\n";
+    let new: &[u8] = b"caf\xe9\nNA\xcfVE\nr\xe9sum\xe9\nd\xe9j\xe0\n";
+    let s = Scratch::new();
+    std::fs::write(s.file("f.txt"), old).expect("write");
+    s.commit_all("init");
+    std::fs::write(s.file("f.txt"), new).expect("write");
+
+    let f = unstaged(&s, "f.txt").await;
+    let sel = select(&f, &["d\u{fffd}j\u{fffd}"]);
+    apply_lines(&s.git, &f, ApplyMode::Stage, &sel)
+        .await
+        .expect("stage");
+    assert_eq!(
+        index_bytes(&s, "f.txt"),
+        b"caf\xe9\nna\xefve\nr\xe9sum\xe9\nd\xe9j\xe0\n"
+    );
+
+    let f = staged(&s, "f.txt").await;
+    apply_lines(
+        &s.git,
+        &f,
+        ApplyMode::Unstage,
+        &select(&f, &["d\u{fffd}j\u{fffd}"]),
+    )
+    .await
+    .expect("unstage");
+    assert_eq!(index_bytes(&s, "f.txt"), old);
+
+    let f = unstaged(&s, "f.txt").await;
+    let sel = select(&f, &["na\u{fffd}ve", "NA\u{fffd}VE"]);
+    apply_lines(&s.git, &f, ApplyMode::Discard, &sel)
+        .await
+        .expect("discard");
+    assert_eq!(
+        std::fs::read(s.file("f.txt")).expect("read"),
+        b"caf\xe9\nna\xefve\nr\xe9sum\xe9\nd\xe9j\xe0\n"
+    );
+}
+
+#[tokio::test]
+async fn lines_in_an_untracked_file_that_is_not_utf8() {
+    let s = Scratch::new();
+    s.write("keep.txt", "x\n");
+    s.commit_all("init");
+    std::fs::write(s.file("new.txt"), b"caf\xe9\nthe\nd\xe9j\xe0\n").expect("write");
+    let f = unstaged(&s, "new.txt").await;
+    apply_lines(
+        &s.git,
+        &f,
+        ApplyMode::Stage,
+        &select(&f, &["caf\u{fffd}", "d\u{fffd}j\u{fffd}"]),
+    )
+    .await
+    .expect("stage");
+    assert_eq!(index_bytes(&s, "new.txt"), b"caf\xe9\nd\xe9j\xe0\n");
+}

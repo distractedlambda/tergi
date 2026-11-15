@@ -16,11 +16,14 @@ use super::diff::{FileDiff, LineKind};
 ///
 /// `selected(hunk, line)` says whether a line is selected. Context lines are
 /// never "selected". Returns `Ok(None)` when no changed line is selected.
+///
+/// The patch is bytes, because the lines in it are copied from the file as
+/// they are, and the file needn't be UTF-8.
 pub fn build_patch(
     file: &FileDiff,
     selected: &dyn Fn(usize, usize) -> bool,
     reverse: bool,
-) -> Result<Option<String>> {
+) -> Result<Option<Vec<u8>>> {
     let mut total = 0;
     let mut chosen = 0;
     for (hi, h) in file.hunks.iter().enumerate() {
@@ -36,22 +39,22 @@ pub fn build_patch(
     }
     let full = chosen == total;
 
-    let mut out = header(file, full, reverse);
+    let mut out = header(file, full, reverse).into_bytes();
     let mut delta: i64 = 0;
     for (hi, h) in file.hunks.iter().enumerate() {
-        let mut body: Vec<(char, &str, bool)> = Vec::new();
+        let mut body: Vec<(u8, &[u8], bool)> = Vec::new();
         let mut any = false;
         for (li, line) in h.lines.iter().enumerate() {
             let sel = line.kind != LineKind::Context && selected(hi, li);
             any |= sel;
             let tag = match (line.kind, sel, reverse) {
-                (LineKind::Context, _, _) => ' ',
-                (LineKind::Add, true, _) => '+',
-                (LineKind::Del, true, _) => '-',
+                (LineKind::Context, _, _) => b' ',
+                (LineKind::Add, true, _) => b'+',
+                (LineKind::Del, true, _) => b'-',
                 (LineKind::Add, false, false) | (LineKind::Del, false, true) => continue,
-                (LineKind::Del, false, false) | (LineKind::Add, false, true) => ' ',
+                (LineKind::Del, false, false) | (LineKind::Add, false, true) => b' ',
             };
-            body.push((tag, &line.text, line.no_eol));
+            body.push((tag, line.bytes(), line.no_eol));
         }
         if !any {
             continue;
@@ -59,21 +62,21 @@ pub fn build_patch(
         // A line without a trailing newline must be the last line on its
         // side of the patch. Leaving out part of a change at the end of the
         // file can break that, and the patch would be garbage, so refuse.
-        let ends_badly = |side: char| {
+        let ends_badly = |side: u8| {
             body.iter()
-                .filter(|(tag, _, _)| *tag == ' ' || *tag == side)
+                .filter(|(tag, _, _)| *tag == b' ' || *tag == side)
                 .rev()
                 .skip(1)
                 .any(|(_, _, no_eol)| *no_eol)
         };
-        if ends_badly('-') || ends_badly('+') {
+        if ends_badly(b'-') || ends_badly(b'+') {
             bail!(
                 "This selection splits a change to the last line of the file. \
                  Select the whole change at the end of the file instead."
             );
         }
-        let old_count = body.iter().filter(|(t, _, _)| *t != '+').count() as i64;
-        let new_count = body.iter().filter(|(t, _, _)| *t != '-').count() as i64;
+        let old_count = body.iter().filter(|(t, _, _)| *t != b'+').count() as i64;
+        let new_count = body.iter().filter(|(t, _, _)| *t != b'-').count() as i64;
         // Where the hunk begins on the side we apply the patch to, and where
         // it begins on the other side once the earlier hunks are applied.
         let (old_first, new_first) = if reverse {
@@ -84,19 +87,22 @@ pub fn build_patch(
             (old_first, old_first + delta)
         };
         delta += new_count - old_count;
-        out.push_str(&format!(
-            "@@ -{},{} +{},{} @@\n",
-            range_start(old_first, old_count, reverse),
-            old_count,
-            range_start(new_first, new_count, !reverse),
-            new_count
-        ));
+        out.extend_from_slice(
+            format!(
+                "@@ -{},{} +{},{} @@\n",
+                range_start(old_first, old_count, reverse),
+                old_count,
+                range_start(new_first, new_count, !reverse),
+                new_count
+            )
+            .as_bytes(),
+        );
         for (tag, text, no_eol) in body {
             out.push(tag);
-            out.push_str(text);
-            out.push('\n');
+            out.extend_from_slice(text);
+            out.push(b'\n');
             if no_eol {
-                out.push_str("\\ No newline at end of file\n");
+                out.extend_from_slice(b"\\ No newline at end of file\n");
             }
         }
     }
@@ -221,7 +227,7 @@ index 1111111..2222222 100644
             .unwrap()
             .unwrap();
         assert_eq!(
-            p,
+            String::from_utf8(p).unwrap(),
             "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,4 +1,4 @@\n a\n-b\n c\n+B\n d\n"
         );
     }
@@ -233,8 +239,21 @@ index 1111111..2222222 100644
             .unwrap()
             .unwrap();
         assert_eq!(
-            p,
+            String::from_utf8(p).unwrap(),
             "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,4 +1,4 @@\n a\n-b\n+B\n C\n d\n"
+        );
+    }
+
+    #[test]
+    fn keeps_bytes_that_are_not_utf8() {
+        // "caf\xe9" is "café" in Latin-1.
+        let diff = b"diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n caf\xe9\n-x\n+y\xff\n";
+        let f = &parse_unified(diff, DEFAULT_LINE_LIMIT)[0];
+        assert_eq!(f.hunks[0].lines[0].text, "caf\u{fffd}");
+        let p = build_patch(f, &|_, l| l == 2, false).unwrap().unwrap();
+        assert_eq!(
+            p,
+            b"diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,3 @@\n caf\xe9\n x\n+y\xff\n"
         );
     }
 

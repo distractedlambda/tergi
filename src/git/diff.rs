@@ -13,11 +13,41 @@ pub enum LineKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffLine {
     pub kind: LineKind,
+    /// The line for display. If the file isn't valid UTF-8, the bad bytes
+    /// are replaced here and the originals are kept in `raw`.
     pub text: String,
+    /// The line's bytes, only when they differ from `text`. A patch has to
+    /// use these, or it won't match the file.
+    pub raw: Option<Box<[u8]>>,
     pub old_no: Option<u32>,
     pub new_no: Option<u32>,
     /// The line is the last one in its file and has no trailing newline.
     pub no_eol: bool,
+}
+
+impl DiffLine {
+    pub fn new(kind: LineKind, bytes: &[u8], old_no: Option<u32>, new_no: Option<u32>) -> Self {
+        let (text, raw) = match std::str::from_utf8(bytes) {
+            Ok(s) => (s.to_string(), None),
+            Err(_) => (
+                String::from_utf8_lossy(bytes).into_owned(),
+                Some(bytes.into()),
+            ),
+        };
+        DiffLine {
+            kind,
+            text,
+            raw,
+            old_no,
+            new_no,
+            no_eol: false,
+        }
+    }
+
+    /// The line as it is in the file.
+    pub fn bytes(&self) -> &[u8] {
+        self.raw.as_deref().unwrap_or(self.text.as_bytes())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,9 +200,12 @@ impl FileDiff {
 pub const DEFAULT_LINE_LIMIT: usize = 20_000;
 
 /// Parse the output of `git diff` (without color, with `--no-ext-diff`).
-pub fn parse_unified(text: &str, line_limit: usize) -> Vec<FileDiff> {
+///
+/// The output is bytes, because git prints file contents as they are, and
+/// they need not be UTF-8.
+pub fn parse_unified(text: impl AsRef<[u8]>, line_limit: usize) -> Vec<FileDiff> {
     let mut files: Vec<FileDiff> = Vec::new();
-    let lines = text.split('\n');
+    let lines = text.as_ref().split(|&b| b == b'\n');
     // Track where we are in the current hunk so we know when it ends. A hunk
     // body line can start with "diff --git" if a file contains that text, so
     // we rely on the counts in the hunk header instead of guessing.
@@ -189,12 +222,12 @@ pub fn parse_unified(text: &str, line_limit: usize) -> Vec<FileDiff> {
     for line in lines {
         if old_left > 0 || new_left > 0 {
             let Some(file) = files.last_mut() else { break };
-            let (kind, body) = match line.as_bytes().first() {
+            let (kind, body): (_, &[u8]) = match line.first() {
                 Some(b'+') => (LineKind::Add, &line[1..]),
                 Some(b'-') => (LineKind::Del, &line[1..]),
                 Some(b' ') => (LineKind::Context, &line[1..]),
                 // Some tools strip the space from empty context lines.
-                None => (LineKind::Context, ""),
+                None => (LineKind::Context, b""),
                 Some(b'\\') => {
                     mark_no_eol(file);
                     continue;
@@ -231,13 +264,7 @@ pub fn parse_unified(text: &str, line_limit: usize) -> Vec<FileDiff> {
             if !file.too_large
                 && let Some(h) = file.hunks.last_mut()
             {
-                h.lines.push(DiffLine {
-                    kind,
-                    text: body.to_string(),
-                    old_no: o,
-                    new_no: n,
-                    no_eol: false,
-                });
+                h.lines.push(DiffLine::new(kind, body, o, n));
                 file_lines += 1;
                 if file_lines > line_limit {
                     file.too_large = true;
@@ -247,6 +274,9 @@ pub fn parse_unified(text: &str, line_limit: usize) -> Vec<FileDiff> {
             continue;
         }
 
+        // Headers hold paths, which we keep as strings anyway.
+        let line = String::from_utf8_lossy(line);
+        let line: &str = &line;
         if let Some(rest) = line.strip_prefix("diff --git ") {
             let (a, b) = split_git_paths(rest);
             // The paths are refined later by the ---/+++ and rename lines.

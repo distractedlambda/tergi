@@ -34,7 +34,7 @@ impl Workdir {
             let out = git
                 .read(&["diff", "--no-ext-diff", "--no-color", "--no-renames", &u])
                 .await?;
-            Some(out.text())
+            Some(out.stdout)
         } else {
             None
         };
@@ -51,7 +51,7 @@ impl Workdir {
                 // There is no HEAD to compare against yet.
                 args.push("--root");
             }
-            Some(git.read(&args).await?.text())
+            Some(git.read(&args).await?.stdout)
         } else {
             None
         };
@@ -96,8 +96,7 @@ impl Workdir {
                     if is_binary(&text) {
                         f.binary = true;
                     } else {
-                        let text = String::from_utf8_lossy(&text);
-                        f.hunks = diff_texts("", &text, context);
+                        f.hunks = diff_texts(b"", &text, context);
                         f.old_path = Some(path);
                     }
                 }
@@ -227,13 +226,12 @@ fn diff_untracked(u: Untracked, context: u32, line_limit: usize) -> (FileDiff, F
     match data {
         Some(data) if is_binary(&data) => f.binary = true,
         Some(data) => {
-            let text: Arc<str> = String::from_utf8_lossy(&data).into();
-            f.hunks = diff_texts("", &text, context);
+            f.hunks = diff_texts(b"", &data, context);
             if f.line_count() > line_limit {
                 f.too_large = true;
                 f.hunks.clear();
             }
-            texts.new = Some(text);
+            texts.new = Some(String::from_utf8_lossy(&data).into());
         }
         None => {}
     }
@@ -265,7 +263,7 @@ pub async fn load_full_diff(
     // A file that changed type shows up twice under the same path, once
     // deleted and once added.
     Ok(crate::util::blocking(move || {
-        parse_unified(&out.text(), usize::MAX)
+        parse_unified(&out.stdout, usize::MAX)
             .into_iter()
             .find(|d| d.old_path == old_path && d.new_path == new_path)
     })

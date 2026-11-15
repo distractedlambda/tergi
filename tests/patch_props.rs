@@ -283,7 +283,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
         return Ok(());
     };
     let patch = match patch {
-        Ok(Some(p)) => p,
+        Ok(Some(p)) => String::from_utf8_lossy(&p).into_owned(),
         other => {
             return Err(TestCaseError::fail(format!(
                 "expected a patch, but got {other:?}"

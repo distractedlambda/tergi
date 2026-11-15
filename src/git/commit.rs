@@ -213,8 +213,8 @@ pub fn diff_trees(
             texts.push(FileTexts::default());
         } else {
             f.hunks = diff_texts(
-                old_text.as_deref().unwrap_or(""),
-                new_text.as_deref().unwrap_or(""),
+                old_text.as_deref().unwrap_or("").as_bytes(),
+                new_text.as_deref().unwrap_or("").as_bytes(),
                 context,
             );
             if f.line_count() > line_limit {
@@ -255,11 +255,12 @@ pub fn is_binary(data: &[u8]) -> bool {
     data[..data.len().min(8000)].contains(&0)
 }
 
-/// Compute unified-diff hunks between two texts.
-pub fn diff_texts(old: &str, new: &str, context: u32) -> Vec<Hunk> {
-    let old_lines: Vec<&str> = old.split_inclusive('\n').collect();
-    let new_lines: Vec<&str> = new.split_inclusive('\n').collect();
-    let mut input: InternedInput<&str> = InternedInput::default();
+/// Compute unified-diff hunks between two texts. They are bytes because an
+/// untracked file needn't be UTF-8, and staging its lines needs the bytes.
+pub fn diff_texts(old: &[u8], new: &[u8], context: u32) -> Vec<Hunk> {
+    let old_lines: Vec<&[u8]> = old.split_inclusive(|&b| b == b'\n').collect();
+    let new_lines: Vec<&[u8]> = new.split_inclusive(|&b| b == b'\n').collect();
+    let mut input: InternedInput<&[u8]> = InternedInput::default();
     input.update_before(old_lines.iter().copied());
     input.update_after(new_lines.iter().copied());
     let mut diff = Diff::compute(Algorithm::Histogram, &input);
@@ -288,18 +289,18 @@ pub fn diff_texts(old: &str, new: &str, context: u32) -> Vec<Hunk> {
         let mut n = new_begin;
         let push = |lines: &mut Vec<DiffLine>,
                     kind,
-                    text: &str,
+                    text: &[u8],
                     o: Option<usize>,
                     n: Option<usize>,
                     last: bool| {
-            let no_eol = last && !text.ends_with('\n');
-            lines.push(DiffLine {
+            let mut line = DiffLine::new(
                 kind,
-                text: text.strip_suffix('\n').unwrap_or(text).to_string(),
-                old_no: o.map(|x| x as u32 + 1),
-                new_no: n.map(|x| x as u32 + 1),
-                no_eol,
-            });
+                text.strip_suffix(b"\n").unwrap_or(text),
+                o.map(|x| x as u32 + 1),
+                n.map(|x| x as u32 + 1),
+            );
+            line.no_eol = last && !text.ends_with(b"\n");
+            lines.push(line);
         };
         for c in &changes[i..=j] {
             while o < c.before.start as usize {
@@ -406,7 +407,7 @@ mod tests {
     fn matches_git_style() {
         let old = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n";
         let new = "1\n2\nthree\n4\n5\n6\n7\n8\n9\n10\neleven";
-        insta::assert_snapshot!(render(&diff_texts(old, new, 3)), @r"
+        insta::assert_snapshot!(render(&diff_texts(old.as_bytes(), new.as_bytes(), 3)), @r"
         @@ -1,6 +1,6 @@
          1
          2
@@ -484,7 +485,7 @@ mod tests {
     proptest! {
         #[test]
         fn hunks_turn_old_into_new(old in text(), new in text(), context in 0u32..5) {
-            let hunks = diff_texts(&old, &new, context);
+            let hunks = diff_texts(old.as_bytes(), new.as_bytes(), context);
             prop_assert_eq!(hunks.is_empty(), old == new);
             prop_assert_eq!(apply(&old, &hunks), new);
 
@@ -532,12 +533,12 @@ mod tests {
 
     #[test]
     fn new_and_empty() {
-        insta::assert_snapshot!(render(&diff_texts("", "a\nb\n", 3)), @r"
+        insta::assert_snapshot!(render(&diff_texts(b"", b"a\nb\n", 3)), @r"
         @@ -0,0 +1,2 @@
         +a
         +b
         ");
-        insta::assert_snapshot!(render(&diff_texts("a\n", "", 3)), @r"
+        insta::assert_snapshot!(render(&diff_texts(b"a\n", b"", 3)), @r"
         @@ -1 +0,0 @@
         -a
         ");

@@ -49,7 +49,7 @@ pub async fn apply_lines(
     git.run_opts(
         &args,
         &RunOpts {
-            stdin: Some(patch.into_bytes()),
+            stdin: Some(patch),
             ..Default::default()
         },
     )
