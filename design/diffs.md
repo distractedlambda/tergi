@@ -180,9 +180,13 @@ shows by their line numbers. Without the full text, or for a file over
 20,000 lines, it highlights each hunk's old side and new side on its
 own. Context lines use the new side's colors when it has them.
 
-We have the full text of both sides of a commit diff, and of the new side
-of unstaged and untracked files, which we read from disk. For staged
-files we don't, so they are highlighted hunk by hunk.
+We have the full text of both sides of every diff. A commit diff has
+them from gitoxide. For an unstaged file, the old side is in the index
+and the new side is on disk. For a staged file, the old side is in HEAD
+and the new side is in the index. `Workdir::load` reads the index and
+HEAD versions with `read_blobs`, which runs `git cat-file` twice: once
+with `--batch-check` to skip anything over `MAX_BLOB`, and once with
+`--batch` to read the rest.
 
 The syntax is chosen by file name, then extension, then the first line,
 such as a `#!` line. Files that come out as plain text aren't
@@ -214,6 +218,8 @@ Selected lines get the selection background instead.
 - `src/git/commit.rs` checks that `diff_texts` matches git's output
   style, and has the property test `hunks_turn_old_into_new`.
 - `tests/ops.rs` has `a_stash_shows_its_untracked_files`.
+- `tests/staging.rs` checks the texts that `Workdir::load` reads for
+  staged and unstaged files.
 - `src/git/words.rs` has property tests that the words cover the whole
   line, and that the unmarked text on both sides is the same.
 - `tests/ui.rs` has `folds_do_not_carry_over_to_other_commits`.

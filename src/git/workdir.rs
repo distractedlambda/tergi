@@ -17,9 +17,10 @@ pub struct Workdir {
     pub staged: Vec<Arc<FileDiff>>,
     pub untracked: Vec<Arc<FileDiff>>,
     pub conflicted: Vec<Arc<FileDiff>>,
-    /// Full text of the working tree version of each unstaged and untracked
-    /// file, for syntax highlighting. Indexed like the lists above.
+    /// Full text of both sides of each unstaged, staged and untracked file,
+    /// for syntax highlighting. Indexed like the lists above.
     pub unstaged_texts: Vec<FileTexts>,
+    pub staged_texts: Vec<FileTexts>,
     pub untracked_texts: Vec<FileTexts>,
 }
 
@@ -116,17 +117,40 @@ impl Workdir {
                 untracked: arcs(untracked),
                 conflicted: arcs(conflicted),
                 unstaged_texts: Vec::new(),
+                staged_texts: Vec::new(),
                 untracked_texts,
             }
         })
         .await;
 
+        // The old side of a staged file is in HEAD, and its new side is in
+        // the index. The index also has the old side of an unstaged file.
+        let blob = |f: &FileDiff, path: &Option<String>, rev: &str| {
+            path.as_ref()
+                .filter(|_| !f.binary)
+                .map(|p| format!("{rev}:{p}"))
+        };
+        let mut names = Vec::new();
+        for f in &wd.staged {
+            names.push(blob(f, &f.old_path, "HEAD"));
+            names.push(blob(f, &f.new_path, ""));
+        }
         for f in &wd.unstaged {
+            names.push(blob(f, &f.old_path, ""));
+        }
+        let mut blobs = read_blobs(git, &names).await.into_iter();
+        for _ in &wd.staged {
+            let old = blobs.next().flatten();
+            let new = blobs.next().flatten();
+            wd.staged_texts.push(FileTexts { old, new });
+        }
+        for f in &wd.unstaged {
+            let old = blobs.next().flatten();
             let new = match &f.new_path {
-                Some(p) => read_text(&git.workdir().join(p)).await,
-                None => None,
+                Some(p) if !f.binary => read_text(&git.workdir().join(p)).await,
+                _ => None,
             };
-            wd.unstaged_texts.push(FileTexts { old: None, new });
+            wd.unstaged_texts.push(FileTexts { old, new });
         }
         Ok(wd)
     }
@@ -144,6 +168,95 @@ async fn read_text(path: &std::path::Path) -> Option<Arc<str>> {
         return None;
     }
     Some(String::from_utf8_lossy(&data).into())
+}
+
+/// Read the text of each named blob, such as `HEAD:<path>` or `:<path>`
+/// for the index. Names that don't resolve to a blob, and blobs that are
+/// binary or over `MAX_BLOB`, give `None`. If git fails, every name does.
+async fn read_blobs(git: &Git, names: &[Option<String>]) -> Vec<Option<Arc<str>>> {
+    let mut texts = vec![None; names.len()];
+    // `git cat-file` reads one name per line, so a path with a newline in
+    // it can't be asked for.
+    let asked: Vec<(usize, &str)> = names
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| Some((i, n.as_deref()?)))
+        .filter(|(_, n)| !n.contains('\n'))
+        .collect();
+    if asked.is_empty() {
+        return texts;
+    }
+    let lines = |items: &mut dyn Iterator<Item = &str>| {
+        let mut input = Vec::new();
+        for item in items {
+            input.extend_from_slice(item.as_bytes());
+            input.push(b'\n');
+        }
+        RunOpts {
+            stdin: Some(input),
+            ..Default::default()
+        }
+    };
+
+    // First find out what each name is and how big it is, so we don't read
+    // large blobs only to throw them away.
+    let Ok(out) = git
+        .read_opts(
+            &[
+                "cat-file",
+                "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+            ],
+            &lines(&mut asked.iter().map(|(_, n)| *n)),
+        )
+        .await
+    else {
+        return texts;
+    };
+    let info = String::from_utf8_lossy(&out.stdout);
+    let mut wanted: Vec<(usize, String)> = Vec::new();
+    for ((i, _), line) in asked.iter().zip(info.lines()) {
+        // A name that doesn't resolve gives "<name> missing" instead.
+        let fields: Vec<&str> = line.split(' ').collect();
+        if let [id, "blob", size] = fields[..]
+            && size.parse().is_ok_and(|n: usize| n <= MAX_BLOB)
+        {
+            wanted.push((*i, id.to_string()));
+        }
+    }
+    if wanted.is_empty() {
+        return texts;
+    }
+
+    let Ok(out) = git
+        .read_opts(
+            &["cat-file", "--batch"],
+            &lines(&mut wanted.iter().map(|(_, id)| id.as_str())),
+        )
+        .await
+    else {
+        return texts;
+    };
+    // Each blob comes as "<id> blob <size>\n", its contents and a newline.
+    let mut rest = out.stdout.as_slice();
+    for (i, id) in wanted {
+        let Some(end) = rest.iter().position(|&b| b == b'\n') else {
+            break;
+        };
+        let header = String::from_utf8_lossy(&rest[..end]);
+        let mut fields = header.split(' ');
+        let size = match (fields.next(), fields.next(), fields.next()) {
+            (Some(got), Some("blob"), Some(size)) if got == id => size.parse::<usize>().ok(),
+            _ => None,
+        };
+        let Some(data) = size.and_then(|n| rest.get(end + 1..end + 1 + n)) else {
+            break;
+        };
+        rest = rest.get(end + 2 + data.len()..).unwrap_or_default();
+        if !is_binary(data) {
+            texts[i] = Some(String::from_utf8_lossy(data).into());
+        }
+    }
+    texts
 }
 
 /// Works out the mode git would record for a new file.

@@ -24,6 +24,8 @@ The app's side is `Unit` and `apply_unit` in `src/app/cmd.rs`, and
    `--root`.
 4. It reads each untracked and conflicted file itself and diffs it
    against nothing with imara-diff, so every line shows up as added.
+5. It reads the full text of both sides of each staged and unstaged
+   file, for syntax highlighting (see `diffs.md`).
 
 Both diffs use `--no-ext-diff`, `--no-color` and `--no-renames`.
 `Git` also sets `color.ui=false` and `core.quotepath=false` on every

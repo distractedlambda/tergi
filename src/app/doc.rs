@@ -219,7 +219,8 @@ pub fn section_texts<'a>(
         Section::Commit => commit.map(|c| c.texts.as_slice()),
         Section::Untracked => workdir.map(|w| w.untracked_texts.as_slice()),
         Section::Unstaged => workdir.map(|w| w.unstaged_texts.as_slice()),
-        _ => None,
+        Section::Staged => workdir.map(|w| w.staged_texts.as_slice()),
+        Section::Conflicted => None,
     }
 }
 

@@ -483,3 +483,51 @@ async fn lines_in_an_untracked_file_that_is_not_utf8() {
     .expect("stage");
     assert_eq!(index_bytes(&s, "new.txt"), b"caf\xe9\nd\xe9j\xe0\n");
 }
+
+/// Highlighting needs the whole file on each side of a diff. For staged
+/// files those come from HEAD and the index, not from the disk.
+#[tokio::test]
+async fn texts_for_staged_and_unstaged_files() {
+    let s = Scratch::new();
+    s.write("both.rs", "a\nb\n");
+    s.write("gone.rs", "gone\n");
+    s.commit_all("init");
+    s.write("both.rs", "a\nstaged\n");
+    s.write("new file é.rs", "new\n");
+    std::fs::write(s.file("bin"), b"\0binary").expect("write");
+    s.sh(&["add", "-A"]);
+    s.sh(&["rm", "-q", "gone.rs"]);
+    s.write("both.rs", "a\nstaged\nunstaged\n");
+
+    let wd = Workdir::load(&s.git, 3, 100_000).await.expect("load");
+    let texts = |files: &[Arc<FileDiff>], all: &[tergi::git::commit::FileTexts], path: &str| {
+        let i = files.iter().position(|f| f.path() == path).expect("file");
+        let t = &all[i];
+        (
+            t.old.as_deref().map(str::to_string),
+            t.new.as_deref().map(str::to_string),
+        )
+    };
+    let some = |t: &str| Some(t.to_string());
+    let staged = |path| texts(&wd.staged, &wd.staged_texts, path);
+    assert_eq!(staged("both.rs"), (some("a\nb\n"), some("a\nstaged\n")));
+    assert_eq!(staged("new file é.rs"), (None, some("new\n")));
+    assert_eq!(staged("gone.rs"), (some("gone\n"), None));
+    assert_eq!(staged("bin"), (None, None));
+    assert_eq!(
+        texts(&wd.unstaged, &wd.unstaged_texts, "both.rs"),
+        (some("a\nstaged\n"), some("a\nstaged\nunstaged\n"))
+    );
+}
+
+/// Before the first commit there is no HEAD to read the old side from.
+#[tokio::test]
+async fn texts_for_staged_files_before_the_first_commit() {
+    let s = Scratch::new();
+    s.write("f.rs", "f\n");
+    s.sh(&["add", "f.rs"]);
+    let wd = Workdir::load(&s.git, 3, 100_000).await.expect("load");
+    assert_eq!(wd.staged_texts.len(), 1);
+    assert_eq!(wd.staged_texts[0].old, None);
+    assert_eq!(wd.staged_texts[0].new.as_deref(), Some("f\n"));
+}
