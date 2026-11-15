@@ -67,11 +67,22 @@ const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
+/// Split a timestamp into days since 1970-01-01 and seconds into that
+/// day, in the time zone `offset` seconds east of UTC. A crafted commit
+/// can have a timestamp near `i64::MAX`, so we add the offset to the
+/// seconds within the day rather than to the timestamp itself.
+fn local_day(secs: i64, offset: i32) -> (i64, i64) {
+    let t = secs.rem_euclid(86_400) + i64::from(offset);
+    (
+        secs.div_euclid(86_400) + t.div_euclid(86_400),
+        t.rem_euclid(86_400),
+    )
+}
+
 /// A full date like "2026-03-04 14:05 +0100" in the commit's own time zone.
 pub fn format_date(secs: i64, offset: i32) -> String {
-    let local = secs + i64::from(offset);
-    let (y, m, d) = civil(local.div_euclid(86_400));
-    let t = local.rem_euclid(86_400);
+    let (days, t) = local_day(secs, offset);
+    let (y, m, d) = civil(days);
     let sign = if offset < 0 { '-' } else { '+' };
     let off = offset.unsigned_abs();
     format!(
@@ -85,13 +96,13 @@ pub fn format_date(secs: i64, offset: i32) -> String {
 
 /// The day, like "2026-03-04", in the commit's own time zone.
 pub fn format_day(secs: i64, offset: i32) -> String {
-    let (y, m, d) = civil((secs + i64::from(offset)).div_euclid(86_400));
+    let (y, m, d) = civil(local_day(secs, offset).0);
     format!("{y:04}-{m:02}-{d:02}")
 }
 
 /// A short relative date for the history list.
 pub fn short_date(secs: i64, now: i64) -> String {
-    let age = now - secs;
+    let age = now.saturating_sub(secs);
     if (0..60).contains(&age) {
         return "just now".into();
     }
@@ -187,6 +198,27 @@ mod tests {
     }
 
     #[test]
+    fn extreme_dates() {
+        assert_eq!(format_date(i64::MAX, 0), "292277026596-12-04 15:30 +0000");
+        assert_eq!(
+            format_date(i64::MAX - 100, 50_400),
+            "292277026596-12-05 05:28 +1400"
+        );
+        assert_eq!(
+            format_date(i64::MIN, -43_200),
+            "-292277022657-01-26 20:29 -1200"
+        );
+        assert_eq!(format_day(i64::MAX, 50_400), "292277026596-12-05");
+        assert_eq!(format_day(i64::MIN, -43_200), "-292277022657-01-26");
+        assert_eq!(format_day(i64::MAX, i32::MAX), "292277026664-12-23");
+        assert_eq!(format_day(i64::MIN, i32::MIN), "-292277022725-01-08");
+        let now = 1_700_000_000;
+        assert_eq!(short_date(i64::MIN, now), "Jan 27, -292277022657");
+        assert_eq!(short_date(i64::MAX, now), "Dec 4, 292277026596");
+        assert_eq!(short_date(now, i64::MIN), "Nov 14, 2023");
+    }
+
+    #[test]
     fn b64() {
         assert_eq!(base64(b""), "");
         assert_eq!(base64(b"f"), "Zg==");
@@ -224,6 +256,14 @@ mod tests {
                 (y + 1, 1, 1)
             };
             prop_assert_eq!(civil(days + 1), next);
+        }
+
+        #[test]
+        fn offset_matches_wide_arithmetic(secs in any::<i64>(), offset in any::<i32>()) {
+            let local = i128::from(secs) + i128::from(offset);
+            let days = i64::try_from(local.div_euclid(86_400)).expect("days fit in i64");
+            let t = i64::try_from(local.rem_euclid(86_400)).expect("seconds fit in i64");
+            prop_assert_eq!(local_day(secs, offset), (days, t));
         }
 
         #[test]
