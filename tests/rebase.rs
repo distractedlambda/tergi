@@ -58,6 +58,30 @@ async fn reword_keeps_lines_starting_with_hash() {
     );
 }
 
+/// Git refuses an empty message, which would stop the rebase partway, and
+/// it can't leave a branch with no commits.
+#[tokio::test]
+async fn refuses_plans_git_cannot_finish() {
+    let (s, ids) = four();
+    assert!(
+        rebase::reword(&s.git, &exe(), id(&ids[1]), " \n\n")
+            .await
+            .is_err()
+    );
+    assert!(
+        rebase::single(&s.git, &exe(), id(&ids[2]), Action::Squash("\n".into()))
+            .await
+            .is_err()
+    );
+    let mut plan = rebase::plan_from(&s.git, id(&ids[0])).await.expect("plan");
+    for step in &mut plan.steps {
+        step.action = Action::Drop;
+    }
+    assert!(rebase::run(&s.git, &plan, &exe()).await.is_err());
+    assert_eq!(s.log(), ["four", "three", "two", "one"]);
+    assert_eq!(rebase::state(&s.git).await, RepoState::Clean);
+}
+
 #[tokio::test]
 async fn reword_root() {
     let (s, ids) = four();

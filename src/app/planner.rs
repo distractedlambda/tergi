@@ -106,15 +106,15 @@ impl Planner {
                 PlanAction::Edit => Action::Edit,
                 PlanAction::Fixup => Action::Fixup,
                 PlanAction::Reword => match &r.message {
-                    Some(m) => Action::Reword(m.clone()),
-                    None => bail!(
+                    Some(m) if !rebase::is_blank_message(m) => Action::Reword(m.clone()),
+                    _ => bail!(
                         "Commit {} is set to reword but has no new message.",
                         r.id.to_hex_with_len(7)
                     ),
                 },
                 PlanAction::Squash => match &r.message {
-                    Some(m) => Action::Squash(m.clone()),
-                    None => bail!(
+                    Some(m) if !rebase::is_blank_message(m) => Action::Squash(m.clone()),
+                    _ => bail!(
                         "Commit {} is set to squash but has no message.",
                         r.id.to_hex_with_len(7)
                     ),
@@ -143,10 +143,12 @@ impl Planner {
                 bail!("A commit can't be squashed or fixed up into a dropped commit.");
             }
         }
-        Ok(Plan {
+        let plan = Plan {
             base: self.base,
             steps,
-        })
+        };
+        rebase::check(&plan)?;
+        Ok(plan)
     }
 }
 
@@ -260,6 +262,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     fn planner(n: u8) -> Planner {
@@ -296,5 +300,104 @@ mod tests {
         p.selected = 1;
         p.move_selected(false);
         assert!(p.to_plan().unwrap_err().to_string().contains("oldest"));
+    }
+
+    #[test]
+    fn refuses_blank_messages_and_dropping_everything() {
+        let mut p = planner(3);
+        p.rows[1].action = PlanAction::Reword;
+        p.rows[1].message = Some(" \n\t\n".into());
+        assert!(p.to_plan().is_err());
+        p.rows[1].message = Some("\n new\n".into());
+        assert!(p.to_plan().is_ok());
+
+        // The plan starts at the root, so dropping every commit would leave
+        // the branch with none.
+        for r in &mut p.rows {
+            r.action = PlanAction::Drop;
+        }
+        assert!(p.to_plan().is_err());
+        p.base = Some(ObjectId::null(gix::hash::Kind::Sha1));
+        assert!(p.to_plan().is_ok());
+    }
+
+    fn action() -> impl Strategy<Value = PlanAction> {
+        prop::sample::select(PlanAction::ALL.to_vec())
+    }
+
+    fn message() -> impl Strategy<Value = Option<String>> {
+        prop::option::of(prop::sample::select(vec![
+            "",
+            " \n",
+            "new",
+            "#1 new\n\nbody",
+        ]))
+        .prop_map(|m| m.map(str::to_string))
+    }
+
+    proptest! {
+        /// Moves only reorder the rows, and leave the selection on one.
+        /// Every plan that `to_plan` accepts can be written as a todo list,
+        /// with one line for each step in order, and an `exec` line after
+        /// each reword and squash.
+        #[test]
+        fn moves_and_todo_lists(
+            n in 1u8..8,
+            root in any::<bool>(),
+            moves in prop::collection::vec((any::<bool>(), 0usize..8, 0usize..8, any::<bool>()), 0..16),
+            actions in prop::collection::vec((action(), message()), 8),
+        ) {
+            let mut p = planner(n);
+            if !root {
+                p.base = Some(ObjectId::null(gix::hash::Kind::Sha1));
+            }
+            let n = usize::from(n);
+            for (by_row, a, b, up) in moves {
+                if by_row {
+                    p.move_row(a, b);
+                } else {
+                    p.selected = a % n;
+                    p.move_selected(up);
+                }
+                prop_assert!(p.selected < n);
+            }
+            let mut ids: Vec<ObjectId> = p.rows.iter().map(|r| r.id).collect();
+            ids.sort();
+            let mut want: Vec<ObjectId> = planner(n as u8).rows.iter().map(|r| r.id).collect();
+            want.sort();
+            prop_assert_eq!(ids, want);
+
+            for (r, (action, message)) in p.rows.iter_mut().zip(actions) {
+                r.action = action;
+                r.message = message;
+            }
+            let Ok(plan) = p.to_plan() else {
+                return Ok(());
+            };
+            let dir = tempfile::tempdir().expect("tempdir");
+            let todo = rebase::build_todo(&plan, dir.path());
+            prop_assert!(todo.is_ok(), "{:?}", todo);
+            let todo = todo.expect("todo");
+            let mut lines = todo.lines();
+            for (step, row) in plan.steps.iter().zip(p.rows.iter().rev()) {
+                prop_assert_eq!(step.id, row.id);
+                let line = lines.next().unwrap_or_default();
+                let verb = match step.action {
+                    Action::Pick | Action::Reword(_) => "pick",
+                    Action::Fixup | Action::Squash(_) => "fixup",
+                    Action::Drop => "drop",
+                    Action::Edit => "edit",
+                };
+                prop_assert!(
+                    line.starts_with(&format!("{verb} {} ", step.id)),
+                    "{} for {:?}", line, step
+                );
+                if matches!(step.action, Action::Reword(_) | Action::Squash(_)) {
+                    let exec = lines.next().unwrap_or_default();
+                    prop_assert!(exec.starts_with("exec git commit --amend"), "{}", exec);
+                }
+            }
+            prop_assert_eq!(lines.next(), None);
+        }
     }
 }

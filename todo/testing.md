@@ -1,41 +1,15 @@
 # Randomized tests to write
 
-Ideas for more property tests, best first. The first two cover the code
+Ideas for more property tests, best first. The first one covers code
 that can lose someone's work, so start there.
 
 These already have property tests: graph lanes (`git/graph.rs`), text
 width (`ui/text.rs`), the text area (`ui/textarea.rs`), word marks
 (`git/words.rs`), the imara hunks (`git/commit.rs`), diff parsing and
 path quoting (`git/diff.rs`), status parsing (`git/status.rs`), dates
-and fuzzy matching (`util.rs`), and staging, unstaging or discarding
-lines in a single step (`tests/patch_props.rs`).
-
-## Rewriting history
-
-The planner and `rebase::run` rewrite commits, and the number of ways to
-combine actions is large. Nothing tests them with random input yet. The
-test would work like `tests/patch_props.rs`:
-
-1. Make a straight history of N commits. Commit *k* only touches
-   `f<k>.txt`, so no reordering can conflict.
-2. Make a `Planner` from `plan_from`. Apply random `move_row` and
-   `move_selected` calls and random actions. Give rewords and squashes
-   messages with `#` lines, blank lines, quotes and Unicode.
-3. If `to_plan` accepts the plan, run `rebase::run`. Compare `git log`
-   with a model that knows each new commit's message, which files it
-   touches, and the final tree. Check that `.git/tergi/` is gone.
-4. If `to_plan` refuses the plan, check that the model also says it is
-   invalid.
-
-This covers a fixup after a reword, chains of squashes, a squash or
-fixup that ends up as the oldest commit, and melding into a dropped
-commit. The model for messages: a pick keeps its message, a reword or
-squash uses the new one after whitespace cleanup, and a fixup keeps
-whatever the commit it melds into ended up with.
-
-A cheap pure test can sit next to it in `app/planner.rs`. Any sequence
-of moves leaves a permutation of the rows. `build_todo` accepts every
-plan that `to_plan` accepts.
+and fuzzy matching (`util.rs`), staging, unstaging or discarding lines
+in a single step (`tests/patch_props.rs`), and rewriting history
+through the planner (`tests/rebase_props.rs`).
 
 ## Staging in several steps
 

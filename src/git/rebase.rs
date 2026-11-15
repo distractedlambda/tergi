@@ -120,13 +120,47 @@ pub async fn plan_from(git: &Git, oldest: ObjectId) -> Result<Plan> {
     Ok(Plan { base, steps })
 }
 
-/// Write the todo list for `plan`, with message files in `dir`.
-pub fn build_todo(plan: &Plan, dir: &Path) -> Result<String> {
+/// Whether `git commit --cleanup=whitespace` would leave nothing of a
+/// message. Git refuses to commit then, so a reword or squash with such a
+/// message would stop the rebase partway. These are the characters git
+/// counts as whitespace.
+pub fn is_blank_message(msg: &str) -> bool {
+    msg.chars().all(|c| matches!(c, ' ' | '\t' | '\n' | '\r'))
+}
+
+/// Refuse a plan that git would stop partway through, or carry out in a
+/// way the user didn't ask for.
+pub fn check(plan: &Plan) -> Result<()> {
     if plan.steps.first().is_some_and(|s| s.action.melds()) {
         bail!(
             "The oldest commit can't be squashed or fixed up, because there's nothing before it to meld into."
         );
     }
+    for step in &plan.steps {
+        if let Action::Reword(msg) | Action::Squash(msg) = &step.action
+            && is_blank_message(msg)
+        {
+            bail!(
+                "The new message for commit {} is empty.",
+                step.id.to_hex_with_len(7)
+            );
+        }
+    }
+    // A rebase with `--root` replays the commits onto an empty commit that
+    // git makes for the purpose. If every commit is dropped, the branch
+    // ends up on that empty commit, because git can't leave it with none.
+    if plan.base.is_none()
+        && !plan.steps.is_empty()
+        && plan.steps.iter().all(|s| s.action == Action::Drop)
+    {
+        bail!("Dropping every commit down to the root would leave the branch with no commits.");
+    }
+    Ok(())
+}
+
+/// Write the todo list for `plan`, with message files in `dir`.
+pub fn build_todo(plan: &Plan, dir: &Path) -> Result<String> {
+    check(plan)?;
     let mut todo = String::new();
     for (i, step) in plan.steps.iter().enumerate() {
         let id = step.id;

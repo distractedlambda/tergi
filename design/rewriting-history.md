@@ -63,8 +63,17 @@ The amend runs with these options:
   as `#42 Fix the crash`, isn't taken for a comment. `ops::commit` uses
   the same setting for the same reason.
 
-The oldest step can't be a squash or a fixup, because there is nothing
-before it to meld into. `build_todo` refuses such a plan.
+`build_todo` refuses plans that git can't finish, through `check`:
+
+- The oldest step is a squash or a fixup. There is nothing before it to
+  meld into.
+- A reword or squash has a message that is empty after whitespace
+  cleanup. `git commit` refuses an empty message, so the `exec` line
+  would fail and stop the rebase partway.
+- The plan starts at the root and drops every commit. A rebase with
+  `--root` replays the commits onto an empty commit that git makes for
+  the purpose. With nothing to replay, the branch would end up on that
+  commit, because git can't leave a branch with no commits.
 
 ## The sequence editor
 
@@ -171,9 +180,12 @@ for a reword doesn't fit a squash.
 
 `to_plan` checks what a reorder can break:
 
-- A reword or squash row without a message.
+- A reword or squash row without a message, or with a blank one.
 - A squash or fixup at the bottom, with nothing below it.
 - A squash or fixup on top of a dropped commit.
+
+It also runs `check`, so the planner refuses everything that
+`build_todo` would refuse, and stays open to show why.
 
 Enter runs the plan with `rebase::run` through `spawn_op`, and the
 planner closes.
@@ -189,8 +201,17 @@ merges in the range, and refusing to start during another rebase.
 `message_files_are_removed_when_the_rebase_ends` checks that the message
 files stay while the rebase is stopped and go away when it ends.
 
+`tests/rebase_props.rs` is a property test. It makes a straight history
+in which each commit adds its own file, so nothing can conflict. Then it
+moves planner rows around at random, gives them random actions and
+messages, and runs the plan with the real git. A model works out which
+commits should come out, with which messages and files, and which plans
+the planner must refuse. The messages have `#` lines, blank lines,
+quotes and non-ASCII text.
+
 `src/app/planner.rs` has unit tests for the row order and the oldest
-commit check. In `tests/ui.rs`,
+commit check. Its property test checks that moves only reorder the
+rows, and that `build_todo` accepts every plan that `to_plan` accepts. In `tests/ui.rs`,
 `the_planner_asks_for_a_message_after_its_row_moves` and
 `a_reword_without_its_dialog_goes_back_to_pick` cover the dialogs, and
 `rewords_a_commit_and_runs_a_plan` runs the whole flow from the keyboard.
