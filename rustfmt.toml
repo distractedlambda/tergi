@@ -1,0 +1,2 @@
+# This file is empty on purpose, so rustfmt uses its default settings. Without
+# it, rustfmt would use the config in your home directory, if you have one.
