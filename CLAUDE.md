@@ -121,6 +121,11 @@ it in `App::areas`. Then it draws and records clickable regions in
 clicks in that hit list, so anything clickable must be registered while
 drawing.
 
+Text is measured and drawn one grapheme at a time through `ui/text.rs`.
+Use its `width`, `truncate`, `put` and `draw` rather than `len()`,
+`chars().count()` or ratatui's `set_stringn`. `design/text-width.md`
+explains the rules.
+
 ### File watching
 
 `watch.rs` watches the working tree and the git directory, and it works
