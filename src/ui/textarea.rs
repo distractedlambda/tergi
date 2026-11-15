@@ -4,8 +4,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
+use unicode_segmentation::UnicodeSegmentation;
 
-use crate::util::{cells, char_width, width};
+use crate::ui::text::{self, cells};
+
+const TAB: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -20,7 +23,9 @@ pub enum Outcome {
 #[derive(Debug, Clone, Default)]
 pub struct TextArea {
     lines: Vec<String>,
-    /// Cursor row and column, with the column counted in chars.
+    /// The cursor's row, and its byte offset in that row's line. The cursor
+    /// always sits between two graphemes, so it moves over a letter and its
+    /// accents, or a whole emoji sequence, in one step.
     row: usize,
     col: usize,
     scroll_row: usize,
@@ -30,8 +35,32 @@ pub struct TextArea {
     pub placeholder: String,
 }
 
-fn byte_idx(s: &str, col: usize) -> usize {
-    s.char_indices().nth(col).map_or(s.len(), |(i, _)| i)
+/// The offset where the grapheme ending at `i` starts.
+fn prev_grapheme(s: &str, i: usize) -> usize {
+    s[..i]
+        .grapheme_indices(true)
+        .next_back()
+        .map_or(0, |(j, _)| j)
+}
+
+/// The offset where the grapheme starting at `i` ends.
+fn next_grapheme(s: &str, i: usize) -> usize {
+    s[i..].graphemes(true).next().map_or(i, |g| i + g.len())
+}
+
+/// The first grapheme boundary at or after `i`. An edit can join the text
+/// on both sides of the cursor into one grapheme, for example by deleting
+/// a tab between a letter and a combining accent. The cursor then moves to
+/// the end of that grapheme.
+fn snap(s: &str, i: usize) -> usize {
+    s.grapheme_indices(true)
+        .map(|(j, _)| j)
+        .find(|&j| j >= i)
+        .unwrap_or(s.len())
+}
+
+fn is_word(g: &str) -> bool {
+    g.chars().next().is_some_and(char::is_alphanumeric)
 }
 
 impl TextArea {
@@ -67,7 +96,7 @@ impl TextArea {
             self.lines.push(String::new());
         }
         self.row = self.lines.len() - 1;
-        self.col = self.lines[self.row].chars().count();
+        self.col = self.line_len();
         self.scroll_row = 0;
         self.scroll_col = 0;
     }
@@ -81,96 +110,108 @@ impl TextArea {
     }
 
     fn line_len(&self) -> usize {
-        self.lines[self.row].chars().count()
+        self.lines[self.row].len()
     }
 
+    /// The number of graphemes before the cursor, which Up and Down keep.
+    fn grapheme_col(&self) -> usize {
+        self.lines[self.row][..self.col].graphemes(true).count()
+    }
+
+    fn set_grapheme_col(&mut self, n: usize) {
+        let line = &self.lines[self.row];
+        self.col = line
+            .grapheme_indices(true)
+            .nth(n)
+            .map_or(line.len(), |(i, _)| i);
+    }
+
+    /// Insert text at the cursor and move the cursor past it. The text is
+    /// inserted as a whole before it is split into lines, so that it
+    /// joins with the text around it the same way however it is broken up.
     pub fn insert_str(&mut self, s: &str) {
         let s = s.replace("\r\n", "\n").replace('\r', "\n");
-        let mut parts = s.split('\n');
-        if let Some(first) = parts.next() {
-            self.insert_plain(first);
-        }
-        for p in parts {
-            if self.multiline {
-                self.newline();
-            } else {
-                self.insert_plain(" ");
-            }
-            self.insert_plain(p);
-        }
-    }
-
-    fn insert_plain(&mut self, s: &str) {
+        let s = if self.multiline {
+            s
+        } else {
+            s.replace('\n', " ")
+        };
         let line = &mut self.lines[self.row];
-        let i = byte_idx(line, self.col);
-        line.insert_str(i, s);
-        self.col += s.chars().count();
+        line.insert_str(self.col, &s);
+        let cursor = self.col + s.len();
+        let Some(first_nl) = s.find('\n') else {
+            self.col = snap(line, cursor);
+            return;
+        };
+        let last_nl = self.col + s.rfind('\n').unwrap_or(first_nl);
+        let rest = line.split_off(self.col + first_nl);
+        let new: Vec<String> = rest[1..].split('\n').map(str::to_string).collect();
+        let n = new.len();
+        self.lines.splice(self.row + 1..self.row + 1, new);
+        self.row += n;
+        let line = &self.lines[self.row];
+        self.col = snap(line, cursor - last_nl - 1);
     }
 
     fn newline(&mut self) {
-        let line = &mut self.lines[self.row];
-        let i = byte_idx(line, self.col);
-        let rest = line.split_off(i);
-        self.row += 1;
-        self.lines.insert(self.row, rest);
-        self.col = 0;
+        self.insert_str("\n");
     }
 
     fn backspace(&mut self) {
         if self.col > 0 {
             let line = &mut self.lines[self.row];
-            let i = byte_idx(line, self.col - 1);
-            line.remove(i);
-            self.col -= 1;
+            let from = prev_grapheme(line, self.col);
+            line.replace_range(from..self.col, "");
+            self.col = snap(line, from);
         } else if self.row > 0 {
             let line = self.lines.remove(self.row);
             self.row -= 1;
-            self.col = self.line_len();
-            self.lines[self.row].push_str(&line);
+            let prev = &mut self.lines[self.row];
+            let at = prev.len();
+            prev.push_str(&line);
+            self.col = snap(prev, at);
         }
     }
 
     fn delete(&mut self) {
         if self.col < self.line_len() {
             let line = &mut self.lines[self.row];
-            let i = byte_idx(line, self.col);
-            line.remove(i);
+            let to = next_grapheme(line, self.col);
+            line.replace_range(self.col..to, "");
+            self.col = snap(line, self.col);
         } else if self.row + 1 < self.lines.len() {
             let next = self.lines.remove(self.row + 1);
-            self.lines[self.row].push_str(&next);
+            let line = &mut self.lines[self.row];
+            line.push_str(&next);
+            self.col = snap(line, self.col);
         }
     }
 
     fn word_left(&self) -> usize {
-        let chars: Vec<char> = self.lines[self.row].chars().collect();
-        let mut c = self.col;
-        while c > 0 && !chars[c - 1].is_alphanumeric() {
-            c -= 1;
+        let line = &self.lines[self.row];
+        let gs: Vec<(usize, &str)> = line[..self.col].grapheme_indices(true).collect();
+        let mut k = gs.len();
+        while k > 0 && !is_word(gs[k - 1].1) {
+            k -= 1;
         }
-        while c > 0 && chars[c - 1].is_alphanumeric() {
-            c -= 1;
+        while k > 0 && is_word(gs[k - 1].1) {
+            k -= 1;
         }
-        c
+        gs.get(k).map_or(self.col, |&(i, _)| i)
     }
 
     fn word_right(&self) -> usize {
-        let chars: Vec<char> = self.lines[self.row].chars().collect();
-        let mut c = self.col;
-        while c < chars.len() && !chars[c].is_alphanumeric() {
-            c += 1;
-        }
-        while c < chars.len() && chars[c].is_alphanumeric() {
-            c += 1;
-        }
-        c
+        let line = &self.lines[self.row];
+        let mut gs = line[self.col..].grapheme_indices(true).peekable();
+        while gs.next_if(|&(_, g)| !is_word(g)).is_some() {}
+        while gs.next_if(|&(_, g)| is_word(g)).is_some() {}
+        gs.peek().map_or(line.len(), |&(i, _)| self.col + i)
     }
 
     fn delete_range(&mut self, from: usize, to: usize) {
         let line = &mut self.lines[self.row];
-        let a = byte_idx(line, from);
-        let b = byte_idx(line, to);
-        line.replace_range(a..b, "");
-        self.col = from;
+        line.replace_range(from..to, "");
+        self.col = snap(line, from);
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Outcome {
@@ -218,13 +259,13 @@ impl TextArea {
             KeyCode::Char('f') if alt => self.col = self.word_right(),
             KeyCode::Char(c) if !ctrl && !super_ => {
                 let mut b = [0u8; 4];
-                self.insert_plain(c.encode_utf8(&mut b));
+                self.insert_str(c.encode_utf8(&mut b));
             }
             KeyCode::Left if ctrl || alt => self.col = self.word_left(),
             KeyCode::Right if ctrl || alt => self.col = self.word_right(),
             KeyCode::Left => {
                 if self.col > 0 {
-                    self.col -= 1;
+                    self.col = prev_grapheme(&self.lines[self.row], self.col);
                 } else if self.row > 0 {
                     self.row -= 1;
                     self.col = self.line_len();
@@ -232,19 +273,21 @@ impl TextArea {
             }
             KeyCode::Right => {
                 if self.col < self.line_len() {
-                    self.col += 1;
+                    self.col = next_grapheme(&self.lines[self.row], self.col);
                 } else if self.row + 1 < self.lines.len() {
                     self.row += 1;
                     self.col = 0;
                 }
             }
             KeyCode::Up if self.multiline && self.row > 0 => {
+                let n = self.grapheme_col();
                 self.row -= 1;
-                self.col = self.col.min(self.line_len());
+                self.set_grapheme_col(n);
             }
             KeyCode::Down if self.multiline && self.row + 1 < self.lines.len() => {
+                let n = self.grapheme_col();
                 self.row += 1;
-                self.col = self.col.min(self.line_len());
+                self.set_grapheme_col(n);
             }
             KeyCode::Home if ctrl => {
                 self.row = 0;
@@ -261,30 +304,51 @@ impl TextArea {
         Outcome::Handled
     }
 
+    /// Where each grapheme of a line is drawn, as its byte offset, its
+    /// column and its width. Masked text shows one dot for every grapheme.
+    fn layout(&self, line: &str) -> Vec<(usize, usize, usize)> {
+        if self.masked {
+            line.grapheme_indices(true)
+                .enumerate()
+                .map(|(k, (i, _))| (i, k, 1))
+                .collect()
+        } else {
+            cells(line, TAB).map(|c| (c.byte, c.col, c.width)).collect()
+        }
+    }
+
     /// Move the cursor to a click at `(x, y)` relative to the widget.
     pub fn click(&mut self, x: u16, y: u16) {
         let row = (self.scroll_row + usize::from(y)).min(self.lines.len() - 1);
         self.row = row;
         let target = self.scroll_col + usize::from(x);
-        let mut w = 0;
-        let mut col = 0;
-        for c in self.lines[row].chars() {
-            let cw = char_width(self.display(c), w, 4);
-            if w + cw > target {
-                break;
-            }
-            w += cw;
-            col += 1;
-        }
-        self.col = col;
+        let line = &self.lines[row];
+        self.col = self
+            .layout(line)
+            .into_iter()
+            .find(|&(_, col, w)| target < col + w)
+            .map_or(line.len(), |(i, _, _)| i);
     }
 
-    fn display(&self, c: char) -> char {
-        if self.masked { '•' } else { c }
+    /// The column where the cursor is drawn, counted from the start of the
+    /// line.
+    fn cursor_x(&self) -> usize {
+        let line = &self.lines[self.row];
+        let layout = self.layout(line);
+        layout.iter().find(|&&(i, _, _)| i >= self.col).map_or_else(
+            || layout.last().map_or(0, |&(_, col, w)| col + w),
+            |&(_, col, _)| col,
+        )
     }
 
     /// Draw the text and return where the terminal cursor should go.
-    pub fn render(&mut self, buf: &mut Buffer, area: Rect, style: Style, placeholder_style: Style) -> Position {
+    pub fn render(
+        &mut self,
+        buf: &mut Buffer,
+        area: Rect,
+        style: Style,
+        placeholder_style: Style,
+    ) -> Position {
         // The area can be off screen when the window is very small.
         let area = area.intersection(buf.area);
         if area.width == 0 || area.height == 0 {
@@ -298,13 +362,7 @@ impl TextArea {
         if self.row >= self.scroll_row + h {
             self.scroll_row = self.row + 1 - h;
         }
-        let cursor_x = {
-            let mut x = 0;
-            for c in self.lines[self.row].chars().take(self.col) {
-                x += char_width(self.display(c), x, 4);
-            }
-            x
-        };
+        let cursor_x = self.cursor_x();
         if cursor_x < self.scroll_col {
             self.scroll_col = cursor_x;
         }
@@ -313,47 +371,25 @@ impl TextArea {
         }
         buf.set_style(area, style);
         if self.lines.len() == 1 && self.lines[0].is_empty() && !self.placeholder.is_empty() {
-            buf.set_stringn(area.x, area.y, &self.placeholder, w, placeholder_style);
+            text::put(
+                buf,
+                area.x,
+                area.y,
+                &self.placeholder,
+                area.width,
+                placeholder_style,
+            );
         }
         for (i, line) in self.lines.iter().skip(self.scroll_row).take(h).enumerate() {
             let y = area.y + i as u16;
-            let mut col = 0;
-            // Masked text shows one dot for every char, so it doesn't
-            // keep graphemes together.
-            let pieces: Vec<&str> = if self.masked {
-                line.char_indices().map(|(i, c)| &line[i..i + c.len_utf8()]).collect()
+            let shown = if self.masked {
+                "•".repeat(line.graphemes(true).count())
             } else {
-                cells(line).map(|(_, piece)| piece).collect()
+                line.clone()
             };
-            for piece in pieces {
-                let Some(c) = piece.chars().next() else { continue };
-                let shown = self.display(c);
-                let cw = if self.masked || shown == '\t' { char_width(shown, col, 4) } else { width(piece, 4) };
-                if col >= self.scroll_col && col + cw <= self.scroll_col + w {
-                    let x = area.x + (col - self.scroll_col) as u16;
-                    if shown == '\t' {
-                        for k in 0..cw {
-                            if let Some(cell) = buf.cell_mut((x + k as u16, y)) {
-                                cell.set_char(' ');
-                            }
-                        }
-                    } else if let Some(cell) = buf.cell_mut((x, y)) {
-                        if self.masked {
-                            cell.set_char(shown);
-                        } else if c.is_control() {
-                            cell.set_char('�');
-                        } else {
-                            cell.set_symbol(piece);
-                        }
-                        for k in 1..cw {
-                            if let Some(cell) = buf.cell_mut((x + k as u16, y)) {
-                                cell.set_symbol("");
-                            }
-                        }
-                    }
-                }
-                col += cw;
-            }
+            text::draw(buf, area.x, y, &shown, self.scroll_col, w, TAB, |_| {
+                Style::default()
+            });
         }
         Position::new(
             area.x + (cursor_x - self.scroll_col) as u16,
@@ -367,6 +403,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::ui::text::width;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -399,11 +436,24 @@ mod tests {
 
     #[test]
     fn click_in_masked_text() {
-        // Every char is shown as one dot, whatever its real width.
-        let mut t = TextArea::with_text(false, "\t日x");
+        // Every grapheme is shown as one dot, whatever its real width.
+        let mut t = TextArea::with_text(false, "\t日e\u{301}x");
         t.masked = true;
-        t.click(2, 0);
-        assert_eq!(t.col, 2);
+        t.click(3, 0);
+        assert_eq!(&t.text()[t.col..], "x");
+    }
+
+    #[test]
+    fn cursor_moves_by_grapheme() {
+        let mut t = TextArea::with_text(false, "ae\u{301}👍🏽");
+        t.handle_key(key(KeyCode::Left));
+        assert_eq!(&t.text()[t.col..], "👍🏽");
+        t.handle_key(key(KeyCode::Left));
+        t.handle_key(key(KeyCode::Delete));
+        assert_eq!(t.text(), "a👍🏽");
+        t.handle_key(key(KeyCode::End));
+        t.handle_key(key(KeyCode::Backspace));
+        assert_eq!(t.text(), "a");
     }
 
     fn drawn(t: &mut TextArea) -> Vec<String> {
@@ -418,64 +468,89 @@ mod tests {
         let mut t = TextArea::with_text(false, "e\u{301}\u{202e}x\x07日");
         assert_eq!(drawn(&mut t), ["e\u{301}", "x", "�", "日", "", " ", " ", " "]);
         t.masked = true;
-        assert_eq!(drawn(&mut t), ["•", "•", "•", "•", "•", "•", " ", " "]);
+        assert_eq!(drawn(&mut t), ["•", "•", "•", "•", "•", " ", " ", " "]);
     }
 
-    /// A simpler text area for comparison: the text is one list of chars,
-    /// with newlines in it, and the cursor is an index into it.
+    /// A simpler text area for comparison: the text is one string, with
+    /// newlines in it, and the cursor is a byte offset into it.
     #[derive(Debug)]
     struct Model {
-        text: Vec<char>,
+        text: String,
         cur: usize,
         multiline: bool,
     }
 
     impl Model {
         fn line_start(&self, at: usize) -> usize {
-            self.text[..at].iter().rposition(|&c| c == '\n').map_or(0, |i| i + 1)
+            self.text[..at].rfind('\n').map_or(0, |i| i + 1)
         }
 
         fn line_end(&self, at: usize) -> usize {
-            self.text[at..].iter().position(|&c| c == '\n').map_or(self.text.len(), |i| at + i)
+            self.text[at..]
+                .find('\n')
+                .map_or(self.text.len(), |i| at + i)
+        }
+
+        /// The graphemes of the cursor's line, with offsets into the text.
+        fn graphemes(&self, start: usize) -> Vec<(usize, &str)> {
+            let end = self.line_end(start);
+            self.text[start..end]
+                .grapheme_indices(true)
+                .map(|(i, g)| (start + i, g))
+                .collect()
         }
 
         fn word_left(&self) -> usize {
-            let start = self.line_start(self.cur);
-            let mut c = self.cur;
-            while c > start && !self.text[c - 1].is_alphanumeric() {
-                c -= 1;
+            let gs = self.graphemes(self.line_start(self.cur));
+            let mut k = gs
+                .iter()
+                .position(|&(i, _)| i >= self.cur)
+                .unwrap_or(gs.len());
+            while k > 0 && !is_word(gs[k - 1].1) {
+                k -= 1;
             }
-            while c > start && self.text[c - 1].is_alphanumeric() {
-                c -= 1;
+            while k > 0 && is_word(gs[k - 1].1) {
+                k -= 1;
             }
-            c
+            gs.get(k).map_or(self.cur, |&(i, _)| i)
         }
 
         fn word_right(&self) -> usize {
-            let end = self.line_end(self.cur);
-            let mut c = self.cur;
-            while c < end && !self.text[c].is_alphanumeric() {
-                c += 1;
+            let gs = self.graphemes(self.line_start(self.cur));
+            let mut k = gs
+                .iter()
+                .position(|&(i, _)| i >= self.cur)
+                .unwrap_or(gs.len());
+            while k < gs.len() && !is_word(gs[k].1) {
+                k += 1;
             }
-            while c < end && self.text[c].is_alphanumeric() {
-                c += 1;
+            while k < gs.len() && is_word(gs[k].1) {
+                k += 1;
             }
-            c
+            gs.get(k).map_or(self.line_end(self.cur), |&(i, _)| i)
         }
 
         fn insert(&mut self, s: &str) {
             let s = s.replace("\r\n", "\n").replace('\r', "\n");
-            let s = if self.multiline { s } else { s.replace('\n', " ") };
-            for c in s.chars() {
-                self.text.insert(self.cur, c);
-                self.cur += 1;
-            }
+            let s = if self.multiline {
+                s
+            } else {
+                s.replace('\n', " ")
+            };
+            self.text.insert_str(self.cur, &s);
+            self.cur += s.len();
         }
 
-        /// Move to the same column on the line that starts at `start`.
+        /// Move to the same grapheme column on the line that starts at
+        /// `start`.
         fn move_to_line(&mut self, start: usize) {
-            let col = self.cur - self.line_start(self.cur);
-            self.cur = start + col.min(self.line_end(start) - start);
+            let n = self.text[self.line_start(self.cur)..self.cur]
+                .graphemes(true)
+                .count();
+            self.cur = self
+                .graphemes(start)
+                .get(n)
+                .map_or(self.line_end(start), |&(i, _)| i);
         }
 
         fn key(&mut self, key: KeyEvent) {
@@ -493,11 +568,13 @@ mod tests {
                     self.cur = from;
                 }
                 KeyCode::Backspace if self.cur > 0 => {
-                    self.cur -= 1;
-                    self.text.remove(self.cur);
+                    let from = prev_grapheme(&self.text, self.cur);
+                    self.text.drain(from..self.cur);
+                    self.cur = from;
                 }
                 KeyCode::Delete if self.cur < self.text.len() => {
-                    self.text.remove(self.cur);
+                    let to = next_grapheme(&self.text, self.cur);
+                    self.text.drain(self.cur..to);
                 }
                 KeyCode::Char('u') if ctrl => {
                     self.text.drain(start..self.cur);
@@ -514,8 +591,8 @@ mod tests {
                 }
                 KeyCode::Left if ctrl || alt => self.cur = self.word_left(),
                 KeyCode::Right if ctrl || alt => self.cur = self.word_right(),
-                KeyCode::Left => self.cur = self.cur.saturating_sub(1),
-                KeyCode::Right => self.cur = (self.cur + 1).min(self.text.len()),
+                KeyCode::Left => self.cur = prev_grapheme(&self.text, self.cur),
+                KeyCode::Right => self.cur = next_grapheme(&self.text, self.cur),
                 KeyCode::Up if start > 0 => {
                     let prev = self.line_start(start - 1);
                     self.move_to_line(prev);
@@ -527,10 +604,11 @@ mod tests {
                 KeyCode::End => self.cur = end,
                 _ => {}
             }
+            self.cur = snap(&self.text, self.cur);
         }
 
         fn row_col(&self) -> (usize, usize) {
-            let row = self.text[..self.cur].iter().filter(|&&c| c == '\n').count();
+            let row = self.text[..self.cur].matches('\n').count();
             (row, self.cur - self.line_start(self.cur))
         }
     }
@@ -541,8 +619,9 @@ mod tests {
         Paste(String),
     }
 
-    /// Text with wide chars, tabs and word boundaries.
-    const CHARS: &str = "[ab1_ .é日\t]";
+    /// Text with wide characters, tabs, word boundaries, combining
+    /// accents and the parts of emoji sequences.
+    const CHARS: &str = "[ab1_ .é日\t\u{301}\u{200d}\u{202e}👨\u{1f3fd}]";
 
     fn op() -> impl Strategy<Value = Op> {
         let code = prop_oneof![
@@ -564,7 +643,7 @@ mod tests {
         let mods = prop::sample::select(vec![KeyModifiers::NONE, KeyModifiers::CONTROL, KeyModifiers::ALT]);
         prop_oneof![
             8 => (code, mods).prop_map(|(c, m)| Op::Key(KeyEvent::new(c, m))),
-            1 => "([ab1_ .é日\t]|\r|\n){0,6}".prop_map(Op::Paste),
+            1 => "([ab1_ .é日\t\u{301}\u{200d}\u{202e}👨\u{1f3fd}]|\r|\n){0,6}".prop_map(Op::Paste),
         ]
     }
 
@@ -578,7 +657,7 @@ mod tests {
         ) {
             let mut t = TextArea::new(multiline);
             t.masked = masked;
-            let mut m = Model { text: Vec::new(), cur: 0, multiline };
+            let mut m = Model { text: String::new(), cur: 0, multiline };
             let area = Rect::new(2, 1, w, h);
             let mut buf = Buffer::empty(Rect::new(0, 0, 20, 8));
             for op in ops {
@@ -592,18 +671,27 @@ mod tests {
                     Op::Paste(s) => {
                         t.insert_str(s);
                         m.insert(s);
+                        m.cur = snap(&m.text, m.cur);
                     }
                 }
-                prop_assert_eq!(t.text(), m.text.iter().collect::<String>(), "after {:?}", op);
+                prop_assert_eq!(t.text(), m.text.clone(), "after {:?}", op);
                 prop_assert_eq!((t.row, t.col), m.row_col(), "after {:?}", op);
 
                 // The cursor is drawn inside the area, and clicking there
-                // puts it where it was drawn.
+                // puts it where it was drawn. Graphemes that draw nothing,
+                // such as a lone bidi override, leave two places for the
+                // cursor in the same column. A click can pick either one.
                 let at = t.render(&mut buf, area, Style::default(), Style::default());
                 prop_assert!(area.contains(at), "cursor {:?} outside {:?}", at, area);
+                let before = t.col;
                 t.click(at.x - area.x, at.y - area.y);
                 prop_assert_eq!(t.render(&mut buf, area, Style::default(), Style::default()), at);
-                prop_assert_eq!((t.row, t.col), m.row_col(), "after clicking at the cursor");
+                prop_assert_eq!(t.row, m.row_col().0, "after clicking at the cursor");
+                let line = &t.lines[t.row];
+                let between = &line[before.min(t.col)..before.max(t.col)];
+                let invisible = if masked { between.is_empty() } else { width(between, TAB) == 0 };
+                prop_assert!(invisible, "clicking moved the cursor over {:?}", between);
+                m.cur = m.line_start(m.cur) + t.col;
             }
         }
     }

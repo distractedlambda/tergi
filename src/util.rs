@@ -1,12 +1,9 @@
-//! Small helpers: dates, text width, base64 for the clipboard, running
-//! blocking work from async code, and numbering background requests.
+//! Small helpers: dates, base64 for the clipboard, running blocking work
+//! from async code, and numbering background requests.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Run blocking work on Tokio's blocking pool. If `f` panics, the panic
 /// carries on in the caller, so it reaches whoever is waiting on the task.
@@ -118,75 +115,6 @@ pub fn short_date(secs: i64, now: i64) -> String {
     }
 }
 
-/// Display width of a string, with tabs expanded to `tab` columns.
-pub fn width(s: &str, tab: usize) -> usize {
-    let mut w = 0;
-    for c in s.chars() {
-        w += char_width(c, w, tab);
-    }
-    w
-}
-
-pub fn char_width(c: char, col: usize, tab: usize) -> usize {
-    if c == '\t' {
-        tab - col % tab
-    } else if c.is_control() {
-        // We draw other control characters as a replacement character.
-        1
-    } else {
-        c.width().unwrap_or(0)
-    }
-}
-
-/// Split a line into the pieces that each start a new terminal cell, with
-/// the byte offset of each one.
-///
-/// A character and the zero-width characters after it, such as combining
-/// accents, stay together in one piece. Some graphemes are wider in a
-/// terminal than the sum of their characters, which is how `width`
-/// measures them. Emoji joined by zero-width joiners are an example. We
-/// split those into their characters, so that the terminal draws them in
-/// as many columns as we count. Zero-width characters that end up on
-/// their own are dropped. That keeps format characters such as bidi
-/// overrides away from the terminal.
-pub fn cells(line: &str) -> impl Iterator<Item = (usize, &str)> {
-    line.grapheme_indices(true)
-        .flat_map(|(gi, g)| {
-            let whole = !g.contains(char::is_control)
-                && g.width() == g.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>();
-            g.char_indices().filter_map(move |(ci, c)| {
-                if whole {
-                    (ci == 0).then_some((gi, g))
-                } else {
-                    Some((gi + ci, &g[ci..ci + c.len_utf8()]))
-                }
-            })
-        })
-        .filter(|(_, s)| width(s, 1) > 0)
-}
-
-/// Cut a string to at most `max` columns, adding an ellipsis if it was cut.
-pub fn truncate(s: &str, max: usize) -> String {
-    if width(s, 4) <= max {
-        return s.to_string();
-    }
-    if max == 0 {
-        return String::new();
-    }
-    let mut out = String::new();
-    let mut w = 0;
-    for c in s.chars() {
-        let cw = char_width(c, w, 4);
-        if w + cw + 1 > max {
-            break;
-        }
-        out.push(c);
-        w += cw;
-    }
-    out.push('…');
-    out
-}
-
 pub fn base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -253,19 +181,6 @@ mod tests {
     }
 
     #[test]
-    fn widths() {
-        assert_eq!(width("a\tb", 4), 5);
-        assert_eq!(width("日本", 4), 4);
-        assert_eq!(width("a\x07\0b", 4), 4);
-        let pieces = |s| cells(s).collect::<Vec<_>>();
-        assert_eq!(pieces("e\u{301}\u{323}x"), [(0, "e\u{301}\u{323}"), (5, "x")]);
-        assert_eq!(pieces("\u{301}a\u{202e}"), [(2, "a")]);
-        assert_eq!(pieces("❤\u{fe0f}"), [(0, "❤")]);
-        assert_eq!(truncate("hello world", 6), "hello…");
-        assert_eq!(truncate("hi", 6), "hi");
-    }
-
-    #[test]
     fn fuzzy() {
         assert!(fuzzy_score("rw", "Reword commit").is_some());
         assert!(fuzzy_score("xyz", "Reword commit").is_none());
@@ -294,30 +209,6 @@ mod tests {
                 (y + 1, 1, 1)
             };
             prop_assert_eq!(civil(days + 1), next);
-        }
-
-        #[test]
-        fn cells_cover_the_width(s in "[a\t\u{7}é日❤👨\u{301}\u{200b}\u{200d}\u{202e}\u{fe0f}]{0,20}") {
-            let mut end = 0;
-            let mut total = 0;
-            for (i, piece) in cells(&s) {
-                prop_assert!(i >= end && s[i..].starts_with(piece), "{:?} at {} in {:?}", piece, i, s);
-                end = i + piece.len();
-                total += width(piece, 1);
-            }
-            prop_assert_eq!(total, width(&s, 1));
-        }
-
-        #[test]
-        fn truncate_fits(s in "[ab \t日é]{0,20}", max in 0usize..25) {
-            let t = truncate(&s, max);
-            prop_assert!(width(&t, 4) <= max, "{:?} is wider than {}", t, max);
-            if width(&s, 4) <= max {
-                prop_assert_eq!(t, s);
-            } else if max > 0 {
-                let kept = t.strip_suffix('…');
-                prop_assert!(kept.is_some_and(|k| s.starts_with(k)), "{:?} from {:?}", t, s);
-            }
         }
 
         #[test]

@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, Widget};
 
 use crate::app::cmd::{ActionDef, Cmd, Overlay, SideRow, Unit};
 use crate::app::doc::{Row, Section, Source};
@@ -20,7 +20,8 @@ use crate::git::rebase::RepoState;
 use crate::git::refs::LabelKind;
 use crate::highlight::LineSpans;
 use crate::theme::Theme;
-use crate::util::{cells, char_width, format_day, short_date, truncate, width};
+use crate::ui::text::{self, put, put_line, truncate, width};
+use crate::util::{format_day, short_date};
 
 type Hits = Vec<(Rect, Target)>;
 
@@ -131,16 +132,6 @@ fn layout(app: &mut App, area: Rect) {
             p.scroll = sel + 1 - usize::from(h.max(1));
         }
     }
-}
-
-/// Write a string and return the x just past it. In a very small window
-/// parts of the layout end up outside the buffer, and writing there would
-/// panic, so those writes are dropped.
-fn put(buf: &mut Buffer, x: u16, y: u16, s: &str, max: u16, style: Style) -> u16 {
-    if max == 0 || !buf.area.contains(Position::new(x, y)) {
-        return x;
-    }
-    buf.set_stringn(x, y, s, usize::from(max), style).0
 }
 
 fn fill(buf: &mut Buffer, r: Rect, bg: Color) {
@@ -484,11 +475,11 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
     if let Some(err) = &h.error {
         let y = a.y + (end - start) as u16 + 1;
         if y < a.bottom() {
-            let r = Rect::new(a.x + 1, y, a.width.saturating_sub(2), a.bottom() - y);
-            Paragraph::new(format!("Couldn't read the history: {err}"))
-                .style(Style::default().fg(t.error))
-                .wrap(Wrap { trim: true })
-                .render(r, buf);
+            let w = a.width.saturating_sub(2);
+            let msg = format!("Couldn't read the history: {err}");
+            for (line, y) in wrap(&msg, usize::from(w)).iter().zip(y..a.bottom()) {
+                put(buf, a.x + 1, y, line, w, Style::default().fg(t.error));
+            }
         }
     }
 }
@@ -579,7 +570,7 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 if let Some(ml) = det.meta.get(*m)
                     && buf.area.contains(Position::new(a.x + 2, y))
                 {
-                    buf.set_line(a.x + 2, y, &ml.line, a.width.saturating_sub(3));
+                    put_line(buf, a.x + 2, y, &ml.line, a.width.saturating_sub(3));
                 }
             }
             Row::Section(sec) => {
@@ -765,54 +756,25 @@ fn draw_code(
     tab: usize,
 ) {
     let text = text.strip_suffix('\r').unwrap_or(text);
-    let w = usize::from(w);
-    let mut col = 0usize;
     let mut span_i = 0;
-    for (bi, piece) in cells(text) {
-        let Some(ch) = piece.chars().next() else { continue };
-        let cw = if ch == '\t' { char_width(ch, col, tab) } else { width(piece, tab) };
-        if col >= skip + w {
-            break;
-        }
+    text::draw(buf, x, y, text, skip, usize::from(w), tab, |cell| {
         let mut style = base;
         if let Some(sp) = spans {
-            while span_i < sp.len() && (sp[span_i].1 as usize) <= bi {
+            while span_i < sp.len() && (sp[span_i].1 as usize) <= cell.byte {
                 span_i += 1;
             }
             if let Some(&(s, e, c)) = sp.get(span_i)
-                && (s as usize) <= bi
-                && bi < e as usize
+                && (s as usize) <= cell.byte
+                && cell.byte < e as usize
             {
                 style = style.fg(c);
             }
         }
-        if marks.is_some_and(|m| m.iter().any(|&(s, e)| s <= bi && bi < e)) {
+        if marks.is_some_and(|m| m.iter().any(|&(s, e)| s <= cell.byte && cell.byte < e)) {
             style = style.bg(emph);
         }
-        if col >= skip && col + cw <= skip + w {
-            let cx = x + (col - skip) as u16;
-            if ch == '\t' {
-                for k in 0..cw {
-                    if let Some(c) = buf.cell_mut((cx + k as u16, y)) {
-                        c.set_char(' ').set_style(style);
-                    }
-                }
-            } else if let Some(c) = buf.cell_mut((cx, y)) {
-                if ch.is_control() {
-                    c.set_char('�');
-                } else {
-                    c.set_symbol(piece);
-                }
-                c.set_style(style);
-                for k in 1..cw {
-                    if let Some(c) = buf.cell_mut((cx + k as u16, y)) {
-                        c.set_symbol("").set_style(style);
-                    }
-                }
-            }
-        }
-        col += cw;
-    }
+        style
+    });
 }
 
 fn draw_planner(app: &App, buf: &mut Buffer, hits: &mut Hits) {
@@ -1173,11 +1135,10 @@ mod tests {
     }
 
     #[test]
-    fn graphemes_wider_than_their_characters_are_split() {
-        // Terminals draw these two characters as one emoji two columns wide.
-        assert_eq!(code("❤\u{fe0f}x", 3, 0), ["|", "❤", "x", " "]);
+    fn emoji_sequences_take_one_wide_cell() {
+        assert_eq!(code("❤\u{fe0f}x", 4, 0), ["|", "❤\u{fe0f}", "", "x", " "]);
         let family = "👨\u{200d}👧";
-        assert_eq!(code(family, 4, 0), ["|", "👨", "", "👧", ""]);
+        assert_eq!(code(family, 4, 0), ["|", family, "", " ", " "]);
     }
 
     #[test]
