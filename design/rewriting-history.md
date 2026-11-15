@@ -193,7 +193,5 @@ the current executable is the test runner, not tergi.
 ## Known gaps
 
 - Ranges with merge commits are refused.
-- The message files in `.git/tergi/` are left there after the rebase.
-  They are small, and each rebase overwrites them.
 - Moving a commit with Ctrl+J or Ctrl+K runs a whole rebase for one
   step. The planner is the way to make several moves at once.

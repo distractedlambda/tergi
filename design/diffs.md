@@ -214,10 +214,6 @@ Selected lines get the selection background instead.
 ## Known gaps
 
 - A merge commit is diffed against its first parent only.
-- A stash is shown as its commit diffed against its first parent, so
-  untracked files saved in the stash don't appear.
-- Staged files are highlighted hunk by hunk, so a hunk that starts
-  inside a multi-line comment or string can get the wrong colors.
 - Word marks pair removed and added lines in order. When lines were
   inserted between edited ones, a line can be paired with the wrong
   partner, and then gets no marks or odd ones.
