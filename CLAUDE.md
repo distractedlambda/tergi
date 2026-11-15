@@ -5,6 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 tergi is a terminal git client modeled on Sublime Merge, written in Rust
 with ratatui, crossterm and Tokio. `README.md` describes what it does from
 the user's side, and `TODO.md` lists known bugs that nobody has fixed yet.
+`design/` explains how each part works inside. `design/README.md` lists
+the documents. Read the one for the part you are changing.
 
 ## Building and testing
 
