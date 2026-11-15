@@ -102,7 +102,11 @@ const fn rgb(hex: u32) -> Color {
 fn luminance(hex: u32) -> f32 {
     let ch = |shift: u32| {
         let c = ((hex >> shift) & 0xff) as f32 / 255.0;
-        if c <= 0.039_28 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        if c <= 0.039_28 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
     };
     0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0)
 }
@@ -240,7 +244,9 @@ const CATPPUCCIN_LATTE: Palette = Palette {
     green: 0x40a02b,   // green
     magenta: 0x8839ef, // mauve
     // blue, peach, green, mauve, red, teal, yellow, pink
-    lanes: [0x1e66f5, 0xfe640b, 0x40a02b, 0x8839ef, 0xd20f39, 0x179299, 0xdf8e1d, 0xea76cb],
+    lanes: [
+        0x1e66f5, 0xfe640b, 0x40a02b, 0x8839ef, 0xd20f39, 0x179299, 0xdf8e1d, 0xea76cb,
+    ],
 };
 
 const CATPPUCCIN_FRAPPE: Palette = Palette {
@@ -261,7 +267,9 @@ const CATPPUCCIN_FRAPPE: Palette = Palette {
     yellow: 0xe5c890,
     green: 0xa6d189,
     magenta: 0xca9ee6,
-    lanes: [0x8caaee, 0xef9f76, 0xa6d189, 0xca9ee6, 0xe78284, 0x81c8be, 0xe5c890, 0xf4b8e4],
+    lanes: [
+        0x8caaee, 0xef9f76, 0xa6d189, 0xca9ee6, 0xe78284, 0x81c8be, 0xe5c890, 0xf4b8e4,
+    ],
 };
 
 const CATPPUCCIN_MACCHIATO: Palette = Palette {
@@ -282,7 +290,9 @@ const CATPPUCCIN_MACCHIATO: Palette = Palette {
     yellow: 0xeed49f,
     green: 0xa6da95,
     magenta: 0xc6a0f6,
-    lanes: [0x8aadf4, 0xf5a97f, 0xa6da95, 0xc6a0f6, 0xed8796, 0x8bd5ca, 0xeed49f, 0xf5bde6],
+    lanes: [
+        0x8aadf4, 0xf5a97f, 0xa6da95, 0xc6a0f6, 0xed8796, 0x8bd5ca, 0xeed49f, 0xf5bde6,
+    ],
 };
 
 const CATPPUCCIN_MOCHA: Palette = Palette {
@@ -303,7 +313,9 @@ const CATPPUCCIN_MOCHA: Palette = Palette {
     yellow: 0xf9e2af,
     green: 0xa6e3a1,
     magenta: 0xcba6f7,
-    lanes: [0x89b4fa, 0xfab387, 0xa6e3a1, 0xcba6f7, 0xf38ba8, 0x94e2d5, 0xf9e2af, 0xf5c2e7],
+    lanes: [
+        0x89b4fa, 0xfab387, 0xa6e3a1, 0xcba6f7, 0xf38ba8, 0x94e2d5, 0xf9e2af, 0xf5c2e7,
+    ],
 };
 
 // Dracula, https://draculatheme.com/spec. It has no blue, so its purple is
@@ -327,7 +339,9 @@ const DRACULA: Palette = Palette {
     green: 0x50fa7b,                  // green
     magenta: 0xff79c6,                // pink
     // purple, orange, green, pink, red, cyan, yellow, comment
-    lanes: [0xbd93f9, 0xffb86c, 0x50fa7b, 0xff79c6, 0xff5555, 0x8be9fd, 0xf1fa8c, 0x6272a4],
+    lanes: [
+        0xbd93f9, 0xffb86c, 0x50fa7b, 0xff79c6, 0xff5555, 0x8be9fd, 0xf1fa8c, 0x6272a4,
+    ],
 };
 
 // Gruvbox, https://github.com/morhetz/gruvbox. The dark theme uses the
@@ -351,7 +365,9 @@ const GRUVBOX_DARK: Palette = Palette {
     green: 0xb8bb26,   // bright_green
     magenta: 0xd3869b, // bright_purple
     // blue, orange, green, purple, red, aqua, yellow, gray
-    lanes: [0x83a598, 0xfe8019, 0xb8bb26, 0xd3869b, 0xfb4934, 0x8ec07c, 0xfabd2f, 0x928374],
+    lanes: [
+        0x83a598, 0xfe8019, 0xb8bb26, 0xd3869b, 0xfb4934, 0x8ec07c, 0xfabd2f, 0x928374,
+    ],
 };
 
 const GRUVBOX_LIGHT: Palette = Palette {
@@ -372,7 +388,9 @@ const GRUVBOX_LIGHT: Palette = Palette {
     yellow: 0xb57614,  // faded_yellow
     green: 0x79740e,   // faded_green
     magenta: 0x8f3f71, // faded_purple
-    lanes: [0x076678, 0xaf3a03, 0x79740e, 0x8f3f71, 0x9d0006, 0x427b58, 0xb57614, 0x928374],
+    lanes: [
+        0x076678, 0xaf3a03, 0x79740e, 0x8f3f71, 0x9d0006, 0x427b58, 0xb57614, 0x928374,
+    ],
 };
 
 // Nord, https://www.nordtheme.com/docs/colors-and-palettes. Its comment
@@ -391,13 +409,15 @@ const NORD: Palette = Palette {
     fg: 0xd8dee9,                     // nord4
     dim: mix(0xd8dee9, 0x4c566a, 35), // nord4 and nord3
     faint: mix(0xd8dee9, 0x4c566a, 65),
-    accent: 0x88c0d0,                 // nord8
-    red: 0xbf616a,                    // nord11
-    yellow: 0xebcb8b,                 // nord13
-    green: 0xa3be8c,                  // nord14
-    magenta: 0xb48ead,                // nord15
+    accent: 0x88c0d0,  // nord8
+    red: 0xbf616a,     // nord11
+    yellow: 0xebcb8b,  // nord13
+    green: 0xa3be8c,   // nord14
+    magenta: 0xb48ead, // nord15
     // nord8, 12, 14, 15, 11, 7, 13, 10
-    lanes: [0x88c0d0, 0xd08770, 0xa3be8c, 0xb48ead, 0xbf616a, 0x8fbcbb, 0xebcb8b, 0x5e81ac],
+    lanes: [
+        0x88c0d0, 0xd08770, 0xa3be8c, 0xb48ead, 0xbf616a, 0x8fbcbb, 0xebcb8b, 0x5e81ac,
+    ],
 };
 
 // One Half, https://github.com/sonph/onehalf. It has no orange, so the
@@ -421,7 +441,9 @@ const ONE_HALF_DARK: Palette = Palette {
     green: 0x98c379,   // green
     magenta: 0xc678dd, // purple
     // blue, yellow, green, purple, red, cyan, gutter_fg, white
-    lanes: [0x61afef, 0xe5c07b, 0x98c379, 0xc678dd, 0xe06c75, 0x56b6c2, 0x919baa, 0xdcdfe4],
+    lanes: [
+        0x61afef, 0xe5c07b, 0x98c379, 0xc678dd, 0xe06c75, 0x56b6c2, 0x919baa, 0xdcdfe4,
+    ],
 };
 
 const ONE_HALF_LIGHT: Palette = Palette {
@@ -443,7 +465,9 @@ const ONE_HALF_LIGHT: Palette = Palette {
     green: 0x50a14f,                  // green
     magenta: 0xa626a4,                // purple
     // blue, yellow, green, purple, red, cyan, comment_fg, black
-    lanes: [0x0184bc, 0xc18401, 0x50a14f, 0xa626a4, 0xe45649, 0x0997b3, 0xa0a1a7, 0x383a42],
+    lanes: [
+        0x0184bc, 0xc18401, 0x50a14f, 0xa626a4, 0xe45649, 0x0997b3, 0xa0a1a7, 0x383a42,
+    ],
 };
 
 // Solarized, https://ethanschoonover.com/solarized. It has only two
@@ -460,16 +484,18 @@ const SOLARIZED_DARK: Palette = Palette {
     surface: 0x073642,                    // base02
     overlay: mix(0x073642, 0x586e75, 35), // base02 and base01
     raised: mix(0x073642, 0x586e75, 60),
-    fg: 0x839496,                         // base0
-    dim: 0x586e75,                        // base01
+    fg: 0x839496,  // base0
+    dim: 0x586e75, // base01
     faint: mix(0x586e75, 0x073642, 35),
-    accent: 0x268bd2,                     // blue
-    red: 0xdc322f,                        // red
-    yellow: 0xb58900,                     // yellow
-    green: 0x859900,                      // green
-    magenta: 0xd33682,                    // magenta
+    accent: 0x268bd2,  // blue
+    red: 0xdc322f,     // red
+    yellow: 0xb58900,  // yellow
+    green: 0x859900,   // green
+    magenta: 0xd33682, // magenta
     // blue, orange, green, violet, red, cyan, yellow, magenta
-    lanes: [0x268bd2, 0xcb4b16, 0x859900, 0x6c71c4, 0xdc322f, 0x2aa198, 0xb58900, 0xd33682],
+    lanes: [
+        0x268bd2, 0xcb4b16, 0x859900, 0x6c71c4, 0xdc322f, 0x2aa198, 0xb58900, 0xd33682,
+    ],
 };
 
 const SOLARIZED_LIGHT: Palette = Palette {
@@ -482,8 +508,8 @@ const SOLARIZED_LIGHT: Palette = Palette {
     surface: 0xeee8d5,                    // base2
     overlay: mix(0xeee8d5, 0x93a1a1, 35), // base2 and base1
     raised: mix(0xeee8d5, 0x93a1a1, 60),
-    fg: 0x657b83,                         // base00
-    dim: 0x93a1a1,                        // base1
+    fg: 0x657b83,  // base00
+    dim: 0x93a1a1, // base1
     faint: mix(0x93a1a1, 0xeee8d5, 35),
     ..SOLARIZED_DARK
 };
@@ -541,7 +567,10 @@ mod tests {
                 ("button", t.button),
             ] {
                 let c = contrast(fg, hex(bg));
-                assert!(c >= 3.0 || c >= base * 0.65, "{id}: text on {what} has contrast {c:.2}");
+                assert!(
+                    c >= 3.0 || c >= base * 0.65,
+                    "{id}: text on {what} has contrast {c:.2}"
+                );
             }
             for (what, bg) in [
                 ("head", t.badge_head),
@@ -551,7 +580,10 @@ mod tests {
                 ("danger", t.badge_danger),
             ] {
                 let c = contrast(hex(t.badge_fg), hex(bg));
-                assert!(c >= 3.0, "{id}: text on the {what} badge has contrast {c:.2}");
+                assert!(
+                    c >= 3.0,
+                    "{id}: text on the {what} badge has contrast {c:.2}"
+                );
             }
         }
     }

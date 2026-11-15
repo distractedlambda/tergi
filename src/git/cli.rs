@@ -240,7 +240,11 @@ impl Git {
             output,
         });
         if !ok {
-            bail!("git {} failed:\n{}", args.first().unwrap_or(&""), stderr.trim());
+            bail!(
+                "git {} failed:\n{}",
+                args.first().unwrap_or(&""),
+                stderr.trim()
+            );
         }
         Ok(Output { stdout, stderr })
     }
@@ -260,7 +264,11 @@ impl Git {
 /// up with hundreds of "Receiving objects: 12%" updates.
 fn clean_progress(s: &str) -> String {
     s.split('\n')
-        .map(|line| line.rsplit('\r').find(|p| !p.trim().is_empty()).unwrap_or(""))
+        .map(|line| {
+            line.rsplit('\r')
+                .find(|p| !p.trim().is_empty())
+                .unwrap_or("")
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }

@@ -423,7 +423,10 @@ mod tests {
         assert_eq!(t.text(), "hellowörld");
         t.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
         assert_eq!(t.text(), "wörld");
-        assert_eq!(t.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)), Outcome::Submit);
+        assert_eq!(
+            t.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)),
+            Outcome::Submit
+        );
     }
 
     #[test]
@@ -460,13 +463,19 @@ mod tests {
         let area = Rect::new(0, 0, 8, 1);
         let mut buf = Buffer::empty(area);
         t.render(&mut buf, area, Style::default(), Style::default());
-        buf.content().iter().map(|c| c.symbol().to_string()).collect()
+        buf.content()
+            .iter()
+            .map(|c| c.symbol().to_string())
+            .collect()
     }
 
     #[test]
     fn combining_characters_stay_with_their_letter() {
         let mut t = TextArea::with_text(false, "e\u{301}\u{202e}x\x07日");
-        assert_eq!(drawn(&mut t), ["e\u{301}", "x", "�", "日", "", " ", " ", " "]);
+        assert_eq!(
+            drawn(&mut t),
+            ["e\u{301}", "x", "�", "日", "", " ", " ", " "]
+        );
         t.masked = true;
         assert_eq!(drawn(&mut t), ["•", "•", "•", "•", "•", " ", " ", " "]);
     }
@@ -640,7 +649,11 @@ mod tests {
                 KeyCode::End,
             ]),
         ];
-        let mods = prop::sample::select(vec![KeyModifiers::NONE, KeyModifiers::CONTROL, KeyModifiers::ALT]);
+        let mods = prop::sample::select(vec![
+            KeyModifiers::NONE,
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+        ]);
         prop_oneof![
             8 => (code, mods).prop_map(|(c, m)| Op::Key(KeyEvent::new(c, m))),
             1 => "([ab1_ .é日\t\u{301}\u{200d}\u{202e}👨\u{1f3fd}]|\r|\n){0,6}".prop_map(Op::Paste),

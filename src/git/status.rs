@@ -51,9 +51,9 @@ pub enum Entry {
 impl Entry {
     pub fn path(&self) -> &str {
         match self {
-            Entry::Changed { path, .. } | Entry::Unmerged { path, .. } | Entry::Untracked { path } => {
-                path
-            }
+            Entry::Changed { path, .. }
+            | Entry::Unmerged { path, .. }
+            | Entry::Untracked { path } => path,
         }
     }
 }
@@ -91,23 +91,27 @@ impl Status {
     }
 
     pub fn staged(&self) -> impl Iterator<Item = &Entry> {
-        self.entries.iter().filter(|e| {
-            matches!(e, Entry::Changed { staged, .. } if *staged != Change::Unmodified)
-        })
+        self.entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Changed { staged, .. } if *staged != Change::Unmodified))
     }
 
     pub fn unstaged(&self) -> impl Iterator<Item = &Entry> {
-        self.entries.iter().filter(|e| {
-            matches!(e, Entry::Changed { unstaged, .. } if *unstaged != Change::Unmodified)
-        })
+        self.entries.iter().filter(
+            |e| matches!(e, Entry::Changed { unstaged, .. } if *unstaged != Change::Unmodified),
+        )
     }
 
     pub fn untracked(&self) -> impl Iterator<Item = &Entry> {
-        self.entries.iter().filter(|e| matches!(e, Entry::Untracked { .. }))
+        self.entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Untracked { .. }))
     }
 
     pub fn conflicted(&self) -> impl Iterator<Item = &Entry> {
-        self.entries.iter().filter(|e| matches!(e, Entry::Unmerged { .. }))
+        self.entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Unmerged { .. }))
     }
 
     pub fn is_clean(&self) -> bool {
@@ -135,8 +139,14 @@ pub fn parse(text: &str) -> Status {
                 st.upstream = Some(v.to_string());
             } else if let Some(v) = h.strip_prefix("branch.ab ") {
                 let mut it = v.split(' ');
-                st.ahead = it.next().and_then(|s| s.trim_start_matches('+').parse().ok()).unwrap_or(0);
-                st.behind = it.next().and_then(|s| s.trim_start_matches('-').parse().ok()).unwrap_or(0);
+                st.ahead = it
+                    .next()
+                    .and_then(|s| s.trim_start_matches('+').parse().ok())
+                    .unwrap_or(0);
+                st.behind = it
+                    .next()
+                    .and_then(|s| s.trim_start_matches('-').parse().ok())
+                    .unwrap_or(0);
             }
             continue;
         }
@@ -207,9 +217,14 @@ u UU N... 100644 100644 100644 100644 d1 d2 d3 conflict.rs\0\
         assert_eq!(st.entries[0].path(), "src/a b.rs");
         assert_eq!(st.unstaged().count(), 1);
         assert_eq!(st.staged().count(), 2);
-        assert!(matches!(&st.entries[2], Entry::Changed { orig_path: Some(p), .. } if p == "from.rs"));
+        assert!(
+            matches!(&st.entries[2], Entry::Changed { orig_path: Some(p), .. } if p == "from.rs")
+        );
         assert_eq!(st.conflicted().count(), 1);
-        assert_eq!(st.untracked().next().map(Entry::path), Some("untracked file"));
+        assert_eq!(
+            st.untracked().next().map(Entry::path),
+            Some("untracked file")
+        );
         assert_eq!(st.ignored, ["target/"]);
     }
 
@@ -237,13 +252,25 @@ u UU N... 100644 100644 100644 100644 d1 d2 d3 conflict.rs\0\
         let mut out = String::new();
         let oid = st.head_oid.as_deref().unwrap_or("(initial)");
         out.push_str(&format!("# branch.oid {oid}\0"));
-        out.push_str(&format!("# branch.head {}\0", st.branch.as_deref().unwrap_or("(detached)")));
+        out.push_str(&format!(
+            "# branch.head {}\0",
+            st.branch.as_deref().unwrap_or("(detached)")
+        ));
         if let Some(u) = &st.upstream {
-            out.push_str(&format!("# branch.upstream {u}\0# branch.ab +{} -{}\0", st.ahead, st.behind));
+            out.push_str(&format!(
+                "# branch.upstream {u}\0# branch.ab +{} -{}\0",
+                st.ahead, st.behind
+            ));
         }
         for e in &st.entries {
             match e {
-                Entry::Changed { path, orig_path, staged, unstaged, submodule } => {
+                Entry::Changed {
+                    path,
+                    orig_path,
+                    staged,
+                    unstaged,
+                    submodule,
+                } => {
                     let xy = format!("{}{}", letter(*staged), letter(*unstaged));
                     let sub = if *submodule { "SC.." } else { "N..." };
                     let ids = "100644 100644 100644 1111111 2222222";
@@ -253,7 +280,9 @@ u UU N... 100644 100644 100644 100644 d1 d2 d3 conflict.rs\0\
                     }
                 }
                 Entry::Unmerged { path, code } => {
-                    out.push_str(&format!("u {code} N... 100644 100644 100644 100644 1 2 3 {path}\0"));
+                    out.push_str(&format!(
+                        "u {code} N... 100644 100644 100644 100644 1 2 3 {path}\0"
+                    ));
                 }
                 Entry::Untracked { path } => out.push_str(&format!("? {path}\0")),
             }
@@ -282,17 +311,30 @@ u UU N... 100644 100644 100644 100644 d1 d2 d3 conflict.rs\0\
 
     fn entry() -> impl Strategy<Value = Entry> {
         prop_oneof![
-            (PATH, prop::option::of(PATH), change(), change(), any::<bool>()).prop_map(
-                |(path, orig_path, staged, unstaged, submodule)| Entry::Changed {
+            (
+                PATH,
+                prop::option::of(PATH),
+                change(),
+                change(),
+                any::<bool>()
+            )
+                .prop_map(|(path, orig_path, staged, unstaged, submodule)| {
+                    Entry::Changed {
+                        path,
+                        orig_path,
+                        staged,
+                        unstaged,
+                        submodule,
+                    }
+                }),
+            (
+                PATH,
+                prop::sample::select(vec!["UU", "AA", "DD", "AU", "UD"])
+            )
+                .prop_map(|(path, code)| Entry::Unmerged {
                     path,
-                    orig_path,
-                    staged,
-                    unstaged,
-                    submodule,
-                }
-            ),
-            (PATH, prop::sample::select(vec!["UU", "AA", "DD", "AU", "UD"]))
-                .prop_map(|(path, code)| Entry::Unmerged { path, code: code.to_string() }),
+                    code: code.to_string()
+                }),
             PATH.prop_map(|path| Entry::Untracked { path }),
         ]
     }
@@ -311,7 +353,15 @@ u UU N... 100644 100644 100644 100644 d1 d2 d3 conflict.rs\0\
                     Some((u, a, b)) => (Some(u), a, b),
                     None => (None, 0, 0),
                 };
-                Status { head_oid, branch, upstream, ahead, behind, entries, ignored }
+                Status {
+                    head_oid,
+                    branch,
+                    upstream,
+                    ahead,
+                    behind,
+                    entries,
+                    ignored,
+                }
             })
     }
 

@@ -119,12 +119,24 @@ pub fn base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         out.push(T[(n >> 18) as usize & 63] as char);
         out.push(T[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -160,7 +172,10 @@ mod tests {
     fn dates() {
         assert_eq!(format_date(0, 0), "1970-01-01 00:00 +0000");
         assert_eq!(format_date(1_700_000_000, 3600), "2023-11-14 23:13 +0100");
-        assert_eq!(format_date(1_700_000_000, -18_000), "2023-11-14 17:13 -0500");
+        assert_eq!(
+            format_date(1_700_000_000, -18_000),
+            "2023-11-14 17:13 -0500"
+        );
         assert_eq!(format_day(1_700_000_000, 3600), "2023-11-14");
         assert_eq!(format_day(1_699_999_000, 36_000), "2023-11-15");
         let now = 1_700_000_000;

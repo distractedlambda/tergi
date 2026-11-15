@@ -2,7 +2,9 @@
 
 use std::time::{Duration, Instant};
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::layout::Rect;
 
 use super::cmd::{ActionDef, Cmd, Overlay, SideRow};
@@ -46,7 +48,9 @@ impl App {
     fn handle_paste(&mut self, s: &str) {
         match self.overlays.last_mut() {
             Some(Overlay::Input(b)) => b.text.insert_str(s),
-            Some(Overlay::Palette { input, selected, .. }) => {
+            Some(Overlay::Palette {
+                input, selected, ..
+            }) => {
                 input.insert_str(s);
                 *selected = 0;
             }
@@ -92,7 +96,9 @@ impl App {
             self.run_cmd(a);
             return;
         }
-        if k.code == KeyCode::F(10) && k.modifiers.contains(KeyModifiers::SHIFT) || k.code == KeyCode::Menu {
+        if k.code == KeyCode::F(10) && k.modifiers.contains(KeyModifiers::SHIFT)
+            || k.code == KeyCode::Menu
+        {
             self.open_context_menu(None);
         }
     }
@@ -102,7 +108,9 @@ impl App {
             KeyCode::Tab => return self.run_cmd(Cmd::FocusNext),
             KeyCode::BackTab => return self.run_cmd(Cmd::FocusPrev),
             KeyCode::Char('a') if k.modifiers == KeyModifiers::ALT => return self.toggle_amend(),
-            KeyCode::Char('c') if k.modifiers == KeyModifiers::CONTROL => return self.focus = Focus::Detail,
+            KeyCode::Char('c') if k.modifiers == KeyModifiers::CONTROL => {
+                return self.focus = Focus::Detail;
+            }
             _ => {}
         }
         match self.message.handle_key(k) {
@@ -124,7 +132,11 @@ impl App {
         let mv = match k.code {
             KeyCode::Char('j') | KeyCode::Down if !ctrl => Some(Move::By(1)),
             KeyCode::Char('k') | KeyCode::Up if !ctrl => Some(Move::By(-1)),
-            KeyCode::Char('g') | KeyCode::Home if !ctrl && self.focus != Focus::Sidebar || k.code == KeyCode::Home => Some(Move::Top),
+            KeyCode::Char('g') | KeyCode::Home
+                if !ctrl && self.focus != Focus::Sidebar || k.code == KeyCode::Home =>
+            {
+                Some(Move::Top)
+            }
             KeyCode::Char('G') | KeyCode::End => Some(Move::Bottom),
             KeyCode::PageDown => Some(Move::By(1000)),
             KeyCode::PageUp => Some(Move::By(-1000)),
@@ -134,8 +146,16 @@ impl App {
         };
         if let Some(mv) = mv {
             let (area, len, cur) = match self.focus {
-                Focus::Sidebar => (self.areas.sidebar, self.sidebar.rows.len(), self.sidebar.selected),
-                Focus::History => (self.areas.history, self.history.row_count(), self.history.current_row()),
+                Focus::Sidebar => (
+                    self.areas.sidebar,
+                    self.sidebar.rows.len(),
+                    self.sidebar.selected,
+                ),
+                Focus::History => (
+                    self.areas.history,
+                    self.history.row_count(),
+                    self.history.current_row(),
+                ),
                 _ => (self.areas.doc, self.detail.rows.len(), self.detail.cursor),
             };
             let p = page(area) as isize;
@@ -172,7 +192,9 @@ impl App {
             (Focus::Sidebar, KeyCode::Enter) => {
                 match self.sidebar.rows.get(self.sidebar.selected).cloned() {
                     Some(SideRow::Header { key, .. }) => self.run_cmd(Cmd::ToggleSideSection(key)),
-                    Some(SideRow::Remote(r)) => self.run_cmd(Cmd::ToggleSideSection(format!("remote:{r}"))),
+                    Some(SideRow::Remote(r)) => {
+                        self.run_cmd(Cmd::ToggleSideSection(format!("remote:{r}")));
+                    }
                     _ => self.focus = Focus::History,
                 }
                 true
@@ -263,11 +285,15 @@ impl App {
     }
 
     fn nav_planner(&mut self, k: KeyEvent) -> bool {
-        let Some(p) = &mut self.planner else { return false };
+        let Some(p) = &mut self.planner else {
+            return false;
+        };
         let n = p.rows.len();
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         match k.code {
-            KeyCode::Char('j') | KeyCode::Down if !ctrl => p.selected = (p.selected + 1).min(n.saturating_sub(1)),
+            KeyCode::Char('j') | KeyCode::Down if !ctrl => {
+                p.selected = (p.selected + 1).min(n.saturating_sub(1));
+            }
             KeyCode::Char('k') | KeyCode::Up if !ctrl => p.selected = p.selected.saturating_sub(1),
             KeyCode::Char('J') => p.move_selected(false),
             KeyCode::Char('K') => p.move_selected(true),
@@ -279,7 +305,9 @@ impl App {
     }
 
     fn overlay_key(&mut self, k: KeyEvent) {
-        let Some(top) = self.overlays.last_mut() else { return };
+        let Some(top) = self.overlays.last_mut() else {
+            return;
+        };
         let up = matches!(k.code, KeyCode::Up | KeyCode::Char('k'))
             || (k.code == KeyCode::Char('p') && k.modifiers == KeyModifiers::CONTROL);
         let down = matches!(k.code, KeyCode::Down | KeyCode::Char('j'))
@@ -310,7 +338,11 @@ impl App {
                     if let Some(a) = item.filter(|a| a.enabled) {
                         self.run_cmd(a.cmd);
                     }
-                } else if let Some(a) = m.items.iter().find(|a| a.enabled && a.key.is_some_and(|key| key.matches(&k))) {
+                } else if let Some(a) = m
+                    .items
+                    .iter()
+                    .find(|a| a.enabled && a.key.is_some_and(|key| key.matches(&k)))
+                {
                     let cmd = a.cmd.clone();
                     self.overlays.pop();
                     self.run_cmd(cmd);
@@ -340,7 +372,11 @@ impl App {
                 }
                 _ => {}
             },
-            Overlay::Palette { input, items, selected } => {
+            Overlay::Palette {
+                input,
+                items,
+                selected,
+            } => {
                 let filtered = palette_filter(items, &input.text());
                 if k.code == KeyCode::Esc {
                     self.overlays.pop();
@@ -350,9 +386,13 @@ impl App {
                     if let Some(c) = cmd {
                         self.run_cmd(c);
                     }
-                } else if matches!(k.code, KeyCode::Up) || (k.code == KeyCode::Char('p') && k.modifiers == KeyModifiers::CONTROL) {
+                } else if matches!(k.code, KeyCode::Up)
+                    || (k.code == KeyCode::Char('p') && k.modifiers == KeyModifiers::CONTROL)
+                {
                     *selected = selected.saturating_sub(1);
-                } else if matches!(k.code, KeyCode::Down) || (k.code == KeyCode::Char('n') && k.modifiers == KeyModifiers::CONTROL) {
+                } else if matches!(k.code, KeyCode::Down)
+                    || (k.code == KeyCode::Char('n') && k.modifiers == KeyModifiers::CONTROL)
+                {
                     *selected = (*selected + 1).min(filtered.len().saturating_sub(1));
                 } else if input.handle_key(k) == Outcome::Handled {
                     *selected = 0;
@@ -384,7 +424,12 @@ impl App {
     pub fn pointer_shape(&self) -> &'static str {
         match self.target_at(self.mouse.0, self.mouse.1) {
             Some(Target::Splitter(_)) => "ew-resize",
-            Some(Target::Button(_) | Target::MenuItem(_) | Target::PaletteItem(_) | Target::PlannerAction(_)) => "pointer",
+            Some(
+                Target::Button(_)
+                | Target::MenuItem(_)
+                | Target::PaletteItem(_)
+                | Target::PlannerAction(_),
+            ) => "pointer",
             Some(Target::InputText | Target::Message) => "text",
             _ => "default",
         }
@@ -408,7 +453,13 @@ impl App {
                     .is_some_and(|(t, lx, ly)| t.elapsed() < DOUBLE_CLICK && lx == x && ly == y);
                 self.last_click = Some((Instant::now(), x, y));
                 let target = self.target_at(x, y);
-                self.click(target, x, y, double, m.modifiers.contains(KeyModifiers::SHIFT));
+                self.click(
+                    target,
+                    x,
+                    y,
+                    double,
+                    m.modifiers.contains(KeyModifiers::SHIFT),
+                );
             }
             MouseEventKind::Down(MouseButton::Right) => {
                 let target = self.target_at(x, y);
@@ -479,7 +530,8 @@ impl App {
                         }
                         _ => {}
                     }
-                } else if let Some(SideRow::Header { key, .. }) = self.sidebar.rows.get(i).cloned() {
+                } else if let Some(SideRow::Header { key, .. }) = self.sidebar.rows.get(i).cloned()
+                {
                     self.run_cmd(Cmd::ToggleSideSection(key));
                 } else if let Some(SideRow::Remote(r)) = self.sidebar.rows.get(i).cloned() {
                     self.run_cmd(Cmd::ToggleSideSection(format!("remote:{r}")));
@@ -508,7 +560,9 @@ impl App {
                             self.drag = Some(Drag::DiffSelect);
                         }
                     }
-                    Some(Row::File { .. } | Row::Section(_) | Row::Notice { .. } | Row::Meta(_)) => {
+                    Some(
+                        Row::File { .. } | Row::Section(_) | Row::Notice { .. } | Row::Meta(_),
+                    ) => {
                         self.detail.cursor = i;
                         self.detail.anchor = None;
                         self.activate_doc_row(i);
@@ -541,7 +595,8 @@ impl App {
                 }
                 self.focus = Focus::Message;
                 let a = self.areas.message;
-                self.message.click(x.saturating_sub(a.x), y.saturating_sub(a.y));
+                self.message
+                    .click(x.saturating_sub(a.x), y.saturating_sub(a.y));
             }
             Target::MenuItem(i) => {
                 if let Some(Overlay::Menu(m)) = self.overlays.last() {
@@ -614,7 +669,10 @@ impl App {
             Some(&Target::DocRow(i)) => {
                 self.focus = Focus::Detail;
                 // A click inside the selected lines is about those lines.
-                let in_selection = self.detail.selection().is_some_and(|(a, b)| (a..=b).contains(&i));
+                let in_selection = self
+                    .detail
+                    .selection()
+                    .is_some_and(|(a, b)| (a..=b).contains(&i));
                 if !in_selection {
                     self.detail.cursor = i;
                     self.detail.anchor = None;
@@ -658,7 +716,11 @@ impl App {
             }
             Some(Drag::Splitter(Splitter::History)) => {
                 let b = self.areas.body;
-                let left = if self.areas.sidebar.width > 0 { self.areas.sidebar.width + 1 } else { 0 };
+                let left = if self.areas.sidebar.width > 0 {
+                    self.areas.sidebar.width + 1
+                } else {
+                    0
+                };
                 let avail = b.width.saturating_sub(left).max(1);
                 let rel = x.saturating_sub(b.x + left);
                 self.history_frac = (f32::from(rel) / f32::from(avail)).clamp(0.15, 0.85);
@@ -672,14 +734,16 @@ impl App {
                 if y < a.y {
                     self.detail.scroll = self.detail.scroll.saturating_sub(1);
                 } else if y >= a.y + a.height {
-                    self.detail.scroll = (self.detail.scroll + 1).min(self.detail.rows.len().saturating_sub(1));
+                    self.detail.scroll =
+                        (self.detail.scroll + 1).min(self.detail.rows.len().saturating_sub(1));
                 }
                 let rel = usize::from(y.clamp(a.y, a.y + a.height - 1) - a.y);
                 let row = (self.detail.scroll + rel).min(self.detail.rows.len().saturating_sub(1));
                 self.detail.cursor = row;
             }
             Some(Drag::Planner(from)) => {
-                if let Some(Target::PlannerRow(to) | Target::PlannerAction(to)) = self.target_at(x, y)
+                if let Some(Target::PlannerRow(to) | Target::PlannerAction(to)) =
+                    self.target_at(x, y)
                     && to != from
                     && let Some(p) = &mut self.planner
                 {
@@ -698,7 +762,9 @@ impl App {
         };
         if let Some(top) = self.overlays.last_mut() {
             match top {
-                Overlay::Log { scroll } | Overlay::Message { scroll, .. } => apply(scroll, usize::MAX / 2),
+                Overlay::Log { scroll } | Overlay::Message { scroll, .. } => {
+                    apply(scroll, usize::MAX / 2);
+                }
                 Overlay::Menu(m) => apply(&mut m.scroll, m.items.len()),
                 _ => {}
             }
@@ -711,13 +777,24 @@ impl App {
             return;
         }
         if inside(self.areas.sidebar) {
-            let max = self.sidebar.rows.len().saturating_sub(usize::from(self.areas.sidebar.height));
+            let max = self
+                .sidebar
+                .rows
+                .len()
+                .saturating_sub(usize::from(self.areas.sidebar.height));
             apply(&mut self.sidebar.scroll, max);
         } else if inside(self.areas.history) {
-            let max = self.history.row_count().saturating_sub(usize::from(self.areas.history.height));
+            let max = self
+                .history
+                .row_count()
+                .saturating_sub(usize::from(self.areas.history.height));
             apply(&mut self.history.scroll, max);
         } else if inside(self.areas.detail) {
-            let max = self.detail.rows.len().saturating_sub(usize::from(self.areas.doc.height / 2));
+            let max = self
+                .detail
+                .rows
+                .len()
+                .saturating_sub(usize::from(self.areas.doc.height / 2));
             apply(&mut self.detail.scroll, max);
         }
     }

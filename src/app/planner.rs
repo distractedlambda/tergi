@@ -107,11 +107,17 @@ impl Planner {
                 PlanAction::Fixup => Action::Fixup,
                 PlanAction::Reword => match &r.message {
                     Some(m) => Action::Reword(m.clone()),
-                    None => bail!("Commit {} is set to reword but has no new message.", r.id.to_hex_with_len(7)),
+                    None => bail!(
+                        "Commit {} is set to reword but has no new message.",
+                        r.id.to_hex_with_len(7)
+                    ),
                 },
                 PlanAction::Squash => match &r.message {
                     Some(m) => Action::Squash(m.clone()),
-                    None => bail!("Commit {} is set to squash but has no message.", r.id.to_hex_with_len(7)),
+                    None => bail!(
+                        "Commit {} is set to squash but has no message.",
+                        r.id.to_hex_with_len(7)
+                    ),
                 },
             };
             steps.push(Step {
@@ -154,7 +160,10 @@ impl App {
         }
         let oldest = i + 1 == n;
         if matches!(action, PlanAction::Squash | PlanAction::Fixup) && oldest {
-            self.set_status("The oldest commit has nothing below it to meld into", Level::Warn);
+            self.set_status(
+                "The oldest commit has nothing below it to meld into",
+                Level::Warn,
+            );
             return;
         }
         if p.rows[i].action != action {
@@ -176,12 +185,16 @@ impl App {
         let below = p.rows.get(i + 1).map(|b| (b.id, b.message.clone()));
         self.spawn_read(
             move |r| async move {
-                let this = ops::commit_message(&r.git, &id.to_string()).await.unwrap_or_default();
+                let this = ops::commit_message(&r.git, &id.to_string())
+                    .await
+                    .unwrap_or_default();
                 match (action, below) {
                     (PlanAction::Squash, Some((below_id, below_msg))) => {
                         let below_msg = match below_msg {
                             Some(m) => m,
-                            None => ops::commit_message(&r.git, &below_id.to_string()).await.unwrap_or_default(),
+                            None => ops::commit_message(&r.git, &below_id.to_string())
+                                .await
+                                .unwrap_or_default(),
                         };
                         format!("{below_msg}\n\n{this}")
                     }
@@ -191,7 +204,11 @@ impl App {
             move |app, initial| {
                 // The rows may have moved in the meantime, so find this one
                 // by its commit. Only ask if it still wants a message.
-                let Some(row) = app.planner.as_mut().and_then(|p| p.rows.iter_mut().find(|r| r.id == id)) else {
+                let Some(row) = app
+                    .planner
+                    .as_mut()
+                    .and_then(|p| p.rows.iter_mut().find(|r| r.id == id))
+                else {
                     return;
                 };
                 if row.action != action || row.message.is_some() {
@@ -210,12 +227,13 @@ impl App {
     }
 
     fn open_planner_input(&mut self, title: &str, initial: &str, id: ObjectId) {
-        self.overlays.push(super::cmd::Overlay::Input(super::cmd::InputBox {
-            title: title.into(),
-            hint: "Ctrl+Enter to save, Esc to cancel".into(),
-            text: crate::ui::textarea::TextArea::with_text(true, initial),
-            purpose: Purpose::PlannerMessage(id),
-        }));
+        self.overlays
+            .push(super::cmd::Overlay::Input(super::cmd::InputBox {
+                title: title.into(),
+                hint: "Ctrl+Enter to save, Esc to cancel".into(),
+                text: crate::ui::textarea::TextArea::with_text(true, initial),
+                purpose: Purpose::PlannerMessage(id),
+            }));
     }
 
     pub fn planner_start(&mut self) {
@@ -232,7 +250,9 @@ impl App {
         self.spawn_op("Rebase", super::After::Nothing, move |r, _| async move {
             Ok(match rebase::run(&r.git, &plan, &exe).await? {
                 rebase::Outcome::Done => "Rebase finished".to_string(),
-                rebase::Outcome::Stopped => "Rebase stopped. Make your changes, then Continue (alt+c).".to_string(),
+                rebase::Outcome::Stopped => {
+                    "Rebase stopped. Make your changes, then Continue (alt+c).".to_string()
+                }
             })
         });
     }

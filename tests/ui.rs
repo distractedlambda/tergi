@@ -6,7 +6,9 @@ mod common;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -71,7 +73,13 @@ impl Ui {
     }
 
     fn doc_row(&self, f: impl Fn(&Row) -> bool) -> Rect {
-        let i = self.app.detail.rows.iter().position(f).expect("row in the detail pane");
+        let i = self
+            .app
+            .detail
+            .rows
+            .iter()
+            .position(f)
+            .expect("row in the detail pane");
         self.find_hit(|t| *t == Target::DocRow(i))
     }
 
@@ -91,7 +99,11 @@ impl Ui {
             if done(self) {
                 return;
             }
-            assert!(Instant::now() < deadline, "timed out waiting for {what}\n{}", self.screen());
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}\n{}",
+                self.screen()
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -99,7 +111,9 @@ impl Ui {
     /// Wait until the history and the working directory have both loaded.
     fn wait_loaded(&mut self, commits: usize) {
         self.wait("the first load", |u| {
-            !u.app.history.loading && u.app.history.commits.len() == commits && u.app.workdir.is_some()
+            !u.app.history.loading
+                && u.app.history.commits.len() == commits
+                && u.app.workdir.is_some()
         });
     }
 
@@ -125,7 +139,12 @@ impl Ui {
     }
 
     fn mouse(&mut self, kind: MouseEventKind, x: u16, y: u16) {
-        let ev = MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
+        let ev = MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        };
         self.handle(AppEvent::Input(Event::Mouse(ev)));
         self.draw();
     }
@@ -180,7 +199,13 @@ fn shows_history_and_working_directory() {
     let mut ui = Ui::open(&s);
     ui.wait_loaded(2);
     let screen = ui.screen();
-    for text in ["Working directory · 1 change", "Add a fourth note", "Add notes", "Unstaged changes (1)", "notes.txt"] {
+    for text in [
+        "Working directory · 1 change",
+        "Add a fourth note",
+        "Add notes",
+        "Unstaged changes (1)",
+        "notes.txt",
+    ] {
         assert!(screen.contains(text), "missing {text:?}\n{screen}");
     }
 }
@@ -192,8 +217,13 @@ fn clicking_stage_stages_the_file() {
     ui.wait_loaded(2);
     let r = ui.find_hit(|t| matches!(t, Target::Button(Cmd::Stage(Unit::File(..)))));
     ui.click(MouseButton::Left, r);
-    ui.wait("the file to show as staged", |u| u.screen().contains("Staged changes (1)"));
-    assert_eq!(s.sh(&["diff", "--cached", "--name-only"]).trim(), "notes.txt");
+    ui.wait("the file to show as staged", |u| {
+        u.screen().contains("Staged changes (1)")
+    });
+    assert_eq!(
+        s.sh(&["diff", "--cached", "--name-only"]).trim(),
+        "notes.txt"
+    );
     assert_eq!(s.sh(&["diff", "--name-only"]).trim(), "");
 }
 
@@ -246,7 +276,9 @@ fn first_load_starts_at_the_top() {
     ui.key(KeyCode::Char('j'));
     assert_eq!(ui.app.detail.cursor, 1);
     ui.key(KeyCode::Char(' '));
-    ui.wait("a.txt to be staged", |u| u.screen().contains("Staged changes (1)"));
+    ui.wait("a.txt to be staged", |u| {
+        u.screen().contains("Staged changes (1)")
+    });
 }
 
 #[test]
@@ -274,7 +306,14 @@ fn right_click_selects_without_activating() {
     let s = repo_with_change();
     let mut ui = Ui::open(&s);
     ui.wait_loaded(2);
-    let hunks = |u: &Ui| u.app.detail.rows.iter().filter(|r| matches!(r, Row::Hunk { .. })).count();
+    let hunks = |u: &Ui| {
+        u.app
+            .detail
+            .rows
+            .iter()
+            .filter(|r| matches!(r, Row::Hunk { .. }))
+            .count()
+    };
     assert_eq!(hunks(&ui), 1);
 
     // On a file header, the menu opens and the file stays unfolded.
@@ -327,7 +366,14 @@ fn folds_do_not_carry_over_to_other_commits() {
     s.commit_all("Change one line");
     let mut ui = Ui::open(&s);
     ui.wait_loaded(3);
-    let hunks = |u: &Ui| u.app.detail.rows.iter().filter(|r| matches!(r, Row::Hunk { .. })).count();
+    let hunks = |u: &Ui| {
+        u.app
+            .detail
+            .rows
+            .iter()
+            .filter(|r| matches!(r, Row::Hunk { .. }))
+            .count()
+    };
 
     // The big diff starts out folded.
     ui.select_commit(2);
@@ -381,7 +427,10 @@ fn draws_at_any_size() {
     ui.run_cmd(Cmd::Drop(ui.app.history.commits[0].id));
     draw_all(&mut ui, "a confirmation");
     ui.key(KeyCode::Esc);
-    ui.app.show_error("Something failed", &anyhow::anyhow!("a long explanation\nover two lines"));
+    ui.app.show_error(
+        "Something failed",
+        &anyhow::anyhow!("a long explanation\nover two lines"),
+    );
     draw_all(&mut ui, "an error");
     ui.key(KeyCode::Esc);
 
@@ -410,12 +459,17 @@ fn commits_and_amends_from_the_message_box() {
     // Amend only the message.
     ui.key(KeyCode::Char('3'));
     ui.key(KeyCode::Char('A'));
-    ui.wait("HEAD's message", |u| u.app.message.text() == "#3 Use a digit");
+    ui.wait("HEAD's message", |u| {
+        u.app.message.text() == "#3 Use a digit"
+    });
     ui.key(KeyCode::Char('c'));
     ui.type_text("!");
     ui.key_with(KeyCode::Char('s'), KeyModifiers::CONTROL);
     ui.settle();
-    assert_eq!(s.log(), ["#3 Use a digit!", "Add a fourth note", "Add notes"]);
+    assert_eq!(
+        s.log(),
+        ["#3 Use a digit!", "Add a fourth note", "Add notes"]
+    );
     assert!(!ui.app.amend);
     assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
 }
@@ -431,13 +485,17 @@ fn rewords_a_commit_and_runs_a_plan() {
     // Reword the oldest commit.
     ui.app.select_history(3);
     ui.key(KeyCode::Char('r'));
-    ui.wait("the reword dialog", |u| matches!(u.app.overlays.last(), Some(Overlay::Input(_))));
+    ui.wait("the reword dialog", |u| {
+        matches!(u.app.overlays.last(), Some(Overlay::Input(_)))
+    });
     ui.type_text(" file");
     ui.key_with(KeyCode::Enter, KeyModifiers::CONTROL);
     ui.settle();
     assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
     assert_eq!(s.log(), ["Add more", "Add a fourth note", "Add notes file"]);
-    ui.wait("the rewritten history", |u| u.app.history.commits.len() == 3 && u.app.history.commits[2].summary == "Add notes file");
+    ui.wait("the rewritten history", |u| {
+        u.app.history.commits.len() == 3 && u.app.history.commits[2].summary == "Add notes file"
+    });
 
     // Plan: fix up the newest into the middle one, and reword the middle.
     ui.app.select_history(3);
@@ -447,7 +505,9 @@ fn rewords_a_commit_and_runs_a_plan() {
     ui.key(KeyCode::Char('f'));
     ui.key(KeyCode::Char('j'));
     ui.key(KeyCode::Char('r'));
-    ui.wait("the message dialog", |u| matches!(u.app.overlays.last(), Some(Overlay::Input(_))));
+    ui.wait("the message dialog", |u| {
+        matches!(u.app.overlays.last(), Some(Overlay::Input(_)))
+    });
     ui.type_text("!");
     ui.key_with(KeyCode::Enter, KeyModifiers::CONTROL);
     assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
@@ -479,13 +539,18 @@ fn the_planner_asks_for_a_message_after_its_row_moves() {
     // Move the row down before git has answered with its message.
     ui.key(KeyCode::Char('r'));
     ui.key(KeyCode::Char('J'));
-    ui.wait("the message dialog", |u| matches!(u.app.overlays.last(), Some(Overlay::Input(_))));
+    ui.wait("the message dialog", |u| {
+        matches!(u.app.overlays.last(), Some(Overlay::Input(_)))
+    });
     ui.type_text("!");
     ui.key_with(KeyCode::Enter, KeyModifiers::CONTROL);
     let row = &ui.app.planner.as_ref().expect("the planner").rows[1];
     assert_eq!(row.summary, "Add more");
     assert_eq!(row.action, PlanAction::Reword);
-    assert!(row.message.as_deref().is_some_and(|m| m.contains('!')), "{row:?}");
+    assert!(
+        row.message.as_deref().is_some_and(|m| m.contains('!')),
+        "{row:?}"
+    );
 }
 
 #[test]
@@ -495,7 +560,12 @@ fn a_reword_without_its_dialog_goes_back_to_pick() {
     // Another dialog opens before git has answered with the message.
     ui.key(KeyCode::Char('r'));
     ui.key(KeyCode::Char('@'));
-    ui.wait("the row to go back to pick", |u| u.app.planner.as_ref().is_some_and(|p| p.rows[0].action == PlanAction::Pick));
+    ui.wait("the row to go back to pick", |u| {
+        u.app
+            .planner
+            .as_ref()
+            .is_some_and(|p| p.rows[0].action == PlanAction::Pick)
+    });
     assert!(matches!(ui.app.overlays.as_slice(), [Overlay::Log { .. }]));
 }
 
@@ -524,7 +594,9 @@ fn stages_selected_lines_and_discards_a_file() {
     ui.key(KeyCode::Char('j'));
     ui.key(KeyCode::Char(' '));
     ui.settle();
-    ui.wait("staged lines", |u| u.screen().contains("Staged changes (1)"));
+    ui.wait("staged lines", |u| {
+        u.screen().contains("Staged changes (1)")
+    });
     assert_eq!(s.index("f.txt"), "1\n2\n3\ntwo\nthree\n4\n5\n");
     assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
 
@@ -539,11 +611,39 @@ fn stages_selected_lines_and_discards_a_file() {
 
     // Discard asks first.
     ui.key(KeyCode::Char('t'));
-    ui.wait("unstaged rows", |u| u.app.detail.rows.iter().any(|r| matches!(r, Row::File { sec: tergi::app::doc::Section::Unstaged, .. })));
-    let at = ui.app.detail.rows.iter().position(|r| matches!(r, Row::File { sec: tergi::app::doc::Section::Unstaged, .. })).expect("file row");
+    ui.wait("unstaged rows", |u| {
+        u.app.detail.rows.iter().any(|r| {
+            matches!(
+                r,
+                Row::File {
+                    sec: tergi::app::doc::Section::Unstaged,
+                    ..
+                }
+            )
+        })
+    });
+    let at = ui
+        .app
+        .detail
+        .rows
+        .iter()
+        .position(|r| {
+            matches!(
+                r,
+                Row::File {
+                    sec: tergi::app::doc::Section::Unstaged,
+                    ..
+                }
+            )
+        })
+        .expect("file row");
     ui.app.detail_move_to(at, false);
     ui.key(KeyCode::Char('d'));
-    assert!(matches!(ui.app.overlays.last(), Some(Overlay::Confirm { .. })), "{}", ui.screen());
+    assert!(
+        matches!(ui.app.overlays.last(), Some(Overlay::Confirm { .. })),
+        "{}",
+        ui.screen()
+    );
     ui.key(KeyCode::Char('y'));
     ui.settle();
     assert_eq!(s.sh(&["diff", "--name-only"]).trim(), "");
@@ -552,10 +652,20 @@ fn stages_selected_lines_and_discards_a_file() {
 /// Put the cursor on a row in the detail pane and press `d`, which asks
 /// before discarding.
 fn ask_to_discard(ui: &mut Ui, row: impl Fn(&Ui, &Row) -> bool) {
-    let at = ui.app.detail.rows.iter().position(|r| row(ui, r)).expect("row in the detail pane");
+    let at = ui
+        .app
+        .detail
+        .rows
+        .iter()
+        .position(|r| row(ui, r))
+        .expect("row in the detail pane");
     ui.app.detail_move_to(at, false);
     ui.key(KeyCode::Char('d'));
-    assert!(matches!(ui.app.overlays.last(), Some(Overlay::Confirm { .. })), "{}", ui.screen());
+    assert!(
+        matches!(ui.app.overlays.last(), Some(Overlay::Confirm { .. })),
+        "{}",
+        ui.screen()
+    );
 }
 
 #[test]
@@ -570,14 +680,17 @@ fn a_file_waiting_to_be_discarded_stays_the_same_file() {
     let mut ui = Ui::open(&s);
     ui.wait_loaded(1);
     ui.key(KeyCode::Char('3'));
-    ask_to_discard(&mut ui, |u, r| {
-        matches!(r, Row::File { sec: Section::Unstaged, file } if u.app.section_files(Section::Unstaged)[*file].path() == "c.txt")
-    });
+    ask_to_discard(
+        &mut ui,
+        |u, r| matches!(r, Row::File { sec: Section::Unstaged, file } if u.app.section_files(Section::Unstaged)[*file].path() == "c.txt"),
+    );
 
     // While the dialog is open, a change shows up ahead of c.txt.
     s.write("a.txt", "new\n");
     ui.run_cmd(Cmd::Refresh);
-    ui.wait("a.txt to show up", |u| u.app.section_files(Section::Unstaged).len() == 3);
+    ui.wait("a.txt to show up", |u| {
+        u.app.section_files(Section::Unstaged).len() == 3
+    });
     ui.key(KeyCode::Char('y'));
     ui.settle();
     assert_eq!(s.sh(&["diff", "--name-only"]).trim(), "a.txt\nb.txt");
@@ -595,14 +708,18 @@ fn discarding_a_section_spares_files_that_show_up_later() {
     ui.key(KeyCode::Char('3'));
     ask_to_discard(&mut ui, |_, r| *r == Row::Section(Section::Untracked));
     match ui.app.overlays.last() {
-        Some(Overlay::Confirm { body, .. }) => assert!(body.contains("a.txt and b.txt will be deleted"), "{body}"),
+        Some(Overlay::Confirm { body, .. }) => {
+            assert!(body.contains("a.txt and b.txt will be deleted"), "{body}");
+        }
         _ => panic!("no dialog\n{}", ui.screen()),
     }
 
     // A new file shows up while the dialog is open.
     s.write("c.txt", "c\n");
     ui.run_cmd(Cmd::Refresh);
-    ui.wait("c.txt to show up", |u| u.app.section_files(Section::Untracked).len() == 3);
+    ui.wait("c.txt to show up", |u| {
+        u.app.section_files(Section::Untracked).len() == 3
+    });
     ui.key(KeyCode::Char('y'));
     ui.settle();
     assert_eq!(s.sh(&["status", "--porcelain"]).trim(), "?? c.txt");
@@ -624,12 +741,29 @@ fn a_hunk_waiting_to_be_discarded_stays_the_same_hunk() {
     let mut ui = Ui::open(&s);
     ui.wait_loaded(1);
     ui.key(KeyCode::Char('3'));
-    ask_to_discard(&mut ui, |_, r| matches!(r, Row::Hunk { sec: Section::Unstaged, hunk: 1, .. }));
+    ask_to_discard(&mut ui, |_, r| {
+        matches!(
+            r,
+            Row::Hunk {
+                sec: Section::Unstaged,
+                hunk: 1,
+                ..
+            }
+        )
+    });
 
     // While the dialog is open, a new hunk shows up above it.
-    s.write("f.txt", &text(&[(2, "two"), (15, "fifteen"), (28, "twenty-eight")]));
+    s.write(
+        "f.txt",
+        &text(&[(2, "two"), (15, "fifteen"), (28, "twenty-eight")]),
+    );
     ui.run_cmd(Cmd::Refresh);
-    ui.wait("the new hunk", |u| u.app.section_files(Section::Unstaged).first().is_some_and(|f| f.hunks.len() == 3));
+    ui.wait("the new hunk", |u| {
+        u.app
+            .section_files(Section::Unstaged)
+            .first()
+            .is_some_and(|f| f.hunks.len() == 3)
+    });
     ui.key(KeyCode::Char('y'));
     ui.settle();
     assert_eq!(s.read("f.txt"), text(&[(2, "two"), (15, "fifteen")]));
@@ -651,15 +785,22 @@ fn resolves_a_conflict_and_continues_the_merge() {
     ui.run_cmd(Cmd::Merge("other".into()));
     ui.settle();
     // Git's message about the conflict is shown in a dialog.
-    assert!(matches!(ui.app.overlays.last(), Some(Overlay::Message { .. })));
+    assert!(matches!(
+        ui.app.overlays.last(),
+        Some(Overlay::Message { .. })
+    ));
     ui.key(KeyCode::Enter);
-    ui.wait("the conflict", |u| u.screen().contains("Merge conflicts (1)"));
+    ui.wait("the conflict", |u| {
+        u.screen().contains("Merge conflicts (1)")
+    });
     let screen = ui.screen();
     assert!(screen.contains("Merge in progress"), "{screen}");
     let theirs = ui.find_hit(|t| matches!(t, Target::Button(Cmd::TakeSide(_, false))));
     ui.click(MouseButton::Left, theirs);
     ui.settle();
-    ui.wait("the resolution", |u| u.screen().contains("Staged changes (1)"));
+    ui.wait("the resolution", |u| {
+        u.screen().contains("Staged changes (1)")
+    });
     assert_eq!(s.read("f.txt"), "theirs\n");
     ui.key_with(KeyCode::Char('c'), KeyModifiers::ALT);
     ui.settle();
@@ -686,12 +827,20 @@ fn answers_a_password_prompt() {
     };
 
     let child = ask(&ui);
-    ui.wait("the prompt", |u| matches!(u.app.overlays.last(), Some(Overlay::Input(_))));
+    ui.wait("the prompt", |u| {
+        matches!(u.app.overlays.last(), Some(Overlay::Input(_)))
+    });
     let screen = ui.screen();
-    assert!(screen.contains("Password for 'https://example.com':"), "{screen}");
+    assert!(
+        screen.contains("Password for 'https://example.com':"),
+        "{screen}"
+    );
     ui.type_text("s3cret pass");
     let screen = ui.screen();
-    assert!(!screen.contains("s3cret"), "the password should be hidden\n{screen}");
+    assert!(
+        !screen.contains("s3cret"),
+        "the password should be hidden\n{screen}"
+    );
     ui.key(KeyCode::Enter);
     let out = child.wait_with_output().expect("askpass output");
     assert!(out.status.success());
@@ -699,7 +848,9 @@ fn answers_a_password_prompt() {
 
     // Cancelling makes the helper fail, so git gives up.
     let child = ask(&ui);
-    ui.wait("the prompt", |u| matches!(u.app.overlays.last(), Some(Overlay::Input(_))));
+    ui.wait("the prompt", |u| {
+        matches!(u.app.overlays.last(), Some(Overlay::Input(_)))
+    });
     ui.key(KeyCode::Esc);
     let out = child.wait_with_output().expect("askpass output");
     assert!(!out.status.success());
@@ -742,7 +893,12 @@ fn many_commits(s: &Scratch, n: usize) {
         .stdin(std::process::Stdio::piped())
         .spawn()
         .expect("run git fast-import");
-    child.stdin.take().expect("stdin").write_all(stream.as_bytes()).expect("write the stream");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(stream.as_bytes())
+        .expect("write the stream");
     assert!(child.wait().expect("git fast-import").success());
 }
 
@@ -756,7 +912,12 @@ fn selection_follows_its_commit_through_a_reload() {
     // the end of them, then add commits on top, so the next walk sends it
     // in its second batch.
     ui.app.select_history(199);
-    let id = ui.app.history.selected_commit().map(|c| c.id).expect("a selected commit");
+    let id = ui
+        .app
+        .history
+        .selected_commit()
+        .map(|c| c.id)
+        .expect("a selected commit");
     for i in 0..5 {
         s.commit_all(&format!("New {i}"));
     }
@@ -766,7 +927,10 @@ fn selection_follows_its_commit_through_a_reload() {
     // be some other commit.
     let deadline = Instant::now() + Duration::from_secs(15);
     while ui.app.history.loading || ui.app.history.commits.len() != 215 {
-        assert!(Instant::now() < deadline, "timed out waiting for the reload");
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the reload"
+        );
         match ui.app.try_recv() {
             Some(ev) => ui.handle(ev),
             None => std::thread::sleep(Duration::from_millis(5)),
@@ -786,9 +950,12 @@ fn sidebar_selection_follows_its_branch_through_a_reload() {
     s.sh(&["branch", "d"]);
     let mut ui = Ui::open(&s);
     ui.wait_loaded(2);
-    let row_of = |u: &Ui, name: &str| {
-        u.app.sidebar.rows.iter().position(|r| matches!(r, SideRow::Branch(i) if u.app.refs.branches[*i].name == name))
-    };
+    let row_of =
+        |u: &Ui, name: &str| {
+            u.app.sidebar.rows.iter().position(
+                |r| matches!(r, SideRow::Branch(i) if u.app.refs.branches[*i].name == name),
+            )
+        };
     let d = row_of(&ui, "d").expect("a row for d");
     ui.app.sidebar_select(d);
 
@@ -812,7 +979,14 @@ fn force_push_only_pushes_the_branch_it_asked_about() {
     s.sh(&["checkout", "-q", "other"]);
     s.sh(&["commit", "-q", "--amend", "-m", "Amended on other"]);
     s.sh(&["checkout", "-q", "main"]);
-    let on_remote = |b: &str| s.sh(&["--git-dir", &remote.path().to_string_lossy(), "rev-parse", b]);
+    let on_remote = |b: &str| {
+        s.sh(&[
+            "--git-dir",
+            &remote.path().to_string_lossy(),
+            "rev-parse",
+            b,
+        ])
+    };
     let (main_before, other_before) = (on_remote("main"), on_remote("other"));
 
     let mut ui = Ui::open(&s);
@@ -820,7 +994,9 @@ fn force_push_only_pushes_the_branch_it_asked_about() {
     ui.key(KeyCode::Char('P'));
     ui.key(KeyCode::Char('f'));
     match ui.app.overlays.last() {
-        Some(Overlay::Confirm { body, .. }) => assert!(body.contains("force pushes main"), "{body}"),
+        Some(Overlay::Confirm { body, .. }) => {
+            assert!(body.contains("force pushes main"), "{body}");
+        }
         _ => panic!("no dialog\n{}", ui.screen()),
     }
 
@@ -829,7 +1005,9 @@ fn force_push_only_pushes_the_branch_it_asked_about() {
     ui.key(KeyCode::Char('y'));
     ui.settle();
     match ui.app.overlays.last() {
-        Some(Overlay::Message { body, error: true, .. }) => assert!(body.contains("main isn't checked out"), "{body}"),
+        Some(Overlay::Message {
+            body, error: true, ..
+        }) => assert!(body.contains("main isn't checked out"), "{body}"),
         _ => panic!("no error\n{}", ui.screen()),
     }
     assert_eq!(on_remote("main"), main_before);
@@ -844,13 +1022,22 @@ fn the_theme_menu_previews_themes() {
     let config = dir.path().join("config.toml");
     let mut ui = Ui::open_with_config(&s, Some(&config));
     ui.wait_loaded(0);
-    let colors = |u: &Ui| u.app.detail.highlights.values().next().map(|h| format!("{:?}", h.lines));
+    let colors = |u: &Ui| {
+        u.app
+            .detail
+            .highlights
+            .values()
+            .next()
+            .map(|h| format!("{:?}", h.lines))
+    };
     ui.wait("syntax highlighting", |u| colors(u).is_some());
     let first = ui.app.theme.id;
     let first_colors = colors(&ui);
     let open = |ui: &mut Ui| {
         ui.palette("choose theme");
-        assert!(matches!(ui.app.overlays.last(), Some(Overlay::Menu(m)) if m.title.as_deref() == Some("Theme")));
+        assert!(
+            matches!(ui.app.overlays.last(), Some(Overlay::Menu(m)) if m.title.as_deref() == Some("Theme"))
+        );
     };
 
     // Moving through the menu switches themes, syntax colors included, and
@@ -859,7 +1046,9 @@ fn the_theme_menu_previews_themes() {
     ui.key(KeyCode::Down);
     let second = ui.app.theme.id;
     assert_ne!(second, first);
-    ui.wait("new syntax colors", |u| colors(u).is_some_and(|c| Some(c) != first_colors));
+    ui.wait("new syntax colors", |u| {
+        colors(u).is_some_and(|c| Some(c) != first_colors)
+    });
     ui.key(KeyCode::Esc);
     assert!(ui.app.overlays.is_empty());
     assert_eq!(ui.app.theme.id, first);
@@ -895,33 +1084,56 @@ fn settings_follow_the_config_file() {
     ui.wait_loaded(2);
     // Make the history wide enough to show dates.
     ui.app.history_frac = 0.7;
-    let status = |u: &Ui| u.app.status.as_ref().map(|(m, ..)| m.clone()).unwrap_or_default();
+    let status = |u: &Ui| {
+        u.app
+            .status
+            .as_ref()
+            .map(|(m, ..)| m.clone())
+            .unwrap_or_default()
+    };
 
     std::fs::write(&config, "theme = \"nord\"\nrelative_dates = false\n").expect("write config");
-    ui.wait("the new settings", |u| u.app.theme.id == "nord" && !u.app.cfg.relative_dates);
+    ui.wait("the new settings", |u| {
+        u.app.theme.id == "nord" && !u.app.cfg.relative_dates
+    });
     let c = &ui.app.history.commits[0];
     let day = tergi::util::format_day(c.time, c.offset);
     ui.wait("full dates in the history", |u| u.screen().contains(&day));
 
     // A change that breaks the file is ignored, and so is an unknown theme.
-    for broken in ["theme = \"dracula\"\ntab_width = [\n", "theme = \"plaid\"\ntab_width = 8\n"] {
+    for broken in [
+        "theme = \"dracula\"\ntab_width = [\n",
+        "theme = \"plaid\"\ntab_width = 8\n",
+    ] {
         ui.app.status = None;
         std::fs::write(&config, broken).expect("write config");
-        ui.wait("a warning", |u| status(u).starts_with("Ignored the change to the config file"));
+        ui.wait("a warning", |u| {
+            status(u).starts_with("Ignored the change to the config file")
+        });
         assert_eq!(ui.app.theme.id, "nord");
         assert_eq!(ui.app.cfg.tab_width, 4);
     }
 
     // Fixing it applies the change.
     std::fs::write(&config, "theme = \"dracula\"\ntab_width = 8\n").expect("write config");
-    ui.wait("the fixed settings", |u| u.app.theme.id == "dracula" && u.app.cfg.tab_width == 8 && u.app.cfg.relative_dates);
+    ui.wait("the fixed settings", |u| {
+        u.app.theme.id == "dracula" && u.app.cfg.tab_width == 8 && u.app.cfg.relative_dates
+    });
 }
 
 #[test]
 fn palette_commands_change_and_save_settings() {
     let s = Scratch::new();
     let lines = |name: &str, changed: usize| -> String {
-        (1..=20).map(|i| if i == changed { format!("{name} changed\n") } else { format!("{name} {i:02}\n") }).collect()
+        (1..=20)
+            .map(|i| {
+                if i == changed {
+                    format!("{name} changed\n")
+                } else {
+                    format!("{name} {i:02}\n")
+                }
+            })
+            .collect()
     };
     s.write("a.txt", &lines("a", 0));
     s.write("b.txt", &lines("b", 0));
@@ -942,11 +1154,17 @@ fn palette_commands_change_and_save_settings() {
     ui.type_text("1");
     ui.key(KeyCode::Enter);
     // The hunk header shows the line before the hunk, so look below it.
-    ui.wait("less context", |u| !u.screen().contains("b 12") && u.screen().contains("b 11"));
+    ui.wait("less context", |u| {
+        !u.screen().contains("b 12") && u.screen().contains("b 11")
+    });
     // Commits use the new number too.
     ui.select_commit(1);
     ui.wait("the commit's diff", |u| u.screen().contains("a changed"));
-    assert!(ui.screen().contains("a 11") && !ui.screen().contains("a 12"), "{}", ui.screen());
+    assert!(
+        ui.screen().contains("a 11") && !ui.screen().contains("a 12"),
+        "{}",
+        ui.screen()
+    );
 
     // Numbers out of range are refused.
     ui.palette("tab width");
@@ -965,9 +1183,14 @@ fn palette_commands_change_and_save_settings() {
 
     // The folder didn't exist, so saving made it.
     let saved = std::fs::read_to_string(&config).expect("config");
-    assert_eq!(saved, "context_lines = 1\ntab_width = 2\nrelative_dates = false\n");
+    assert_eq!(
+        saved,
+        "context_lines = 1\ntab_width = 2\nrelative_dates = false\n"
+    );
 
     // Saving also started watching the file.
     std::fs::write(&config, "relative_dates = true\n").expect("write config");
-    ui.wait("relative dates again", |u| u.app.cfg.relative_dates && u.app.cfg.context_lines == 3);
+    ui.wait("relative dates again", |u| {
+        u.app.cfg.relative_dates && u.app.cfg.context_lines == 3
+    });
 }

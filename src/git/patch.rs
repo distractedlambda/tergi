@@ -106,7 +106,11 @@ pub fn build_patch(
 /// The number of the first line a hunk covers. For an empty range, a hunk
 /// header gives the line before it instead.
 fn first_line(start: u32, len: u32) -> i64 {
-    if len == 0 { i64::from(start) + 1 } else { i64::from(start) }
+    if len == 0 {
+        i64::from(start) + 1
+    } else {
+        i64::from(start)
+    }
 }
 
 /// The start to write in a hunk header for a range that begins at line
@@ -121,12 +125,24 @@ fn first_line(start: u32, len: u32) -> i64 {
 /// the removed line is the last one and has no newline. Then git also drops
 /// the newline from the line before. So on that side we give the exact line.
 fn range_start(first: i64, count: i64, towards: bool) -> i64 {
-    if count == 0 && !towards { (first - 1).max(0) } else { first.max(0) }
+    if count == 0 && !towards {
+        (first - 1).max(0)
+    } else {
+        first.max(0)
+    }
 }
 
 fn header(file: &FileDiff, full: bool, reverse: bool) -> String {
-    let old = file.old_path.as_deref().or(file.new_path.as_deref()).unwrap_or("");
-    let new = file.new_path.as_deref().or(file.old_path.as_deref()).unwrap_or("");
+    let old = file
+        .old_path
+        .as_deref()
+        .or(file.new_path.as_deref())
+        .unwrap_or("");
+    let new = file
+        .new_path
+        .as_deref()
+        .or(file.old_path.as_deref())
+        .unwrap_or("");
     let a = quote_path(&format!("a/{old}"));
     let b = quote_path(&format!("b/{new}"));
     let mut s = format!("diff --git {a} {b}\n");
@@ -135,7 +151,9 @@ fn header(file: &FileDiff, full: bool, reverse: bool) -> String {
         s.push_str(&format!("new file mode {mode}\n--- /dev/null\n+++ {b}\n"));
     } else if file.is_deleted() && (reverse || full) {
         let mode = file.old_mode.as_deref().unwrap_or("100644");
-        s.push_str(&format!("deleted file mode {mode}\n--- {a}\n+++ /dev/null\n"));
+        s.push_str(&format!(
+            "deleted file mode {mode}\n--- {a}\n+++ /dev/null\n"
+        ));
     } else {
         if full
             && let (Some(om), Some(nm)) = (&file.old_mode, &file.new_mode)
@@ -151,9 +169,7 @@ fn header(file: &FileDiff, full: bool, reverse: bool) -> String {
 /// Quote a path the way git does when it contains characters that would
 /// confuse the patch parser.
 pub fn quote_path(p: &str) -> String {
-    let needs = p
-        .chars()
-        .any(|c| c == '"' || c == '\\' || c.is_control());
+    let needs = p.chars().any(|c| c == '"' || c == '\\' || c.is_control());
     if !needs {
         return p.to_string();
     }
@@ -201,7 +217,9 @@ index 1111111..2222222 100644
     fn stage_one_pair() {
         let f = &parse_unified(DIFF, DEFAULT_LINE_LIMIT)[0];
         // Select "-b" (line 1) and "+B" (line 3).
-        let p = build_patch(f, &|_, l| l == 1 || l == 3, false).unwrap().unwrap();
+        let p = build_patch(f, &|_, l| l == 1 || l == 3, false)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             p,
             "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,4 +1,4 @@\n a\n-b\n c\n+B\n d\n"
@@ -211,7 +229,9 @@ index 1111111..2222222 100644
     #[test]
     fn unstage_one_pair() {
         let f = &parse_unified(DIFF, DEFAULT_LINE_LIMIT)[0];
-        let p = build_patch(f, &|_, l| l == 1 || l == 3, true).unwrap().unwrap();
+        let p = build_patch(f, &|_, l| l == 1 || l == 3, true)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             p,
             "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,4 +1,4 @@\n a\n-b\n+B\n C\n d\n"

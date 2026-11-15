@@ -121,7 +121,10 @@ mod tests {
 
     #[test]
     fn tokenize() {
-        assert_eq!(tokens("foo(bar, 12)"), ["foo", "(", "bar", ",", " ", "12", ")"]);
+        assert_eq!(
+            tokens("foo(bar, 12)"),
+            ["foo", "(", "bar", ",", " ", "12", ")"]
+        );
         assert_eq!(tokens("  a"), ["  ", "a"]);
     }
 

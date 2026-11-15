@@ -49,7 +49,10 @@ pub fn walk(
     // example. The walk refuses to start from those, so leave them out.
     let tips: Vec<ObjectId> = tips
         .into_iter()
-        .filter(|id| repo.find_header(*id).is_ok_and(|h| h.kind() == gix::object::Kind::Commit))
+        .filter(|id| {
+            repo.find_header(*id)
+                .is_ok_and(|h| h.kind() == gix::object::Kind::Commit)
+        })
         .collect();
 
     if !tips.is_empty() {
@@ -90,7 +93,10 @@ pub fn load_commit(repo: &gix::Repository, id: ObjectId) -> Result<CommitInfo> {
     let obj = repo.find_commit(id).context("missing commit")?;
     let c = obj.decode().context("bad commit")?;
     let author = c.author().context("bad author")?;
-    let (time, offset) = author.time().map(|t| (t.seconds, t.offset)).unwrap_or((0, 0));
+    let (time, offset) = author
+        .time()
+        .map(|t| (t.seconds, t.offset))
+        .unwrap_or((0, 0));
     let summary = c
         .message
         .split(|&b| b == b'\n')

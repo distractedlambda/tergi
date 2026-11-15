@@ -325,7 +325,9 @@ impl Detail {
                         self.rows.push(Row::Blank);
                     }
                     if !any {
-                        self.rows.push(Row::Empty("Nothing to commit. The working directory is clean.".into()));
+                        self.rows.push(Row::Empty(
+                            "Nothing to commit. The working directory is clean.".into(),
+                        ));
                     }
                 }
                 None => self.rows.push(Row::Empty("Loading…".into())),
@@ -352,7 +354,11 @@ impl Detail {
         };
         // Blank and placeholder rows all share one key, so looking one up
         // would just find the first blank row.
-        let mut pos = if old_key == RowKey::Other { None } else { find(&old_key, &self.rows) };
+        let mut pos = if old_key == RowKey::Other {
+            None
+        } else {
+            find(&old_key, &self.rows)
+        };
         if pos.is_none() {
             let fallback = match &old_key {
                 RowKey::Line(s, p, h, _) => Some(RowKey::Hunk(*s, p.clone(), *h)),
@@ -374,7 +380,9 @@ impl Detail {
             pos = find(&RowKey::File(*s, p.clone()), &self.rows);
         }
         self.old_paths = paths;
-        self.cursor = pos.unwrap_or(old_cursor).min(self.rows.len().saturating_sub(1));
+        self.cursor = pos
+            .unwrap_or(old_cursor)
+            .min(self.rows.len().saturating_sub(1));
         if let Some(a) = self.anchor
             && a >= self.rows.len()
         {
@@ -382,7 +390,13 @@ impl Detail {
         }
     }
 
-    fn build_meta(&mut self, c: &CommitDetail, labels: &HashMap<ObjectId, Vec<Label>>, theme: &Theme, cfg: &Config) {
+    fn build_meta(
+        &mut self,
+        c: &CommitDetail,
+        labels: &HashMap<ObjectId, Vec<Label>>,
+        theme: &Theme,
+        cfg: &Config,
+    ) {
         let _ = cfg;
         let dim = Style::default().fg(theme.dim);
         let fg = Style::default().fg(theme.fg);
@@ -397,7 +411,10 @@ impl Detail {
             None,
         );
         let body: Vec<String> = msg_lines.map(str::to_string).collect();
-        let body_start = body.iter().position(|l| !l.trim().is_empty()).unwrap_or(body.len());
+        let body_start = body
+            .iter()
+            .position(|l| !l.trim().is_empty())
+            .unwrap_or(body.len());
         if body_start < body.len() {
             push(Line::default(), None);
             for l in &body[body_start..] {
@@ -414,16 +431,27 @@ impl Detail {
                     LabelKind::Remote => theme.badge_remote,
                     LabelKind::Tag => theme.badge_tag,
                 };
-                spans.push(Span::styled(format!(" {} ", l.name), Style::default().bg(bg).fg(theme.badge_fg)));
+                spans.push(Span::styled(
+                    format!(" {} ", l.name),
+                    Style::default().bg(bg).fg(theme.badge_fg),
+                ));
                 spans.push(Span::raw(" "));
             }
             push(Line::from(spans), None);
         }
         let person = |p: &crate::git::commit::Person| {
-            format!("{} <{}>  {}", p.name, p.email, format_date(p.time, p.offset))
+            format!(
+                "{} <{}>  {}",
+                p.name,
+                p.email,
+                format_date(p.time, p.offset)
+            )
         };
         push(
-            Line::from(vec![Span::styled("Author     ", dim), Span::styled(person(&c.author), fg)]),
+            Line::from(vec![
+                Span::styled("Author     ", dim),
+                Span::styled(person(&c.author), fg),
+            ]),
             None,
         );
         if c.committer.name != c.author.name
@@ -431,7 +459,10 @@ impl Detail {
             || c.committer.time != c.author.time
         {
             push(
-                Line::from(vec![Span::styled("Committer  ", dim), Span::styled(person(&c.committer), fg)]),
+                Line::from(vec![
+                    Span::styled("Committer  ", dim),
+                    Span::styled(person(&c.committer), fg),
+                ]),
                 None,
             );
         }
@@ -446,7 +477,12 @@ impl Detail {
             push(
                 Line::from(vec![
                     Span::styled(if i == 0 { "Parents    " } else { "           " }, dim),
-                    Span::styled(p.to_string(), Style::default().fg(theme.accent).add_modifier(Modifier::UNDERLINED)),
+                    Span::styled(
+                        p.to_string(),
+                        Style::default()
+                            .fg(theme.accent)
+                            .add_modifier(Modifier::UNDERLINED),
+                    ),
                 ]),
                 Some(Cmd::JumpTo(*p)),
             );
@@ -461,7 +497,11 @@ impl Detail {
             Line::from(vec![
                 Span::styled("Changes    ", dim),
                 Span::styled(
-                    format!("{} file{}", c.files.len(), if c.files.len() == 1 { "" } else { "s" }),
+                    format!(
+                        "{} file{}",
+                        c.files.len(),
+                        if c.files.len() == 1 { "" } else { "s" }
+                    ),
                     fg,
                 ),
                 Span::raw("  "),
@@ -478,9 +518,7 @@ impl Detail {
         let many = files.len() > 40;
         for (fi, f) in files.iter().enumerate() {
             let key = (sec, f.path().to_string());
-            if self.seen.insert(key.clone())
-                && (f.line_count() > 400 || (many && !staging))
-            {
+            if self.seen.insert(key.clone()) && (f.line_count() > 400 || (many && !staging)) {
                 self.collapsed.insert(key.clone());
             }
             self.rows.push(Row::File { sec, file: fi });
@@ -503,19 +541,32 @@ impl Detail {
                 None
             };
             if let Some(text) = notice {
-                self.rows.push(Row::Notice { sec, file: fi, text });
+                self.rows.push(Row::Notice {
+                    sec,
+                    file: fi,
+                    text,
+                });
                 continue;
             }
             self.marks
                 .entry((sec, fi))
                 .or_insert_with(|| Arc::new(f.hunks.iter().map(hunk_marks).collect()));
             for (hi, h) in f.hunks.iter().enumerate() {
-                self.rows.push(Row::Hunk { sec, file: fi, hunk: hi });
+                self.rows.push(Row::Hunk {
+                    sec,
+                    file: fi,
+                    hunk: hi,
+                });
                 if split {
                     push_split_rows(&mut self.rows, sec, fi, hi, &h.lines);
                 } else {
                     for li in 0..h.lines.len() {
-                        self.rows.push(Row::Line { sec, file: fi, hunk: hi, line: li });
+                        self.rows.push(Row::Line {
+                            sec,
+                            file: fi,
+                            hunk: hi,
+                            line: li,
+                        });
                     }
                 }
             }
@@ -545,12 +596,23 @@ impl Detail {
         let mut out = Vec::new();
         for row in self.rows.get(lo..=hi)? {
             match *row {
-                Row::Line { sec: s, file: fl, hunk, line } if s == sec && fl == file => {
+                Row::Line {
+                    sec: s,
+                    file: fl,
+                    hunk,
+                    line,
+                } if s == sec && fl == file => {
                     if changed(hunk, line) {
                         out.push((hunk, line));
                     }
                 }
-                Row::Split { sec: s, file: fl, hunk, left, right } if s == sec && fl == file => {
+                Row::Split {
+                    sec: s,
+                    file: fl,
+                    hunk,
+                    left,
+                    right,
+                } if s == sec && fl == file => {
                     for l in [left, right].into_iter().flatten() {
                         if changed(hunk, l) && !out.contains(&(hunk, l)) {
                             out.push((hunk, l));
@@ -560,12 +622,19 @@ impl Detail {
                 _ => {}
             }
         }
-        if out.is_empty() { None } else { Some((sec, file, out)) }
+        if out.is_empty() {
+            None
+        } else {
+            Some((sec, file, out))
+        }
     }
 
     /// The piece of the diff that "stage" or "discard" applies to, based on
     /// the cursor and the line selection.
-    pub fn unit_at_cursor<'a>(&self, files_of: impl Fn(Section) -> &'a [Arc<FileDiff>]) -> Option<Unit> {
+    pub fn unit_at_cursor<'a>(
+        &self,
+        files_of: impl Fn(Section) -> &'a [Arc<FileDiff>],
+    ) -> Option<Unit> {
         let row = self.rows.get(self.cursor)?;
         if self.anchor.is_some()
             && let Some((s, f, lines)) = self.selected_lines(&files_of)
@@ -575,9 +644,16 @@ impl Detail {
         let file = |sec: Section, i: usize| files_of(sec).get(i).cloned();
         Some(match *row {
             Row::Section(s) => Unit::Section(s),
-            Row::File { sec, file: i } | Row::Notice { sec, file: i, .. } => Unit::File(sec, file(sec, i)?.path().to_string()),
+            Row::File { sec, file: i } | Row::Notice { sec, file: i, .. } => {
+                Unit::File(sec, file(sec, i)?.path().to_string())
+            }
             Row::Hunk { sec, file: i, hunk } => Unit::Hunk(sec, file(sec, i)?, hunk),
-            Row::Line { sec, file: i, hunk, line } => {
+            Row::Line {
+                sec,
+                file: i,
+                hunk,
+                line,
+            } => {
                 let f = file(sec, i)?;
                 let kind = f.hunks.get(hunk)?.lines.get(line)?.kind;
                 if kind == LineKind::Context {
@@ -586,7 +662,13 @@ impl Detail {
                     Unit::Lines(sec, f, vec![(hunk, line)])
                 }
             }
-            Row::Split { sec, file: i, hunk, left, right } => {
+            Row::Split {
+                sec,
+                file: i,
+                hunk,
+                left,
+                right,
+            } => {
                 let f = file(sec, i)?;
                 let h = f.hunks.get(hunk)?;
                 let lines: Vec<(usize, usize)> = [left, right]
@@ -633,15 +715,19 @@ fn row_key(rows: &[Row], i: usize, paths: &HashMap<Section, Vec<String>>) -> Row
             RowKey::File(*sec, path(*sec, *file))
         }
         Some(Row::Hunk { sec, file, hunk }) => RowKey::Hunk(*sec, path(*sec, *file), *hunk),
-        Some(Row::Line { sec, file, hunk, line }) => {
-            RowKey::Line(*sec, path(*sec, *file), *hunk, *line)
-        }
-        Some(Row::Split { sec, file, hunk, left, right }) => RowKey::Line(
-            *sec,
-            path(*sec, *file),
-            *hunk,
-            right.or(*left).unwrap_or(0),
-        ),
+        Some(Row::Line {
+            sec,
+            file,
+            hunk,
+            line,
+        }) => RowKey::Line(*sec, path(*sec, *file), *hunk, *line),
+        Some(Row::Split {
+            sec,
+            file,
+            hunk,
+            left,
+            right,
+        }) => RowKey::Line(*sec, path(*sec, *file), *hunk, right.or(*left).unwrap_or(0)),
         _ => RowKey::Other,
     }
 }
@@ -656,7 +742,13 @@ fn push_split_rows(
     let mut i = 0;
     while i < lines.len() {
         if lines[i].kind == LineKind::Context {
-            rows.push(Row::Split { sec, file, hunk, left: Some(i), right: Some(i) });
+            rows.push(Row::Split {
+                sec,
+                file,
+                hunk,
+                left: Some(i),
+                right: Some(i),
+            });
             i += 1;
             continue;
         }

@@ -31,13 +31,22 @@ impl Workdir {
         let status = Status::load(git).await?;
         let u = format!("-U{context}");
         let unstaged_diff = if status.unstaged().next().is_some() {
-            let out = git.read(&["diff", "--no-ext-diff", "--no-color", "--no-renames", &u]).await?;
+            let out = git
+                .read(&["diff", "--no-ext-diff", "--no-color", "--no-renames", &u])
+                .await?;
             Some(out.text())
         } else {
             None
         };
         let staged_diff = if status.has_staged() {
-            let mut args = vec!["diff", "--cached", "--no-ext-diff", "--no-color", "--no-renames", &u];
+            let mut args = vec![
+                "diff",
+                "--cached",
+                "--no-ext-diff",
+                "--no-color",
+                "--no-renames",
+                &u,
+            ];
             if status.head_oid.is_none() {
                 // There is no HEAD to compare against yet.
                 args.push("--root");
@@ -68,12 +77,17 @@ impl Workdir {
         // Parsing and diffing can take a while for big changes, so do it
         // off the async threads.
         let mut wd = crate::util::blocking(move || {
-            let mut unstaged = unstaged_diff.map_or_else(Vec::new, |d| parse_unified(&d, line_limit));
+            let mut unstaged =
+                unstaged_diff.map_or_else(Vec::new, |d| parse_unified(&d, line_limit));
             let staged = staged_diff.map_or_else(Vec::new, |d| parse_unified(&d, line_limit));
 
             let mut conflicted = Vec::new();
             for (path, data) in conflicted_files {
-                let mut f = FileDiff::new(FileStatus::Conflicted, Some(path.clone()), Some(path.clone()));
+                let mut f = FileDiff::new(
+                    FileStatus::Conflicted,
+                    Some(path.clone()),
+                    Some(path.clone()),
+                );
                 // `git diff` lists conflicted files as "unmerged" with a
                 // combined diff. We show them separately, so drop them from
                 // `unstaged`.
@@ -143,7 +157,10 @@ struct FileModes<'a> {
 
 impl<'a> FileModes<'a> {
     fn new(git: &'a Git) -> Self {
-        FileModes { git, trust_executable: None }
+        FileModes {
+            git,
+            trust_executable: None,
+        }
     }
 
     async fn regular(&mut self, meta: &std::fs::Metadata) -> &'static str {
@@ -230,7 +247,12 @@ pub async fn load_full_untracked(git: &Git, path: &str, context: u32) -> (FileDi
 }
 
 /// Load the diff of `file` again without the size limit, for "show anyway".
-pub async fn load_full_diff(git: &Git, file: &FileDiff, staged: bool, context: u32) -> Result<Option<FileDiff>> {
+pub async fn load_full_diff(
+    git: &Git,
+    file: &FileDiff,
+    staged: bool,
+    context: u32,
+) -> Result<Option<FileDiff>> {
     let u = format!("-U{context}");
     let mut args = vec!["diff", "--no-ext-diff", "--no-color", "--no-renames", &u];
     if staged {

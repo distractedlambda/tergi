@@ -32,7 +32,11 @@ pub async fn apply_lines(
     // Without context lines, `git apply` can't check where a hunk belongs,
     // so it refuses the patch unless we say that this is expected. A diff
     // has no context lines at all when `context_lines` is 0.
-    let has_context = file.hunks.iter().flat_map(|h| &h.lines).any(|l| l.kind == LineKind::Context);
+    let has_context = file
+        .hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .any(|l| l.kind == LineKind::Context);
     if !has_context {
         args.push("--unidiff-zero");
     }
@@ -48,7 +52,8 @@ pub async fn apply_lines(
             stdin: Some(patch.into_bytes()),
             ..Default::default()
         },
-    ).await?;
+    )
+    .await?;
     Ok(())
 }
 
@@ -107,7 +112,10 @@ pub async fn unstage_all(git: &Git, has_head: bool) -> Result<()> {
 
 /// The branch that is checked out, or `None` when HEAD is detached.
 pub async fn head_branch(git: &Git) -> Option<String> {
-    let name = git.read_text(&["symbolic-ref", "--quiet", "--short", "HEAD"]).await.ok()?;
+    let name = git
+        .read_text(&["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .await
+        .ok()?;
     Some(name.trim().to_string())
 }
 
@@ -129,23 +137,32 @@ pub async fn commit(git: &Git, message: &str, amend: bool) -> Result<String> {
     if amend {
         args.push("--amend");
     }
-    let out = git.run_opts(
-        &args,
-        &RunOpts {
-            stdin: Some(message.as_bytes().to_vec()),
-            ..Default::default()
-        },
-    ).await?;
+    let out = git
+        .run_opts(
+            &args,
+            &RunOpts {
+                stdin: Some(message.as_bytes().to_vec()),
+                ..Default::default()
+            },
+        )
+        .await?;
     // Hooks can print anything, but git's own summary line looks like
     // "[main 1147b8e] Subject", and it's the one worth showing.
     let text = out.text();
-    let summary = text.lines().find(|l| l.starts_with('[')).unwrap_or("Committed");
+    let summary = text
+        .lines()
+        .find(|l| l.starts_with('['))
+        .unwrap_or("Committed");
     Ok(summary.to_string())
 }
 
 /// The full message of a commit, for amending and rewording.
 pub async fn commit_message(git: &Git, rev: &str) -> Result<String> {
-    Ok(git.read_text(&["log", "-1", "--format=%B", rev]).await?.trim_end().to_string())
+    Ok(git
+        .read_text(&["log", "-1", "--format=%B", rev])
+        .await?
+        .trim_end()
+        .to_string())
 }
 
 pub async fn checkout(git: &Git, target: &str) -> Result<()> {
@@ -155,7 +172,9 @@ pub async fn checkout(git: &Git, target: &str) -> Result<()> {
 
 /// Check out a remote branch, creating or reusing a local tracking branch.
 pub async fn checkout_remote(git: &Git, remote_branch: &str, local_exists: bool) -> Result<()> {
-    let local = remote_branch.split_once('/').map_or(remote_branch, |(_, b)| b);
+    let local = remote_branch
+        .split_once('/')
+        .map_or(remote_branch, |(_, b)| b);
     if local_exists {
         git.run(&["checkout", local]).await?;
     } else {
@@ -179,7 +198,8 @@ pub async fn rename_branch(git: &Git, old: &str, new: &str) -> Result<()> {
 }
 
 pub async fn delete_branch(git: &Git, name: &str, force: bool) -> Result<()> {
-    git.run(&["branch", if force { "-D" } else { "-d" }, name]).await?;
+    git.run(&["branch", if force { "-D" } else { "-d" }, name])
+        .await?;
     Ok(())
 }
 
@@ -189,7 +209,8 @@ pub async fn delete_remote_branch(git: &Git, remote: &str, name: &str) -> Result
 }
 
 pub async fn set_upstream(git: &Git, branch: &str, upstream: &str) -> Result<()> {
-    git.run(&["branch", "--set-upstream-to", upstream, branch]).await?;
+    git.run(&["branch", "--set-upstream-to", upstream, branch])
+        .await?;
     Ok(())
 }
 
@@ -238,7 +259,12 @@ pub async fn reset(git: &Git, rev: &str, mode: ResetMode) -> Result<()> {
     Ok(())
 }
 
-pub async fn stash_push(git: &Git, message: &str, include_untracked: bool, staged_only: bool) -> Result<()> {
+pub async fn stash_push(
+    git: &Git,
+    message: &str,
+    include_untracked: bool,
+    staged_only: bool,
+) -> Result<()> {
     let mut args = vec!["stash", "push"];
     if include_untracked {
         args.push("--include-untracked");
@@ -254,12 +280,18 @@ pub async fn stash_push(git: &Git, message: &str, include_untracked: bool, stage
 }
 
 pub async fn stash_apply(git: &Git, stash: ObjectId, pop: bool) -> Result<()> {
-    git.run(&["stash", if pop { "pop" } else { "apply" }, &stash_ref(git, stash).await?]).await?;
+    git.run(&[
+        "stash",
+        if pop { "pop" } else { "apply" },
+        &stash_ref(git, stash).await?,
+    ])
+    .await?;
     Ok(())
 }
 
 pub async fn stash_drop(git: &Git, stash: ObjectId) -> Result<()> {
-    git.run(&["stash", "drop", &stash_ref(git, stash).await?]).await?;
+    git.run(&["stash", "drop", &stash_ref(git, stash).await?])
+        .await?;
     Ok(())
 }
 
@@ -269,7 +301,10 @@ pub async fn stash_drop(git: &Git, stash: ObjectId) -> Result<()> {
 /// names, not a commit id.
 async fn stash_ref(git: &Git, stash: ObjectId) -> Result<String> {
     let out = git.read_text(&["stash", "list", "--format=%H"]).await?;
-    match out.lines().position(|l| ObjectId::from_hex(l.as_bytes()).ok() == Some(stash)) {
+    match out
+        .lines()
+        .position(|l| ObjectId::from_hex(l.as_bytes()).ok() == Some(stash))
+    {
         Some(i) => Ok(format!("stash@{{{i}}}")),
         None => bail!("The stash no longer exists."),
     }
@@ -281,14 +316,22 @@ pub async fn take_side(git: &Git, path: &str, ours: bool) -> Result<()> {
     // Unmerged entries are listed as "<mode> <id> <stage>\t<path>", where
     // stage 2 is our version and stage 3 is theirs. A side that deleted the
     // file has no entry, and taking that side means deleting the file.
-    let entries = git.read_text(&["ls-files", "--unmerged", "-z", "--", &spec]).await?;
+    let entries = git
+        .read_text(&["ls-files", "--unmerged", "-z", "--", &spec])
+        .await?;
     let stage = if ours { "2" } else { "3" };
     let has_side = entries
         .split('\0')
         .filter_map(|e| e.split_once('\t'))
         .any(|(meta, _)| meta.split(' ').nth(2) == Some(stage));
     if has_side {
-        git.run(&["checkout", if ours { "--ours" } else { "--theirs" }, "--", &spec]).await?;
+        git.run(&[
+            "checkout",
+            if ours { "--ours" } else { "--theirs" },
+            "--",
+            &spec,
+        ])
+        .await?;
         git.run(&["add", "--", &spec]).await?;
     } else {
         git.run(&["rm", "-q", "--", &spec]).await?;
@@ -297,6 +340,7 @@ pub async fn take_side(git: &Git, path: &str, ours: bool) -> Result<()> {
 }
 
 pub async fn is_ancestor(git: &Git, ancestor: &str, descendant: &str) -> bool {
-    git.read(&["merge-base", "--is-ancestor", ancestor, descendant]).await
+    git.read(&["merge-base", "--is-ancestor", ancestor, descendant])
+        .await
         .is_ok()
 }

@@ -7,11 +7,11 @@
 
 use std::sync::Arc;
 
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use ratatui::style::Color;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::Theme;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use two_face::theme::EmbeddedThemeName;
 
 use crate::git::diff::{Hunk, LineKind};
@@ -87,7 +87,9 @@ async fn worker(
 ) {
     // Loading the syntaxes takes a while, so do it once, off the async
     // threads. The theme set only loads a theme the first time it's used.
-    let loaded = crate::util::blocking(|| (two_face::syntax::extra_newlines(), two_face::theme::extra())).await;
+    let loaded =
+        crate::util::blocking(|| (two_face::syntax::extra_newlines(), two_face::theme::extra()))
+            .await;
     let loaded = Arc::new(loaded);
     while let Some(msg) = rx.recv().await {
         let job = match msg {
@@ -166,17 +168,39 @@ fn highlight_lines<'a>(
     out
 }
 
-fn highlight_job(ss: &SyntaxSet, syntax: &SyntaxReference, theme: &Theme, job: &Job) -> FileHighlight {
+fn highlight_job(
+    ss: &SyntaxSet,
+    syntax: &SyntaxReference,
+    theme: &Theme,
+    job: &Job,
+) -> FileHighlight {
     let full = |text: &Option<Arc<str>>, max_line: usize| -> Option<Vec<LineSpans>> {
         let t = text.as_ref()?;
         let count = t.lines().count();
         if count > FULL_FILE_LINES {
             return None;
         }
-        Some(highlight_lines(ss, syntax, theme, t.split_inclusive('\n').take(max_line)))
+        Some(highlight_lines(
+            ss,
+            syntax,
+            theme,
+            t.split_inclusive('\n').take(max_line),
+        ))
     };
-    let max_old = job.hunks.iter().flat_map(|h| &h.lines).filter_map(|l| l.old_no).max().unwrap_or(0) as usize;
-    let max_new = job.hunks.iter().flat_map(|h| &h.lines).filter_map(|l| l.new_no).max().unwrap_or(0) as usize;
+    let max_old = job
+        .hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .filter_map(|l| l.old_no)
+        .max()
+        .unwrap_or(0) as usize;
+    let max_new = job
+        .hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .filter_map(|l| l.new_no)
+        .max()
+        .unwrap_or(0) as usize;
     let old_full = full(&job.old, max_old);
     let new_full = full(&job.new, max_new);
 

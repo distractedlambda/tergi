@@ -193,8 +193,12 @@ pub fn diff_trees(
         f.old_mode = old.map(|o| o.1.kind().as_octal_str().to_string());
         f.new_mode = new.map(|n| n.1.kind().as_octal_str().to_string());
 
-        let old_text = old.map(|(id, mode)| blob_text(repo, id, mode)).transpose()?;
-        let new_text = new.map(|(id, mode)| blob_text(repo, id, mode)).transpose()?;
+        let old_text = old
+            .map(|(id, mode)| blob_text(repo, id, mode))
+            .transpose()?;
+        let new_text = new
+            .map(|(id, mode)| blob_text(repo, id, mode))
+            .transpose()?;
         let binary = old_text.as_ref().is_some_and(|t| t.is_none())
             || new_text.as_ref().is_some_and(|t| t.is_none());
         let old_text = old_text.flatten();
@@ -282,7 +286,12 @@ pub fn diff_texts(old: &str, new: &str, context: u32) -> Vec<Hunk> {
         let mut lines = Vec::new();
         let mut o = old_begin;
         let mut n = new_begin;
-        let push = |lines: &mut Vec<DiffLine>, kind, text: &str, o: Option<usize>, n: Option<usize>, last: bool| {
+        let push = |lines: &mut Vec<DiffLine>,
+                    kind,
+                    text: &str,
+                    o: Option<usize>,
+                    n: Option<usize>,
+                    last: bool| {
             let no_eol = last && !text.ends_with('\n');
             lines.push(DiffLine {
                 kind,
@@ -294,32 +303,68 @@ pub fn diff_texts(old: &str, new: &str, context: u32) -> Vec<Hunk> {
         };
         for c in &changes[i..=j] {
             while o < c.before.start as usize {
-                push(&mut lines, LineKind::Context, old_lines[o], Some(o), Some(n), o + 1 == old_lines.len());
+                push(
+                    &mut lines,
+                    LineKind::Context,
+                    old_lines[o],
+                    Some(o),
+                    Some(n),
+                    o + 1 == old_lines.len(),
+                );
                 o += 1;
                 n += 1;
             }
             for k in c.before.clone() {
                 let k = k as usize;
-                push(&mut lines, LineKind::Del, old_lines[k], Some(k), None, k + 1 == old_lines.len());
+                push(
+                    &mut lines,
+                    LineKind::Del,
+                    old_lines[k],
+                    Some(k),
+                    None,
+                    k + 1 == old_lines.len(),
+                );
             }
             for k in c.after.clone() {
                 let k = k as usize;
-                push(&mut lines, LineKind::Add, new_lines[k], None, Some(k), k + 1 == new_lines.len());
+                push(
+                    &mut lines,
+                    LineKind::Add,
+                    new_lines[k],
+                    None,
+                    Some(k),
+                    k + 1 == new_lines.len(),
+                );
             }
             o = c.before.end as usize;
             n = c.after.end as usize;
         }
         while o < old_end {
-            push(&mut lines, LineKind::Context, old_lines[o], Some(o), Some(n), o + 1 == old_lines.len());
+            push(
+                &mut lines,
+                LineKind::Context,
+                old_lines[o],
+                Some(o),
+                Some(n),
+                o + 1 == old_lines.len(),
+            );
             o += 1;
             n += 1;
         }
         let old_len = (o - old_begin) as u32;
         let new_len = (n - new_begin) as u32;
         hunks.push(Hunk {
-            old_start: if old_len == 0 { old_begin as u32 } else { old_begin as u32 + 1 },
+            old_start: if old_len == 0 {
+                old_begin as u32
+            } else {
+                old_begin as u32 + 1
+            },
             old_len,
-            new_start: if new_len == 0 { new_begin as u32 } else { new_begin as u32 + 1 },
+            new_start: if new_len == 0 {
+                new_begin as u32
+            } else {
+                new_begin as u32 + 1
+            },
             new_len,
             section: String::new(),
             lines,
@@ -383,7 +428,18 @@ mod tests {
     /// the hunk headers and not by what lines look like.
     fn text() -> impl Strategy<Value = String> {
         let line = prop::sample::select(vec![
-            "a", "b", "c", "", " ", "x\r", "+a", "-a", "\\ b", "@@ -1 +1 @@", "diff --git a/f b/f", "--- a/f",
+            "a",
+            "b",
+            "c",
+            "",
+            " ",
+            "x\r",
+            "+a",
+            "-a",
+            "\\ b",
+            "@@ -1 +1 @@",
+            "diff --git a/f b/f",
+            "--- a/f",
         ]);
         (prop::collection::vec(line, 0..30), any::<bool>()).prop_map(|(lines, eol)| {
             let mut s = lines.join("\n");
@@ -400,7 +456,11 @@ mod tests {
         let mut out = String::new();
         let mut pos = 0;
         for h in hunks {
-            let first = if h.old_len == 0 { h.old_start } else { h.old_start - 1 } as usize;
+            let first = if h.old_len == 0 {
+                h.old_start
+            } else {
+                h.old_start - 1
+            } as usize;
             assert!(first >= pos, "hunks overlap or are out of order");
             out.extend(old[pos..first].iter().copied());
             pos = first;

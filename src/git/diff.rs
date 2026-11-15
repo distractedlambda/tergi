@@ -253,7 +253,10 @@ pub fn parse_unified(text: &str, line_limit: usize) -> Vec<FileDiff> {
             files.push(FileDiff::new(FileStatus::Modified, a, b));
             file_lines = 0;
             combined = false;
-        } else if let Some(rest) = line.strip_prefix("diff --cc ").or(line.strip_prefix("diff --combined ")) {
+        } else if let Some(rest) = line
+            .strip_prefix("diff --cc ")
+            .or(line.strip_prefix("diff --combined "))
+        {
             let p = unquote(rest);
             let mut f = FileDiff::new(FileStatus::Conflicted, Some(p.clone()), Some(p));
             f.too_large = true;

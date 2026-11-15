@@ -28,33 +28,51 @@ fn four() -> (Scratch, Vec<String>) {
 #[tokio::test]
 async fn reword_head_and_older() {
     let (s, ids) = four();
-    rebase::reword(&s.git, &exe(), id(&ids[3]), "FOUR").await.expect("reword head");
+    rebase::reword(&s.git, &exe(), id(&ids[3]), "FOUR")
+        .await
+        .expect("reword head");
     assert_eq!(s.log(), ["FOUR", "three", "two", "one"]);
-    rebase::reword(&s.git, &exe(), id(&ids[1]), "TWO\n\nbody").await.expect("reword");
+    rebase::reword(&s.git, &exe(), id(&ids[1]), "TWO\n\nbody")
+        .await
+        .expect("reword");
     assert_eq!(s.log(), ["FOUR", "three", "TWO", "one"]);
-    assert_eq!(s.sh(&["log", "-1", "--format=%B", "HEAD~2"]).trim(), "TWO\n\nbody");
+    assert_eq!(
+        s.sh(&["log", "-1", "--format=%B", "HEAD~2"]).trim(),
+        "TWO\n\nbody"
+    );
 }
 
 #[tokio::test]
 async fn reword_keeps_lines_starting_with_hash() {
     let (s, ids) = four();
-    rebase::reword(&s.git, &exe(), id(&ids[3]), "#4 four\n\n# not a comment").await.expect("reword head");
-    rebase::reword(&s.git, &exe(), id(&ids[1]), "#2 two\n\n# not a comment").await.expect("reword");
+    rebase::reword(&s.git, &exe(), id(&ids[3]), "#4 four\n\n# not a comment")
+        .await
+        .expect("reword head");
+    rebase::reword(&s.git, &exe(), id(&ids[1]), "#2 two\n\n# not a comment")
+        .await
+        .expect("reword");
     assert_eq!(s.log(), ["#4 four", "three", "#2 two", "one"]);
-    assert_eq!(s.sh(&["log", "-1", "--format=%B", "HEAD~2"]).trim(), "#2 two\n\n# not a comment");
+    assert_eq!(
+        s.sh(&["log", "-1", "--format=%B", "HEAD~2"]).trim(),
+        "#2 two\n\n# not a comment"
+    );
 }
 
 #[tokio::test]
 async fn reword_root() {
     let (s, ids) = four();
-    rebase::reword(&s.git, &exe(), id(&ids[0]), "ONE").await.expect("reword root");
+    rebase::reword(&s.git, &exe(), id(&ids[0]), "ONE")
+        .await
+        .expect("reword root");
     assert_eq!(s.log(), ["four", "three", "two", "ONE"]);
 }
 
 #[tokio::test]
 async fn drop_commit() {
     let (s, ids) = four();
-    let r = rebase::single(&s.git, &exe(), id(&ids[1]), Action::Drop).await.expect("drop");
+    let r = rebase::single(&s.git, &exe(), id(&ids[1]), Action::Drop)
+        .await
+        .expect("drop");
     assert_eq!(r, Outcome::Done);
     assert_eq!(s.log(), ["four", "three", "one"]);
     assert!(!s.file("two.txt").exists());
@@ -63,32 +81,50 @@ async fn drop_commit() {
 #[tokio::test]
 async fn fixup_and_squash_into_parent() {
     let (s, ids) = four();
-    rebase::single(&s.git, &exe(), id(&ids[2]), Action::Fixup).await.expect("fixup");
+    rebase::single(&s.git, &exe(), id(&ids[2]), Action::Fixup)
+        .await
+        .expect("fixup");
     assert_eq!(s.log(), ["four", "two", "one"]);
     let files = s.sh(&["show", "--name-only", "--format=", "HEAD~1"]);
     assert!(files.contains("three.txt") && files.contains("two.txt"));
 
     let head = s.sh(&["rev-parse", "HEAD"]);
-    rebase::single(&s.git, &exe(), id(head.trim()), Action::Squash("two and four".into())).await.expect("squash");
+    rebase::single(
+        &s.git,
+        &exe(),
+        id(head.trim()),
+        Action::Squash("two and four".into()),
+    )
+    .await
+    .expect("squash");
     assert_eq!(s.log(), ["two and four", "one"]);
 }
 
 #[tokio::test]
 async fn move_commits() {
     let (s, ids) = four();
-    rebase::move_commit(&s.git, &exe(), id(&ids[1]), true).await.expect("move up");
+    rebase::move_commit(&s.git, &exe(), id(&ids[1]), true)
+        .await
+        .expect("move up");
     assert_eq!(s.log(), ["four", "two", "three", "one"]);
     let three = s.sh(&["rev-parse", "HEAD~2"]);
-    rebase::move_commit(&s.git, &exe(), id(three.trim()), false).await.expect("move down");
+    rebase::move_commit(&s.git, &exe(), id(three.trim()), false)
+        .await
+        .expect("move down");
     assert_eq!(s.log(), ["four", "two", "one", "three"]);
 }
 
 #[tokio::test]
 async fn edit_stops_and_continues() {
     let (s, ids) = four();
-    let r = rebase::single(&s.git, &exe(), id(&ids[1]), Action::Edit).await.expect("edit");
+    let r = rebase::single(&s.git, &exe(), id(&ids[1]), Action::Edit)
+        .await
+        .expect("edit");
     assert_eq!(r, Outcome::Stopped);
-    assert!(matches!(rebase::state(&s.git).await, RepoState::Rebase { .. }));
+    assert!(matches!(
+        rebase::state(&s.git).await,
+        RepoState::Rebase { .. }
+    ));
     s.write("two.txt", "two changed\n");
     s.sh(&["commit", "-q", "-a", "--amend", "--no-edit"]);
     let r = rebase::continue_rebase(&s.git).await.expect("continue");
@@ -116,7 +152,9 @@ async fn planner_style_plan() {
 async fn autostash_keeps_local_changes() {
     let (s, ids) = four();
     s.write("one.txt", "dirty\n");
-    rebase::single(&s.git, &exe(), id(&ids[2]), Action::Drop).await.expect("drop");
+    rebase::single(&s.git, &exe(), id(&ids[2]), Action::Drop)
+        .await
+        .expect("drop");
     assert_eq!(s.log(), ["four", "two", "one"]);
     assert_eq!(s.read("one.txt"), "dirty\n");
 }
@@ -133,7 +171,9 @@ async fn conflict_stops_and_aborts() {
     // Dropping "b" makes "c" conflict.
     let _ = a;
     let b = s.sh(&["rev-parse", "HEAD~1"]);
-    let r = rebase::single(&s.git, &exe(), id(b.trim()), Action::Drop).await.expect("drop");
+    let r = rebase::single(&s.git, &exe(), id(b.trim()), Action::Drop)
+        .await
+        .expect("drop");
     assert_eq!(r, Outcome::Stopped);
     let st = rebase::state(&s.git).await;
     assert!(matches!(st, RepoState::Rebase { .. }));
@@ -146,7 +186,9 @@ async fn fixup_staged_changes() {
     let (s, ids) = four();
     s.write("two.txt", "two fixed\n");
     s.sh(&["add", "two.txt"]);
-    rebase::fixup_staged_into(&s.git, id(&ids[1])).await.expect("fixup staged");
+    rebase::fixup_staged_into(&s.git, id(&ids[1]))
+        .await
+        .expect("fixup staged");
     assert_eq!(s.log(), ["four", "three", "two", "one"]);
     assert_eq!(s.sh(&["show", "HEAD~2:two.txt"]), "two fixed\n");
 }
@@ -165,23 +207,37 @@ async fn refuses_merges_in_range() {
     s.sh(&["merge", "-q", "--no-edit", "side"]);
     let main_commit = s.sh(&["rev-parse", "HEAD^1"]);
     let _ = base;
-    assert!(rebase::plan_from(&s.git, id(main_commit.trim())).await.is_err());
+    assert!(
+        rebase::plan_from(&s.git, id(main_commit.trim()))
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
 async fn refuses_to_start_during_another_rebase() {
     let (s, ids) = four();
-    let r = rebase::single(&s.git, &exe(), id(&ids[1]), Action::Edit).await.expect("edit");
+    let r = rebase::single(&s.git, &exe(), id(&ids[1]), Action::Edit)
+        .await
+        .expect("edit");
     assert_eq!(r, Outcome::Stopped);
     let head = s.sh(&["rev-parse", "HEAD"]);
 
     // A second rebase can't start, and saying it "stopped" would be wrong.
-    assert!(rebase::single(&s.git, &exe(), id(&ids[0]), Action::Edit).await.is_err());
+    assert!(
+        rebase::single(&s.git, &exe(), id(&ids[0]), Action::Edit)
+            .await
+            .is_err()
+    );
     assert!(rebase::rebase_onto(&s.git, "main").await.is_err());
     // This one would otherwise leave a fixup commit behind.
     s.write("one.txt", "one more\n");
     s.sh(&["add", "-A"]);
-    assert!(rebase::fixup_staged_into(&s.git, id(&ids[0])).await.is_err());
+    assert!(
+        rebase::fixup_staged_into(&s.git, id(&ids[0]))
+            .await
+            .is_err()
+    );
     assert_eq!(s.sh(&["rev-parse", "HEAD"]), head);
     assert_eq!(s.sh(&["diff", "--cached", "--name-only"]).trim(), "one.txt");
 }

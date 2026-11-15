@@ -12,12 +12,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use gix::ObjectId;
+use ratatui::layout::Rect;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
-use gix::ObjectId;
-use ratatui::layout::Rect;
 
 use crate::config::Config;
 use crate::git::cli::Git;
@@ -94,7 +94,10 @@ impl Repo {
             ("GIT_ASKPASS".into(), exe.clone()),
             ("SSH_ASKPASS".into(), exe),
             ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
-            (crate::askpass::SOCKET_ENV.into(), sock.to_string_lossy().into_owned()),
+            (
+                crate::askpass::SOCKET_ENV.into(),
+                sock.to_string_lossy().into_owned(),
+            ),
         ]
     }
 }
@@ -385,9 +388,10 @@ impl App {
         let theme = Theme::named(&cfg.theme).unwrap_or_default();
         let detail = Detail::default();
         let tx2 = tx.clone();
-        let (highlighter, highlight) = Highlighter::new(theme.syntax, detail.generation.clone(), move |k, h| {
-            let _ = tx2.send(AppEvent::Highlight(k, h));
-        });
+        let (highlighter, highlight) =
+            Highlighter::new(theme.syntax, detail.generation.clone(), move |k, h| {
+                let _ = tx2.send(AppEvent::Highlight(k, h));
+            });
         tasks.spawn_on(highlight, &rt);
         let repo = Arc::new(repo);
         let (detail_tx, detail_rx) = tokio::sync::watch::channel(None);
@@ -502,7 +506,9 @@ impl App {
     /// Start watching the config file, unless we already are. Its folder
     /// has to exist, so this is tried again after saving creates it.
     fn watch_config(&mut self) {
-        let Some(path) = &self.config_path else { return };
+        let Some(path) = &self.config_path else {
+            return;
+        };
         if self.config_watcher.is_some() || !path.parent().is_some_and(std::path::Path::is_dir) {
             return;
         }
@@ -514,7 +520,10 @@ impl App {
                 self.config_watcher = Some(w);
                 self.spawn(run);
             }
-            Err(e) => self.set_status(format!("Changes to the config file won't be picked up: {e:#}"), Level::Warn),
+            Err(e) => self.set_status(
+                format!("Changes to the config file won't be picked up: {e:#}"),
+                Level::Warn,
+            ),
         }
     }
 
@@ -643,7 +652,9 @@ impl App {
             AppEvent::Workdir(r) => {
                 match *r {
                     Ok(w) => self.on_workdir(w),
-                    Err(e) => self.set_status(format!("Reading status failed: {e:#}"), Level::Error),
+                    Err(e) => {
+                        self.set_status(format!("Reading status failed: {e:#}"), Level::Error);
+                    }
                 }
                 if self.workdir_load.finish() {
                     self.load_workdir();
@@ -707,11 +718,16 @@ impl App {
                 // A TOML error goes on to show where it is over several
                 // lines, which the status bar has no room for.
                 let first = e.lines().next().unwrap_or_default();
-                self.set_status(format!("Ignored the change to the config file: {first}"), Level::Warn);
+                self.set_status(
+                    format!("Ignored the change to the config file: {first}"),
+                    Level::Warn,
+                );
             }
             AppEvent::AskPass(prompt, reply) => {
                 let lower = prompt.to_lowercase();
-                let secret = lower.contains("password") || lower.contains("passphrase") || lower.contains("token");
+                let secret = lower.contains("password")
+                    || lower.contains("passphrase")
+                    || lower.contains("token");
                 let mut text = TextArea::new(false);
                 text.masked = secret;
                 self.overlays.push(cmd::Overlay::Input(cmd::InputBox {
@@ -728,7 +744,10 @@ impl App {
                         self.status = None;
                     }
                 }
-                if self.watch_degraded && self.busy.is_none() && self.last_poll.elapsed() > Duration::from_secs(3) {
+                if self.watch_degraded
+                    && self.busy.is_none()
+                    && self.last_poll.elapsed() > Duration::from_secs(3)
+                {
                     self.last_poll = Instant::now();
                     self.refresh(REFRESH_WORKDIR);
                 }
@@ -817,7 +836,10 @@ impl App {
 
     pub fn ensure_history_visible(&mut self) {
         let h = usize::from(self.areas.history.height.max(1));
-        let sel = self.history.current_row().min(self.history.row_count().saturating_sub(1));
+        let sel = self
+            .history
+            .current_row()
+            .min(self.history.row_count().saturating_sub(1));
         if sel < self.history.scroll {
             self.history.scroll = sel;
         } else if sel >= self.history.scroll + h {
@@ -860,7 +882,13 @@ impl App {
 
     pub fn rebuild_doc(&mut self) {
         let workdir = self.workdir.as_ref();
-        self.detail.rebuild(workdir, &self.labels, &self.theme, self.split_diff, &self.cfg);
+        self.detail.rebuild(
+            workdir,
+            &self.labels,
+            &self.theme,
+            self.split_diff,
+            &self.cfg,
+        );
     }
 
     /// Use a new config, and redo whatever depends on the settings that
@@ -889,7 +917,9 @@ impl App {
             return;
         }
         self.apply_config(cfg);
-        let Some(path) = self.config_path.clone() else { return };
+        let Some(path) = self.config_path.clone() else {
+            return;
+        };
         // Unlike waiting for git, writing one small file is quick enough to
         // do while handling an event. Doing it here also means the file
         // always matches `cfg` by the time the watcher reads it.
@@ -904,7 +934,9 @@ impl App {
         if self.theme.id == id {
             return;
         }
-        let Some(theme) = Theme::named(id) else { return };
+        let Some(theme) = Theme::named(id) else {
+            return;
+        };
         self.highlighter.set_theme(theme.syntax);
         self.theme = theme;
         self.detail.reset_highlights();
@@ -916,12 +948,21 @@ impl App {
     /// selection stays on the same ref, wherever its row ends up. If the
     /// ref is gone, the same row stays selected instead.
     pub fn rebuild_sidebar(&mut self, refs: Option<Refs>) {
-        let selected = self.sidebar.rows.get(self.sidebar.selected).and_then(|r| r.key(&self.refs));
+        let selected = self
+            .sidebar
+            .rows
+            .get(self.sidebar.selected)
+            .and_then(|r| r.key(&self.refs));
         if let Some(refs) = refs {
             self.refs = refs;
         }
         self.sidebar.rows = cmd::sidebar_rows(&self.refs, &self.sidebar.collapsed);
-        let row = selected.and_then(|k| self.sidebar.rows.iter().position(|r| r.key(&self.refs).as_ref() == Some(&k)));
+        let row = selected.and_then(|k| {
+            self.sidebar
+                .rows
+                .iter()
+                .position(|r| r.key(&self.refs).as_ref() == Some(&k))
+        });
         self.sidebar.selected = row
             .unwrap_or(self.sidebar.selected)
             .min(self.sidebar.rows.len().saturating_sub(1));
@@ -935,13 +976,20 @@ impl App {
     // ----- Operations -----
 
     /// Run an operation that changes the repository in the background.
-    pub fn spawn_op<F>(&mut self, label: impl Into<String>, after: After, f: impl FnOnce(Arc<Repo>, Progress) -> F)
-    where
+    pub fn spawn_op<F>(
+        &mut self,
+        label: impl Into<String>,
+        after: After,
+        f: impl FnOnce(Arc<Repo>, Progress) -> F,
+    ) where
         F: Future<Output = Result<String>> + Send + 'static,
     {
         let label = label.into();
         if let Some(b) = &self.busy {
-            self.set_status(format!("Please wait: {} is still running", b.label), Level::Warn);
+            self.set_status(
+                format!("Please wait: {} is still running", b.label),
+                Level::Warn,
+            );
             return;
         }
         self.busy = Some(Busy {
@@ -959,7 +1007,11 @@ impl App {
         let op = f(repo, progress);
         self.spawn(async move {
             let result = op.await;
-            let _ = tx.send(AppEvent::OpDone(OpResult { label, result, after }));
+            let _ = tx.send(AppEvent::OpDone(OpResult {
+                label,
+                result,
+                after,
+            }));
         });
     }
 
@@ -967,8 +1019,11 @@ impl App {
     /// result to `then` on the event loop. By the time `then` runs, the user
     /// may have moved on, so it has to check that what it changes is still
     /// there.
-    pub fn spawn_read<T, F>(&mut self, read: impl FnOnce(Arc<Repo>) -> F, then: impl FnOnce(&mut App, T) + Send + 'static)
-    where
+    pub fn spawn_read<T, F>(
+        &mut self,
+        read: impl FnOnce(Arc<Repo>) -> F,
+        then: impl FnOnce(&mut App, T) + Send + 'static,
+    ) where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
@@ -976,7 +1031,9 @@ impl App {
         let read = read(self.repo.clone());
         self.spawn(async move {
             let value = read.await;
-            let _ = tx.send(AppEvent::ReadDone(Box::new(move |app: &mut App| then(app, value))));
+            let _ = tx.send(AppEvent::ReadDone(Box::new(move |app: &mut App| {
+                then(app, value);
+            })));
         });
     }
 
@@ -1037,7 +1094,10 @@ impl App {
     }
 
     pub fn copy_to_clipboard(&mut self, text: &str) {
-        crate::terminal::write_raw(&format!("\x1b]52;c;{}\x07", crate::util::base64(text.as_bytes())));
+        crate::terminal::write_raw(&format!(
+            "\x1b]52;c;{}\x07",
+            crate::util::base64(text.as_bytes())
+        ));
         self.set_status(format!("Copied {text}"), Level::Info);
     }
 
@@ -1098,7 +1158,12 @@ async fn detail_worker(
     // carries over from one commit to the next.
     let mut local = repo.gix.to_thread_local();
     while requests.changed().await.is_ok() {
-        let Some(DetailRequest { request, id, context }) = *requests.borrow_and_update() else {
+        let Some(DetailRequest {
+            request,
+            id,
+            context,
+        }) = *requests.borrow_and_update()
+        else {
             continue;
         };
         let (back, r) = crate::util::blocking(move || {

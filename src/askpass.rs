@@ -39,7 +39,9 @@ pub fn start_server(
             return;
         };
         loop {
-            let Ok((stream, _)) = listener.accept().await else { continue };
+            let Ok((stream, _)) = listener.accept().await else {
+                continue;
+            };
             let (read, mut write) = stream.into_split();
             let mut prompt = String::new();
             if BufReader::new(read).read_line(&mut prompt).await.is_err() {

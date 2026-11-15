@@ -79,7 +79,8 @@ impl Config {
     /// Parse the text of a config file. Numbers out of range are brought
     /// into range rather than rejected.
     pub fn parse(text: &str) -> Result<Config, String> {
-        let mut c: Config = toml::from_str(text).map_err(|e| e.to_string().trim_end().to_string())?;
+        let mut c: Config =
+            toml::from_str(text).map_err(|e| e.to_string().trim_end().to_string())?;
         c.tab_width = c.tab_width.clamp(1, MAX_TAB_WIDTH);
         c.context_lines = c.context_lines.min(MAX_CONTEXT_LINES);
         Ok(c)
@@ -91,7 +92,11 @@ impl Config {
             return Ok(());
         }
         let known: Vec<&str> = Theme::list().map(|(id, _)| id).collect();
-        Err(format!("there's no theme called \"{}\". The themes are {}.", self.theme, known.join(", ")))
+        Err(format!(
+            "there's no theme called \"{}\". The themes are {}.",
+            self.theme,
+            known.join(", ")
+        ))
     }
 
     /// Write the settings that differ between `old` and `new` to the file
@@ -105,11 +110,16 @@ impl Config {
         let text = match std::fs::read_to_string(&target) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(e) => return Err(e).with_context(|| format!("could not read {}", target.display())),
+            Err(e) => {
+                return Err(e).with_context(|| format!("could not read {}", target.display()));
+            }
         };
-        let mut doc: DocumentMut = text
-            .parse()
-            .map_err(|e| anyhow::anyhow!("{} isn't valid TOML, so it was left alone.\n\n{e}", target.display()))?;
+        let mut doc: DocumentMut = text.parse().map_err(|e| {
+            anyhow::anyhow!(
+                "{} isn't valid TOML, so it was left alone.\n\n{e}",
+                target.display()
+            )
+        })?;
         if old.theme != new.theme {
             set(&mut doc, "theme", new.theme.as_str());
         }
@@ -117,7 +127,11 @@ impl Config {
             set(&mut doc, "context_lines", i64::from(new.context_lines));
         }
         if old.tab_width != new.tab_width {
-            set(&mut doc, "tab_width", i64::try_from(new.tab_width).unwrap_or(4));
+            set(
+                &mut doc,
+                "tab_width",
+                i64::try_from(new.tab_width).unwrap_or(4),
+            );
         }
         if old.relative_dates != new.relative_dates {
             set(&mut doc, "relative_dates", new.relative_dates);
@@ -171,7 +185,10 @@ const QUIET: Duration = Duration::from_millis(100);
 pub fn watch(
     path: &Path,
     report: impl Fn(Result<Config, String>) + Send + 'static,
-) -> Result<(RecommendedWatcher, impl Future<Output = ()> + Send + 'static)> {
+) -> Result<(
+    RecommendedWatcher,
+    impl Future<Output = ()> + Send + 'static,
+)> {
     let mut dirs = HashSet::new();
     let mut names = HashSet::new();
     let targets = [Some(path.to_path_buf()), std::fs::canonicalize(path).ok()];
@@ -188,7 +205,11 @@ pub fn watch(
         if matches!(ev.kind, EventKind::Access(_)) {
             return;
         }
-        if ev.paths.iter().any(|p| p.file_name().is_some_and(|n| names.contains(n))) {
+        if ev
+            .paths
+            .iter()
+            .any(|p| p.file_name().is_some_and(|n| names.contains(n)))
+        {
             let _ = tx.send(());
         }
     })
@@ -239,7 +260,12 @@ mod tests {
     fn unknown_themes_fail_the_check() {
         let c = Config::parse("theme = \"plaid\"").expect("parse");
         assert!(c.check().is_err_and(|e| e.contains("plaid")));
-        assert!(Config::parse("theme = \"dark\"").expect("parse").check().is_ok());
+        assert!(
+            Config::parse("theme = \"dark\"")
+                .expect("parse")
+                .check()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -286,9 +312,17 @@ mod tests {
             ..Config::default()
         };
         Config::save(&path, &Config::default(), &new).expect("save");
-        assert_eq!(std::fs::read_to_string(&path).expect("read"), "relative_dates = false\n");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "relative_dates = false\n"
+        );
         // Nothing is left behind next to it.
-        assert_eq!(std::fs::read_dir(path.parent().expect("parent")).expect("list").count(), 1);
+        assert_eq!(
+            std::fs::read_dir(path.parent().expect("parent"))
+                .expect("list")
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -313,10 +347,21 @@ mod tests {
         let link = dir.path().join("config.toml");
         std::os::unix::fs::symlink(&real, &link).expect("symlink");
         let old = Config::load(&link).0;
-        let new = Config { tab_width: 3, ..old.clone() };
+        let new = Config {
+            tab_width: 3,
+            ..old.clone()
+        };
         Config::save(&link, &old, &new).expect("save");
-        assert!(std::fs::symlink_metadata(&link).expect("stat").file_type().is_symlink());
-        assert_eq!(std::fs::read_to_string(&real).expect("read"), "tab_width = 3\n");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("stat")
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&real).expect("read"),
+            "tab_width = 3\n"
+        );
     }
 
     #[tokio::test]
@@ -330,7 +375,10 @@ mod tests {
         .expect("watch");
         tokio::spawn(run);
         let next = async |rx: &mut tokio::sync::mpsc::UnboundedReceiver<Result<Config, String>>| {
-            tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("a report").expect("open")
+            tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .expect("a report")
+                .expect("open")
         };
 
         std::fs::write(&path, "tab_width = 7\n").expect("write");
@@ -342,9 +390,16 @@ mod tests {
         // Other files in the folder don't count.
         std::fs::write(dir.path().join("other.toml"), "x = 1\n").expect("write");
         let plaid = Config::parse("theme = \"plaid\"\n").expect("parse");
-        let fixed = Config { tab_width: 5, ..Config::default() };
+        let fixed = Config {
+            tab_width: 5,
+            ..Config::default()
+        };
         Config::save(&path, &plaid, &fixed).expect("save");
         assert_eq!(next(&mut rx).await, Ok(fixed));
-        assert!(tokio::time::timeout(Duration::from_millis(400), rx.recv()).await.is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(400), rx.recv())
+                .await
+                .is_err()
+        );
     }
 }

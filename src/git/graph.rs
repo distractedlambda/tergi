@@ -275,13 +275,7 @@ mod tests {
     #[test]
     fn branch_and_merge() {
         // 5 merges 4 (main) and 3 (feature); both come from 2.
-        let out = render(&[
-            (5, &[4, 3]),
-            (3, &[2]),
-            (4, &[2]),
-            (2, &[1]),
-            (1, &[]),
-        ]);
+        let out = render(&[(5, &[4, 3]), (3, &[2]), (4, &[2]), (2, &[1]), (1, &[])]);
         insta::assert_snapshot!(out, @r"
         ●─╮ 5
         │ ● 3
@@ -305,13 +299,7 @@ mod tests {
 
     #[test]
     fn octopus() {
-        let out = render(&[
-            (9, &[8, 7, 6]),
-            (6, &[1]),
-            (7, &[1]),
-            (8, &[1]),
-            (1, &[]),
-        ]);
+        let out = render(&[(9, &[8, 7, 6]), (6, &[1]), (7, &[1]), (8, &[1]), (1, &[])]);
         insta::assert_snapshot!(out, @r"
         ●─┬─╮ 9
         │ │ ● 6
@@ -324,13 +312,7 @@ mod tests {
     #[test]
     fn merge_into_existing_lane() {
         // 6 and 5 are tips. 6 merges 4, which 5 also has as its parent.
-        let out = render(&[
-            (6, &[3, 4]),
-            (5, &[4]),
-            (4, &[2]),
-            (3, &[2]),
-            (2, &[]),
-        ]);
+        let out = render(&[(6, &[3, 4]), (5, &[4]), (4, &[2]), (3, &[2]), (2, &[])]);
         insta::assert_snapshot!(out, @r"
         ●─╮ 6
         │ │ ● 5

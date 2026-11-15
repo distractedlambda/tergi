@@ -69,7 +69,9 @@ pub enum Outcome {
 /// The commits from `oldest` up to HEAD, which must be a straight line.
 pub async fn plan_from(git: &Git, oldest: ObjectId) -> Result<Plan> {
     let oldest_hex = oldest.to_string();
-    let parents = git.read_text(&["rev-list", "--parents", "-n1", &oldest_hex]).await?;
+    let parents = git
+        .read_text(&["rev-list", "--parents", "-n1", &oldest_hex])
+        .await?;
     let parent_ids: Vec<&str> = parents.split_whitespace().skip(1).collect();
     if parent_ids.len() > 1 {
         bail!("Editing merge commits isn't supported.");
@@ -86,7 +88,16 @@ pub async fn plan_from(git: &Git, oldest: ObjectId) -> Result<Plan> {
         Some(b) => format!("{b}..HEAD"),
         None => "HEAD".to_string(),
     };
-    let out = git.read_text(&["rev-list", "--reverse", "--topo-order", "--parents", "--format=%s", &range]).await?;
+    let out = git
+        .read_text(&[
+            "rev-list",
+            "--reverse",
+            "--topo-order",
+            "--parents",
+            "--format=%s",
+            &range,
+        ])
+        .await?;
     let mut steps = Vec::new();
     let mut lines = out.lines();
     while let Some(header) = lines.next() {
@@ -95,7 +106,9 @@ pub async fn plan_from(git: &Git, oldest: ObjectId) -> Result<Plan> {
         };
         let ids: Vec<&str> = ids.split_whitespace().collect();
         if ids.len() > 2 {
-            bail!("There's a merge commit between that commit and HEAD, which isn't supported yet.");
+            bail!(
+                "There's a merge commit between that commit and HEAD, which isn't supported yet."
+            );
         }
         let summary = lines.next().unwrap_or("").to_string();
         steps.push(Step {
@@ -110,7 +123,9 @@ pub async fn plan_from(git: &Git, oldest: ObjectId) -> Result<Plan> {
 /// Write the todo list for `plan`, with message files in `dir`.
 pub fn build_todo(plan: &Plan, dir: &Path) -> Result<String> {
     if plan.steps.first().is_some_and(|s| s.action.melds()) {
-        bail!("The oldest commit can't be squashed or fixed up, because there's nothing before it to meld into.");
+        bail!(
+            "The oldest commit can't be squashed or fixed up, because there's nothing before it to meld into."
+        );
     }
     let mut todo = String::new();
     for (i, step) in plan.steps.iter().enumerate() {
@@ -122,7 +137,11 @@ pub fn build_todo(plan: &Plan, dir: &Path) -> Result<String> {
             Action::Drop => todo.push_str(&format!("drop {id} {summary}\n")),
             Action::Fixup => todo.push_str(&format!("fixup {id} {summary}\n")),
             Action::Reword(msg) | Action::Squash(msg) => {
-                let verb = if matches!(step.action, Action::Reword(_)) { "pick" } else { "fixup" };
+                let verb = if matches!(step.action, Action::Reword(_)) {
+                    "pick"
+                } else {
+                    "fixup"
+                };
                 let file = dir.join(format!("msg-{i}"));
                 std::fs::write(&file, msg).context("could not write message file")?;
                 todo.push_str(&format!("{verb} {id} {summary}\n"));
@@ -139,7 +158,9 @@ pub fn build_todo(plan: &Plan, dir: &Path) -> Result<String> {
 async fn scratch_dir(git: &Git) -> Result<PathBuf> {
     let git_dir = git.read_text(&["rev-parse", "--absolute-git-dir"]).await?;
     let dir = PathBuf::from(git_dir.trim()).join("tergi");
-    tokio::fs::create_dir_all(&dir).await.context("could not create scratch dir")?;
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .context("could not create scratch dir")?;
     Ok(dir)
 }
 
@@ -167,7 +188,9 @@ pub async fn run(git: &Git, plan: &Plan, exe: &Path) -> Result<Outcome> {
     let dir = scratch_dir(git).await?;
     let todo = build_todo(plan, &dir)?;
     let todo_file = dir.join("todo");
-    tokio::fs::write(&todo_file, todo).await.context("could not write todo")?;
+    tokio::fs::write(&todo_file, todo)
+        .await
+        .context("could not write todo")?;
     let editor = format!(
         "{} __seq-editor {}",
         shell_quote(&exe.to_string_lossy()),
@@ -179,13 +202,15 @@ pub async fn run(git: &Git, plan: &Plan, exe: &Path) -> Result<Outcome> {
         Some(b) => args.push(b),
         None => args.push("--root"),
     }
-    let result = git.run_opts(
-        &args,
-        &RunOpts {
-            env: vec![("GIT_SEQUENCE_EDITOR".into(), editor)],
-            ..Default::default()
-        },
-    ).await;
+    let result = git
+        .run_opts(
+            &args,
+            &RunOpts {
+                env: vec![("GIT_SEQUENCE_EDITOR".into(), editor)],
+                ..Default::default()
+            },
+        )
+        .await;
     finish(git, result.map(|_| ())).await
 }
 
@@ -212,9 +237,23 @@ pub fn seq_editor_main(prepared: &Path, target: &Path) -> Result<()> {
             .filter_map(|l| {
                 let mut it = l.split_whitespace();
                 let verb = it.next()?;
-                matches!(verb, "pick" | "p" | "fixup" | "f" | "drop" | "d" | "edit" | "e" | "squash" | "s" | "reword" | "r")
-                    .then(|| it.next().map(str::to_string))
-                    .flatten()
+                matches!(
+                    verb,
+                    "pick"
+                        | "p"
+                        | "fixup"
+                        | "f"
+                        | "drop"
+                        | "d"
+                        | "edit"
+                        | "e"
+                        | "squash"
+                        | "s"
+                        | "reword"
+                        | "r"
+                )
+                .then(|| it.next().map(str::to_string))
+                .flatten()
             })
             .collect();
         v.sort();
@@ -223,7 +262,8 @@ pub fn seq_editor_main(prepared: &Path, target: &Path) -> Result<()> {
     let a = ids(&ours);
     let b = ids(&theirs);
     let same = a.len() == b.len()
-        && a.iter().all(|full| b.iter().any(|short| full.starts_with(short.as_str())));
+        && a.iter()
+            .all(|full| b.iter().any(|short| full.starts_with(short.as_str())));
     if !same {
         bail!("The commits to rebase changed since tergi planned this rebase.");
     }
@@ -249,7 +289,10 @@ pub async fn abort_rebase(git: &Git) -> Result<()> {
 /// Rebase the current branch onto another commit.
 pub async fn rebase_onto(git: &Git, upstream: &str) -> Result<Outcome> {
     ensure_idle(git).await?;
-    let r = git.run(&["rebase", "--autostash", upstream]).await.map(|_| ());
+    let r = git
+        .run(&["rebase", "--autostash", upstream])
+        .await
+        .map(|_| ());
     finish(git, r).await
 }
 
@@ -261,7 +304,8 @@ pub async fn fixup_staged_into(git: &Git, target: ObjectId) -> Result<Outcome> {
     }
     ensure_idle(git).await?;
     let plan = plan_from(git, target).await?;
-    git.run(&["commit", "--no-verify", &format!("--fixup={t}")]).await?;
+    git.run(&["commit", "--no-verify", &format!("--fixup={t}")])
+        .await?;
     let fixup = git.read_text(&["rev-parse", "HEAD"]).await?;
     let base = plan.base.map(|b| b.to_string());
     let mut args = vec!["rebase", "-i", "--autosquash", "--autostash"];
@@ -276,11 +320,15 @@ pub async fn fixup_staged_into(git: &Git, target: ObjectId) -> Result<Outcome> {
                 env: vec![("GIT_SEQUENCE_EDITOR".into(), "true".into())],
                 ..Default::default()
             },
-        ).await
+        )
+        .await
         .map(|_| ());
     if r.is_err()
         && state(git).await == RepoState::Clean
-        && git.read_text(&["rev-parse", "HEAD"]).await.is_ok_and(|head| head == fixup)
+        && git
+            .read_text(&["rev-parse", "HEAD"])
+            .await
+            .is_ok_and(|head| head == fixup)
     {
         // The rebase never started. Take the fixup commit off again, so the
         // changes are staged as they were.
@@ -294,12 +342,21 @@ pub async fn reword(git: &Git, exe: &Path, id: ObjectId, message: &str) -> Resul
     let head = git.read_text(&["rev-parse", "HEAD"]).await?;
     if ObjectId::from_hex(head.trim().as_bytes()).ok() == Some(id) {
         git.run_opts(
-            &["commit", "--amend", "--only", "--allow-empty", "--cleanup=whitespace", "-F", "-"],
+            &[
+                "commit",
+                "--amend",
+                "--only",
+                "--allow-empty",
+                "--cleanup=whitespace",
+                "-F",
+                "-",
+            ],
             &RunOpts {
                 stdin: Some(message.as_bytes().to_vec()),
                 ..Default::default()
             },
-        ).await?;
+        )
+        .await?;
         return Ok(Outcome::Done);
     }
     let mut plan = plan_from(git, id).await?;
@@ -312,7 +369,8 @@ pub async fn single(git: &Git, exe: &Path, id: ObjectId, action: Action) -> Resu
     let mut plan = if action.melds() {
         // Meld into the parent, so the range has to start one earlier.
         let parent = git.read_text(&["rev-parse", &format!("{id}^")]).await?;
-        let parent = ObjectId::from_hex(parent.trim().as_bytes()).context("commit has no parent")?;
+        let parent =
+            ObjectId::from_hex(parent.trim().as_bytes()).context("commit has no parent")?;
         plan_from(git, parent).await?
     } else {
         plan_from(git, id).await?
@@ -335,7 +393,11 @@ pub async fn move_commit(git: &Git, exe: &Path, id: ObjectId, newer: bool) -> Re
         ObjectId::from_hex(parent.trim().as_bytes()).context("commit has no parent")?
     };
     let mut plan = plan_from(git, start).await?;
-    let pos = plan.steps.iter().position(|s| s.id == id).context("commit not found")?;
+    let pos = plan
+        .steps
+        .iter()
+        .position(|s| s.id == id)
+        .context("commit not found")?;
     let other = if newer { pos + 1 } else { pos.wrapping_sub(1) };
     if other >= plan.steps.len() {
         bail!("Can't move the commit any further.");

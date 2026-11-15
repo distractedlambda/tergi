@@ -160,7 +160,11 @@ impl Refs {
         }
         for b in &self.branches {
             map.entry(b.target).or_default().push(Label {
-                kind: if b.is_head { LabelKind::Head } else { LabelKind::Local },
+                kind: if b.is_head {
+                    LabelKind::Head
+                } else {
+                    LabelKind::Local
+                },
                 name: b.name.clone(),
             });
         }
@@ -213,7 +217,9 @@ fn parse_track(s: &str) -> (u32, u32, bool) {
 }
 
 async fn load_stashes(git: &Git) -> Result<Vec<Stash>> {
-    let out = git.read_text(&["stash", "list", "--format=%H%x00%gs"]).await?;
+    let out = git
+        .read_text(&["stash", "list", "--format=%H%x00%gs"])
+        .await?;
     Ok(out
         .lines()
         .enumerate()

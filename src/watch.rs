@@ -99,7 +99,9 @@ pub fn start(
     let (updates_tx, mut updates_rx) = unbounded_channel::<Vec<String>>();
 
     {
-        let mut w = watcher.lock().map_err(|_| anyhow::anyhow!("watcher lock"))?;
+        let mut w = watcher
+            .lock()
+            .map_err(|_| anyhow::anyhow!("watcher lock"))?;
         for dir in [&roots.git_dir, &roots.common_dir] {
             w.watch(dir, RecursiveMode::NonRecursive)
                 .context("could not watch the git directory")?;
@@ -349,7 +351,8 @@ impl Watches {
         paths: &[String],
     ) -> std::result::Result<bool, String> {
         let ignored = Ignored::new(workdir, paths, &self.ignored);
-        let walk = cfg!(target_os = "linux") && (!self.informed || ignored.dirs != self.ignored.dirs);
+        let walk =
+            cfg!(target_os = "linux") && (!self.informed || ignored.dirs != self.ignored.dirs);
         let first = !self.informed;
         self.ignored = ignored;
         self.informed = true;
@@ -368,7 +371,14 @@ impl Watches {
         workdir: &Path,
     ) -> std::result::Result<bool, String> {
         let mut now = HashSet::new();
-        let walked = walk(watcher, workdir, workdir, &self.ignored, &self.tree, &mut now);
+        let walked = walk(
+            watcher,
+            workdir,
+            workdir,
+            &self.ignored,
+            &self.tree,
+            &mut now,
+        );
         let added = match walked {
             Ok(added) => added,
             Err(e) => {
@@ -395,7 +405,14 @@ impl Watches {
         start: &Path,
     ) -> std::result::Result<bool, String> {
         let mut found = HashSet::new();
-        let r = walk(watcher, workdir, start, &self.ignored, &self.tree, &mut found);
+        let r = walk(
+            watcher,
+            workdir,
+            start,
+            &self.ignored,
+            &self.tree,
+            &mut found,
+        );
         self.tree.extend(found);
         r
     }
@@ -413,7 +430,9 @@ fn walk(
     watched: &HashSet<PathBuf>,
     found: &mut HashSet<PathBuf>,
 ) -> std::result::Result<bool, String> {
-    let mut w = watcher.lock().map_err(|_| "watcher lock poisoned".to_string())?;
+    let mut w = watcher
+        .lock()
+        .map_err(|_| "watcher lock poisoned".to_string())?;
     let mut added = false;
     let mut stack = vec![start.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -494,7 +513,12 @@ mod tests {
 
     use std::sync::mpsc::{Receiver, channel};
 
-    type Watched = (tempfile::TempDir, Handle, Receiver<u8>, tokio::runtime::Runtime);
+    type Watched = (
+        tempfile::TempDir,
+        Handle,
+        Receiver<u8>,
+        tokio::runtime::Runtime,
+    );
 
     /// Watch a new scratch repository and collect the flags it reports.
     fn watched() -> Watched {
@@ -537,7 +561,11 @@ mod tests {
             .output()
             .unwrap();
         assert!(out.status.success());
-        handle.updates().send(&crate::git::status::parse(&String::from_utf8_lossy(&out.stdout)));
+        handle
+            .updates()
+            .send(&crate::git::status::parse(&String::from_utf8_lossy(
+                &out.stdout,
+            )));
     }
 
     /// Run git quietly and say whether it succeeded.
@@ -633,7 +661,10 @@ mod tests {
         assert_eq!(classify_git(Path::new("refs/heads/main")), REFS | INDEX);
         assert_eq!(classify_git(Path::new("refs/heads/main.lock")), 0);
         assert_eq!(classify_git(Path::new("objects/ab/cdef")), 0);
-        assert_eq!(classify_git(Path::new("rebase-merge/msgnum")), STATE | REFS | INDEX);
+        assert_eq!(
+            classify_git(Path::new("rebase-merge/msgnum")),
+            STATE | REFS | INDEX
+        );
         assert_eq!(classify_git(Path::new("logs/HEAD")), 0);
         assert_eq!(classify_git(Path::new("logs/refs/heads/main")), 0);
         assert_eq!(classify_git(Path::new("logs/refs/stash")), REFS);
@@ -642,9 +673,15 @@ mod tests {
         assert_eq!(classify_git(Path::new("config.worktree")), REFS | WORKTREE);
         assert_eq!(classify_git(Path::new("info/exclude")), WORKTREE);
         assert_eq!(classify_git(Path::new("info/attributes")), 0);
-        assert_eq!(classify_git(Path::new("reftable/tables.list")), REFS | INDEX);
+        assert_eq!(
+            classify_git(Path::new("reftable/tables.list")),
+            REFS | INDEX
+        );
         assert_eq!(classify_git(Path::new("reftable/tables.list.lock")), 0);
-        assert_eq!(classify_git(Path::new("reftable/0x01-0x01-1a2b3c4d.ref")), 0);
+        assert_eq!(
+            classify_git(Path::new("reftable/0x01-0x01-1a2b3c4d.ref")),
+            0
+        );
     }
 
     #[test]
@@ -727,7 +764,11 @@ mod tests {
         let root = dir.path();
         std::fs::create_dir(root.join("out")).unwrap();
         let paths = |ps: &[&str]| ps.iter().map(|p| p.to_string()).collect::<Vec<_>>();
-        let first = Ignored::new(root, &paths(&["target/", "out/", "a.log"]), &Ignored::default());
+        let first = Ignored::new(
+            root,
+            &paths(&["target/", "out/", "a.log"]),
+            &Ignored::default(),
+        );
         assert!(first.covers(root, &root.join("target/debug/x")));
         assert!(first.covers(root, &root.join("a.log")));
         assert!(!first.covers(root, &root.join("src/a.rs")));
@@ -750,11 +791,17 @@ mod tests {
             dirs: HashSet::from([PathBuf::from("/r/target")]),
             files: HashSet::from([PathBuf::from("/r/src/a.log")]),
         };
-        assert_eq!(classify(&roots, Path::new("/r/src/a.rs"), &ignored), WORKTREE);
+        assert_eq!(
+            classify(&roots, Path::new("/r/src/a.rs"), &ignored),
+            WORKTREE
+        );
         assert_eq!(classify(&roots, Path::new("/r/src/a.log"), &ignored), 0);
         assert_eq!(classify(&roots, Path::new("/r/target/x"), &ignored), 0);
         assert_eq!(classify(&roots, Path::new("/r/target"), &ignored), 0);
-        assert_eq!(classify(&roots, Path::new("/r/.git/index"), &ignored), INDEX);
+        assert_eq!(
+            classify(&roots, Path::new("/r/.git/index"), &ignored),
+            INDEX
+        );
         assert_eq!(classify(&roots, Path::new("/elsewhere"), &ignored), 0);
     }
 }
