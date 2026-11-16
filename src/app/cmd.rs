@@ -1287,7 +1287,7 @@ impl App {
                         args.push("--force-with-lease".into());
                     }
                     if !has_upstream {
-                        args.extend(["-u".into(), remote, branch.name.clone()]);
+                        args.extend(["-u".into(), "--end-of-options".into(), remote, branch.name.clone()]);
                     }
                     r.git
                         .run_streaming(&args, &crate::git::cli::RunOpts { env, ..Default::default() }, |l| {
@@ -1476,7 +1476,7 @@ impl App {
                 let env = self.repo.remote_env();
                 self.spawn_op("Delete remote branch", After::Nothing, move |r, _| async move {
                     r.git
-                        .run_opts(&["push", &remote, "--delete", &name], &crate::git::cli::RunOpts { env, ..Default::default() }).await
+                        .run_opts(&["push", "--delete", "--end-of-options", &remote, &name], &crate::git::cli::RunOpts { env, ..Default::default() }).await
                         .map(|_| format!("Deleted {name} on {remote}"))
                 });
             }
@@ -1492,7 +1492,7 @@ impl App {
                 let env = self.repo.remote_env();
                 self.spawn_op("Push tag", After::Nothing, move |r, p| async move {
                     r.git
-                        .run_streaming(&["push", "--progress", &remote, &format!("refs/tags/{t}")], &crate::git::cli::RunOpts { env, ..Default::default() }, |l| p(l.to_string())).await
+                        .run_streaming(&["push", "--progress", "--end-of-options", &remote, &format!("refs/tags/{t}")], &crate::git::cli::RunOpts { env, ..Default::default() }, |l| p(l.to_string())).await
                         .map(|_| format!("Pushed {t}"))
                 });
             }

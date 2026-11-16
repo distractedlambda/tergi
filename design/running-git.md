@@ -36,6 +36,16 @@ written. That means the history walk and commit diffs.
 - `-c color.ui=false -c core.quotepath=false`, so output has no color
   codes and paths with unusual characters aren't escaped.
 
+Arguments go straight to git, not through a shell, so they need no shell
+quoting. They still need care on git's side:
+
+- Paths go after `--`. `ops::pathspec` adds `:(literal)` to paths that
+  git would otherwise read as a pattern or as special syntax.
+- Ref names and revisions go after `--end-of-options`. A ref name can
+  start with a dash, and a remote can send us such a tag. Without it,
+  git would read a tag named `-f` or a branch named `--exec=cmd` as an
+  option.
+
 There are two ways to run a command.
 
 `Git::read` is for commands that don't change the repository. It sets
@@ -79,7 +89,7 @@ The commands are:
 | Fetch | `git fetch --all --prune --progress` |
 | Pull | `git pull --progress`, plus `--ff-only`, `--rebase --autostash` or `--no-rebase --no-edit` depending on the choice |
 | Push | `git push --progress`, plus `--force-with-lease` for a force push |
-| Push tag | `git push --progress <remote> refs/tags/<tag>` |
+| Push tag | `git push --progress --end-of-options <remote> refs/tags/<tag>` |
 
 Push needs some care. Without a refspec, git pushes whatever is checked
 out when it runs, and it respects settings like `remote.pushDefault` and
@@ -89,8 +99,9 @@ the confirmation for a force push names it. So the `Push` command
 carries the branch name, and the task checks that the branch is still
 checked out before it runs git. If it isn't, nothing is pushed.
 
-A branch without an upstream gets `-u <remote> <branch>`, where the
-remote is `origin` if there is one, or else the first remote.
+A branch without an upstream gets `-u --end-of-options <remote>
+<branch>`, where the remote is `origin` if there is one, or else the
+first remote.
 
 ## Password prompts
 

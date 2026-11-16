@@ -1,4 +1,9 @@
 //! Operations that change the repository. They all run the git CLI.
+//!
+//! A ref name can start with a dash, for example a tag fetched from
+//! someone else's repository. Git would read a name like `-f` or
+//! `--exec=cmd` as an option, so we put `--end-of-options` in front of
+//! every ref and revision we pass.
 
 use anyhow::{Result, bail};
 use gix::ObjectId;
@@ -159,14 +164,14 @@ pub async fn commit(git: &Git, message: &str, amend: bool) -> Result<String> {
 /// The full message of a commit, for amending and rewording.
 pub async fn commit_message(git: &Git, rev: &str) -> Result<String> {
     Ok(git
-        .read_text(&["log", "-1", "--format=%B", rev])
+        .read_text(&["log", "-1", "--format=%B", "--end-of-options", rev])
         .await?
         .trim_end()
         .to_string())
 }
 
 pub async fn checkout(git: &Git, target: &str) -> Result<()> {
-    git.run(&["checkout", target]).await?;
+    git.run(&["checkout", "--end-of-options", target]).await?;
     Ok(())
 }
 
@@ -176,69 +181,89 @@ pub async fn checkout_remote(git: &Git, remote_branch: &str, local_exists: bool)
         .split_once('/')
         .map_or(remote_branch, |(_, b)| b);
     if local_exists {
-        git.run(&["checkout", local]).await?;
+        git.run(&["checkout", "--end-of-options", local]).await?;
     } else {
-        git.run(&["checkout", "--track", remote_branch]).await?;
+        git.run(&["checkout", "--track", "--end-of-options", remote_branch])
+            .await?;
     }
     Ok(())
 }
 
 pub async fn create_branch(git: &Git, name: &str, at: &str, checkout: bool) -> Result<()> {
     if checkout {
-        git.run(&["checkout", "-b", name, at]).await?;
+        git.run(&["checkout", "-b", name, "--end-of-options", at])
+            .await?;
     } else {
-        git.run(&["branch", name, at]).await?;
+        git.run(&["branch", "--end-of-options", name, at]).await?;
     }
     Ok(())
 }
 
 pub async fn rename_branch(git: &Git, old: &str, new: &str) -> Result<()> {
-    git.run(&["branch", "-m", old, new]).await?;
+    git.run(&["branch", "-m", "--end-of-options", old, new])
+        .await?;
     Ok(())
 }
 
 pub async fn delete_branch(git: &Git, name: &str, force: bool) -> Result<()> {
-    git.run(&["branch", if force { "-D" } else { "-d" }, name])
-        .await?;
+    git.run(&[
+        "branch",
+        if force { "-D" } else { "-d" },
+        "--end-of-options",
+        name,
+    ])
+    .await?;
     Ok(())
 }
 
 pub async fn delete_remote_branch(git: &Git, remote: &str, name: &str) -> Result<()> {
-    git.run(&["push", remote, "--delete", name]).await?;
+    git.run(&["push", "--delete", "--end-of-options", remote, name])
+        .await?;
     Ok(())
 }
 
 pub async fn set_upstream(git: &Git, branch: &str, upstream: &str) -> Result<()> {
-    git.run(&["branch", "--set-upstream-to", upstream, branch])
-        .await?;
+    git.run(&[
+        "branch",
+        "--set-upstream-to",
+        upstream,
+        "--end-of-options",
+        branch,
+    ])
+    .await?;
     Ok(())
 }
 
 pub async fn create_tag(git: &Git, name: &str, at: &str, message: Option<&str>) -> Result<()> {
     match message {
-        Some(m) if !m.trim().is_empty() => git.run(&["tag", "-a", name, "-m", m, at]).await?,
-        _ => git.run(&["tag", name, at]).await?,
+        Some(m) if !m.trim().is_empty() => {
+            git.run(&["tag", "-a", "-m", m, "--end-of-options", name, at])
+                .await?
+        }
+        _ => git.run(&["tag", "--end-of-options", name, at]).await?,
     };
     Ok(())
 }
 
 pub async fn delete_tag(git: &Git, name: &str) -> Result<()> {
-    git.run(&["tag", "-d", name]).await?;
+    git.run(&["tag", "-d", "--end-of-options", name]).await?;
     Ok(())
 }
 
 pub async fn merge(git: &Git, rev: &str) -> Result<()> {
-    git.run(&["merge", "--no-edit", rev]).await?;
+    git.run(&["merge", "--no-edit", "--end-of-options", rev])
+        .await?;
     Ok(())
 }
 
 pub async fn cherry_pick(git: &Git, rev: &str) -> Result<()> {
-    git.run(&["cherry-pick", rev]).await?;
+    git.run(&["cherry-pick", "--end-of-options", rev]).await?;
     Ok(())
 }
 
 pub async fn revert(git: &Git, rev: &str) -> Result<()> {
-    git.run(&["revert", "--no-edit", rev]).await?;
+    git.run(&["revert", "--no-edit", "--end-of-options", rev])
+        .await?;
     Ok(())
 }
 
@@ -255,7 +280,8 @@ pub async fn reset(git: &Git, rev: &str, mode: ResetMode) -> Result<()> {
         ResetMode::Mixed => "--mixed",
         ResetMode::Hard => "--hard",
     };
-    git.run(&["reset", "-q", flag, rev]).await?;
+    git.run(&["reset", "-q", flag, "--end-of-options", rev])
+        .await?;
     Ok(())
 }
 
@@ -340,7 +366,13 @@ pub async fn take_side(git: &Git, path: &str, ours: bool) -> Result<()> {
 }
 
 pub async fn is_ancestor(git: &Git, ancestor: &str, descendant: &str) -> bool {
-    git.read(&["merge-base", "--is-ancestor", ancestor, descendant])
-        .await
-        .is_ok()
+    git.read(&[
+        "merge-base",
+        "--is-ancestor",
+        "--end-of-options",
+        ancestor,
+        descendant,
+    ])
+    .await
+    .is_ok()
 }

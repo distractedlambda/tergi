@@ -253,3 +253,26 @@ fn an_empty_file_can_be_renamed() {
     let letters: Vec<char> = c.files.iter().map(|f| f.status.letter()).collect();
     assert_eq!(letters, ['D', 'A']);
 }
+
+#[tokio::test]
+async fn ref_names_that_look_like_options() {
+    let s = Scratch::new();
+    s.write("base.txt", "a\n");
+    let one = s.commit_all("one");
+    s.write("other.txt", "b\n");
+    s.commit_all("two");
+    // A remote can hand us a tag like this. As an option, `-f` would make
+    // checkout throw away local changes.
+    s.sh(&["update-ref", "refs/tags/-f", &one]);
+    s.write("base.txt", "dirty\n");
+    ops::create_branch(&s.git, "b", "-f", true)
+        .await
+        .expect("branch from tag");
+    assert_eq!(s.sh(&["rev-parse", "HEAD"]).trim(), one);
+    assert_eq!(s.read("base.txt"), "dirty\n");
+    ops::checkout(&s.git, "main").await.expect("checkout");
+    ops::merge(&s.git, "-f").await.expect("merge tag");
+    ops::delete_tag(&s.git, "-f").await.expect("delete tag");
+    assert_eq!(s.sh(&["tag", "-l"]), "");
+    assert_eq!(s.read("base.txt"), "dirty\n");
+}

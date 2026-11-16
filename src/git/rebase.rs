@@ -342,7 +342,7 @@ pub async fn abort_rebase(git: &Git) -> Result<()> {
 pub async fn rebase_onto(git: &Git, upstream: &str) -> Result<Outcome> {
     ensure_idle(git).await?;
     let r = git
-        .run(&["rebase", "--autostash", upstream])
+        .run(&["rebase", "--autostash", "--end-of-options", upstream])
         .await
         .map(|_| ());
     finish(git, r).await

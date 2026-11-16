@@ -293,3 +293,19 @@ async fn refuses_to_start_during_another_rebase() {
     assert_eq!(s.sh(&["rev-parse", "HEAD"]), head);
     assert_eq!(s.sh(&["diff", "--cached", "--name-only"]).trim(), "one.txt");
 }
+
+#[tokio::test]
+async fn rebase_onto_a_branch_that_looks_like_an_option() {
+    let (s, ids) = four();
+    s.sh(&["checkout", "-q", "-b", "side", &ids[2]]);
+    s.write("side.txt", "side\n");
+    let side = s.commit_all("side");
+    s.sh(&["checkout", "-q", "main"]);
+    // As an option, this would add an exec line after each commit.
+    let name = "--exec=touch${IFS}marker";
+    s.sh(&["update-ref", &format!("refs/heads/{name}"), &side]);
+    let outcome = rebase::rebase_onto(&s.git, name).await.expect("rebase");
+    assert_eq!(outcome, Outcome::Done);
+    assert_eq!(s.log(), ["four", "side", "three", "two", "one"]);
+    assert!(!s.file("marker").exists());
+}
