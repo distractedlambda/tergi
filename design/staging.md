@@ -221,8 +221,14 @@ puts the cursor back on the same file and hunk by path (see
 - `tests/patch_props.rs` makes random files and random edits, picks
   random lines, applies them with `apply_lines`, and checks the index or
   working tree against a small model. The model also says when a
-  selection should be refused. Run it with `PROPTEST_CASES=5000` after
-  changing `patch.rs`. Its saved failures are in
+  selection should be refused. A second test, `staging_in_steps`, runs a
+  random sequence of steps on several files that can have staged and
+  unstaged changes at once. Each step stages, unstages or discards a
+  section, a file, a hunk or some lines through the functions in
+  `ops.rs`. After each step it checks HEAD, the index and the working
+  tree against the model, and checks what `Workdir::load` lists. Run
+  them with `PROPTEST_CASES=5000` after changing `patch.rs`, `ops.rs` or
+  `workdir.rs`. Their saved failures are in
   `tests/patch_props.proptest-regressions`.
 - `tests/ops.rs` covers pattern-like paths, modes of untracked
   executables and symlinks, taking a side when one side deleted the

@@ -161,7 +161,9 @@ in detail. Read it before changing the watcher.
 - Property tests use `proptest`. The most important one is
   `tests/patch_props.rs`, which stages, unstages and discards random line
   selections with the real git and checks the result against a model.
-  They run 256 cases by default. Set `PROPTEST_CASES=5000` to search
+  It does this both in a single step and in random sequences of steps
+  over several files. Most property tests run 256 cases by default, and
+  slow ones run fewer. Set `PROPTEST_CASES=5000` to search
   harder after changing the code they cover. When one fails, proptest
   saves the case under `proptest-regressions/` (or next to the file in
   `tests/`) and runs it first from then on. Check those files in.

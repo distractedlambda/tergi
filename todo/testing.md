@@ -1,31 +1,15 @@
 # Randomized tests to write
 
-Ideas for more property tests, best first. The first one covers code
-that can lose someone's work, so start there.
+Ideas for more property tests, best first.
 
 These already have property tests: graph lanes (`git/graph.rs`), text
 width (`ui/text.rs`), the text area (`ui/textarea.rs`), word marks
 (`git/words.rs`), the imara hunks (`git/commit.rs`), diff parsing and
 path quoting (`git/diff.rs`), status parsing (`git/status.rs`), dates
-and fuzzy matching (`util.rs`), staging, unstaging or discarding lines
-in a single step (`tests/patch_props.rs`), and rewriting history
-through the planner (`tests/rebase_props.rs`).
-
-## Staging in several steps
-
-`tests/patch_props.rs` does one operation on a file that has only one
-kind of change. A stateful version would run a random sequence of
-stage, unstage and discard over several files. Each step would pick
-lines, a hunk or a whole file, and reload `Workdir` before the next
-step. A model tracks HEAD, the index and the worktree.
-
-This reaches cases the single step can't:
-
-- Files that are both staged and modified (`MM` in the status).
-- Discarding unstaged lines while the file also has staged changes. The
-  base is then the index, not HEAD.
-- Unstaging part of a file that an earlier step only partly staged.
-- The hunk and file paths in `git/ops.rs`, not only `apply_lines`.
+and fuzzy matching (`util.rs`), staging, unstaging and discarding,
+both in a single step and in sequences of steps over several files
+(`tests/patch_props.rs`), and rewriting history through the planner
+(`tests/rebase_props.rs`).
 
 ## Odd file names with the real git
 
