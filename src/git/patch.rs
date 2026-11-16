@@ -157,9 +157,14 @@ fn header(file: &FileDiff, full: bool, reverse: bool) -> String {
         s.push_str(&format!("new file mode {mode}\n--- /dev/null\n+++ {b}\n"));
     } else if file.is_deleted() && (reverse || full) {
         let mode = file.old_mode.as_deref().unwrap_or("100644");
-        s.push_str(&format!(
-            "deleted file mode {mode}\n--- {a}\n+++ /dev/null\n"
-        ));
+        s.push_str(&format!("deleted file mode {mode}\n"));
+        // Applied in reverse, this patch creates the file. `git apply`
+        // then ignores the mode above and makes a plain file, unless the
+        // patch also names a new mode.
+        if reverse {
+            s.push_str(&format!("new mode {mode}\n"));
+        }
+        s.push_str(&format!("--- {a}\n+++ /dev/null\n"));
     } else {
         if full
             && let (Some(om), Some(nm)) = (&file.old_mode, &file.new_mode)

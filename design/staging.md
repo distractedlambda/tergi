@@ -160,6 +160,12 @@ patch only deletes the file, or changes its mode, when every changed
 line is selected. Otherwise the file stays, with the lines you didn't
 pick.
 
+A patch that deletes a file and is applied in reverse creates the file.
+`git apply` then ignores the `deleted file mode` line and always makes a
+plain file, so an executable would lose its executable bit. So when
+`build_patch` writes such a patch, it adds a `new mode` line with the
+same mode, which git does use.
+
 ### Bytes, not text
 
 Diff lines are kept as display text, with bad UTF-8 replaced. When a
