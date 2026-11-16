@@ -5,8 +5,8 @@ Ideas for more property tests, best first.
 These already have property tests: graph lanes (`git/graph.rs`), text
 width (`ui/text.rs`), the text area (`ui/textarea.rs`), word marks
 (`git/words.rs`), the imara hunks (`git/commit.rs`), diff parsing and
-path quoting (`git/diff.rs`), status parsing (`git/status.rs`), dates
-and fuzzy matching (`util.rs`), staging, unstaging and discarding,
+path quoting (`git/diff.rs`), status parsing (`git/status.rs`), dates,
+including extreme ones, and fuzzy matching (`util.rs`), staging, unstaging and discarding,
 both in a single step and in sequences of steps over several files
 (`tests/patch_props.rs`), rewriting history through the planner
 (`tests/rebase_props.rs`), odd file names with the real git
@@ -15,20 +15,6 @@ both in a single step and in sequences of steps over several files
 (`app/doc.rs`).
 
 ## Smaller ones
-
-**Dates never panic.** This one is a real bug. In debug builds these
-calls panic with "attempt to add with overflow" or "attempt to subtract
-with overflow":
-
-- `format_date(i64::MAX - 100, 50400)`, at `secs + i64::from(offset)`
-  in `util.rs`
-- `format_date(i64::MIN, -43200)`, at the same place
-- `short_date(i64::MIN, now)`, at `now - secs`
-
-Dev builds use `panic = "abort"`, so a commit with a crafted timestamp
-would crash a debug build. Release builds wrap instead. Fix it with
-saturating or checked arithmetic. Then add a test that calls
-`format_date`, `format_day` and `short_date` with any `i64` and `i32`.
 
 **The history walk against `git rev-list`.** Make random histories with
 merges, several branches, and tags, including tags that point at trees.

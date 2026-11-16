@@ -266,6 +266,15 @@ mod tests {
             prop_assert_eq!(local_day(secs, offset), (days, t));
         }
 
+        // A commit can claim any timestamp and offset, and debug builds
+        // abort on overflow, so none of these may overflow.
+        #[test]
+        fn dates_never_panic(secs in any::<i64>(), offset in any::<i32>(), now in any::<i64>()) {
+            format_date(secs, offset);
+            format_day(secs, offset);
+            short_date(secs, now);
+        }
+
         #[test]
         fn fuzzy_matches_letters_in_order(needle in "[abAB]{0,4}", hay in "[abAB ]{0,10}") {
             let mut hay_chars = hay.to_lowercase().chars().collect::<Vec<_>>().into_iter();
