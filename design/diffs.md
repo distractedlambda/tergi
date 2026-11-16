@@ -251,6 +251,13 @@ Selected lines get the selection background instead.
   staged and unstaged files.
 - `src/git/words.rs` has property tests that the words cover the whole
   line, and that the unmarked text on both sides is the same.
+- `src/app/doc.rs` has property tests that build the rows from random
+  commits and working directories, in both views. They check that each
+  file shows its notice or its hunks, that every line shows up once and
+  in order, and that selecting a whole hunk selects exactly its changed
+  lines. They also check that the cursor and the line selection stay on
+  their rows when the pane is rebuilt, when the view changes, and when
+  files change, go away or appear.
 - `tests/ui.rs` has `folds_do_not_carry_over_to_other_commits`.
 
 ## Known gaps

@@ -804,3 +804,556 @@ fn push_split_rows(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+    use proptest::sample::Index;
+
+    use super::*;
+    use crate::git::diff::{DiffLine, FileStatus, Hunk};
+
+    const SECTIONS: [Section; 4] = [
+        Section::Conflicted,
+        Section::Untracked,
+        Section::Unstaged,
+        Section::Staged,
+    ];
+
+    /// A file that may be in the diff before a reload, after it, or both.
+    #[derive(Debug, Clone)]
+    struct Spec {
+        diff: FileDiff,
+        /// What the diff turns into on reload, as when one of its hunks
+        /// gets staged.
+        changed: Option<FileDiff>,
+        before: bool,
+        after: bool,
+        folded: bool,
+    }
+
+    #[derive(Debug, Clone)]
+    struct Case {
+        /// Show a commit, with its files in `sections[0]`, rather than the
+        /// working directory.
+        commit: bool,
+        split: bool,
+        sections: [Vec<Spec>; 4],
+        folded_sections: Vec<Section>,
+    }
+
+    /// What the pane shows, before or after the reload.
+    struct Data {
+        workdir: Option<Workdir>,
+        commit: Option<Arc<CommitDetail>>,
+    }
+
+    impl Data {
+        fn files(&self, sec: Section) -> &[Arc<FileDiff>] {
+            section_files(self.workdir.as_ref(), self.commit.as_deref(), sec)
+        }
+    }
+
+    fn hunk() -> impl Strategy<Value = Hunk> {
+        let kind = prop_oneof![
+            Just(LineKind::Context),
+            Just(LineKind::Add),
+            Just(LineKind::Del)
+        ];
+        prop::collection::vec(kind, 1..10).prop_map(|mut kinds| {
+            // Git never prints a hunk without a change in it.
+            if kinds.iter().all(|&k| k == LineKind::Context) {
+                let mid = kinds.len() / 2;
+                kinds[mid] = LineKind::Add;
+            }
+            let (mut old, mut new) = (1, 1);
+            let lines: Vec<DiffLine> = kinds
+                .into_iter()
+                .map(|kind| {
+                    let o = (kind != LineKind::Add).then_some(old);
+                    let n = (kind != LineKind::Del).then_some(new);
+                    old += u32::from(o.is_some());
+                    new += u32::from(n.is_some());
+                    DiffLine::new(kind, b"x", o, n)
+                })
+                .collect();
+            Hunk {
+                old_start: 1,
+                old_len: old - 1,
+                new_start: 1,
+                new_len: new - 1,
+                section: String::new(),
+                lines,
+            }
+        })
+    }
+
+    /// Files in path order. Some are binary, too large, or have no hunks,
+    /// so that they show a notice instead of a diff.
+    fn files(max: usize) -> impl Strategy<Value = Vec<Spec>> {
+        let body = || (0u8..8, prop::collection::vec(hunk(), 1..4));
+        let changed = prop::option::weighted(0.25, body());
+        let spec = (body(), changed, any::<bool>(), any::<bool>(), 0u8..5);
+        prop::collection::vec(spec, 0..max).prop_map(|specs| {
+            specs
+                .into_iter()
+                .enumerate()
+                .map(|(i, (body, changed, before, after, folded))| {
+                    let path = format!("dir/file{i:02}");
+                    let diff = |(kind, hunks): (u8, Vec<Hunk>)| {
+                        let mut diff = FileDiff::new(
+                            FileStatus::Modified,
+                            Some(path.clone()),
+                            Some(path.clone()),
+                        );
+                        match kind {
+                            0 => diff.binary = true,
+                            1 => diff.too_large = true,
+                            2 => {}
+                            _ => diff.hunks = hunks,
+                        }
+                        diff
+                    };
+                    Spec {
+                        diff: diff(body),
+                        changed: changed.map(diff),
+                        before,
+                        after,
+                        folded: folded == 0,
+                    }
+                })
+                .collect()
+        })
+    }
+
+    fn case() -> impl Strategy<Value = Case> {
+        // A commit with more than 40 files starts with all of them folded.
+        let commit_files = prop_oneof![4 => files(6), 1 => files(46)];
+        let workdir = [files(5), files(5), files(5), files(5)];
+        (
+            any::<bool>(),
+            any::<bool>(),
+            commit_files,
+            workdir,
+            prop::sample::subsequence(SECTIONS.to_vec(), 0..=4),
+        )
+            .prop_map(|(commit, split, commit_files, workdir, folded_sections)| {
+                let mut sections = workdir;
+                if commit {
+                    sections[0] = commit_files;
+                }
+                Case {
+                    commit,
+                    split,
+                    sections,
+                    folded_sections,
+                }
+            })
+    }
+
+    fn data(case: &Case, after: bool) -> Data {
+        let pick = |specs: &[Spec]| -> Vec<Arc<FileDiff>> {
+            specs
+                .iter()
+                .filter(|s| if after { s.after } else { s.before })
+                .map(|s| match &s.changed {
+                    Some(changed) if after => Arc::new(changed.clone()),
+                    _ => Arc::new(s.diff.clone()),
+                })
+                .collect()
+        };
+        if case.commit {
+            let person = crate::git::commit::Person {
+                name: "A".into(),
+                email: "a@example.com".into(),
+                time: 0,
+                offset: 0,
+            };
+            let files = pick(&case.sections[0]);
+            let texts = vec![FileTexts::default(); files.len()];
+            let commit = CommitDetail {
+                id: ObjectId::null(gix::hash::Kind::Sha1),
+                parents: vec![ObjectId::null(gix::hash::Kind::Sha1)],
+                message: "Subject\n\nBody\n".into(),
+                author: person.clone(),
+                committer: person,
+                files,
+                texts,
+            };
+            Data {
+                workdir: None,
+                commit: Some(Arc::new(commit)),
+            }
+        } else {
+            let [conflicted, untracked, unstaged, staged] = &case.sections;
+            let workdir = Workdir {
+                conflicted: pick(conflicted),
+                untracked: pick(untracked),
+                unstaged: pick(unstaged),
+                staged: pick(staged),
+                ..Workdir::default()
+            };
+            Data {
+                workdir: Some(workdir),
+                commit: None,
+            }
+        }
+    }
+
+    fn shown_sections(case: &Case) -> Vec<(Section, &[Spec])> {
+        if case.commit {
+            vec![(Section::Commit, case.sections[0].as_slice())]
+        } else {
+            SECTIONS
+                .into_iter()
+                .zip(case.sections.iter().map(Vec::as_slice))
+                .collect()
+        }
+    }
+
+    /// A pane showing the data from before the reload.
+    fn detail(case: &Case) -> (Detail, Data) {
+        let data = data(case, false);
+        let mut d = Detail::default();
+        match &data.commit {
+            Some(c) => {
+                d.set_source(Source::Commit(c.id));
+                d.set_commit(c.clone());
+            }
+            None => d.set_source(Source::Workdir),
+        }
+        for (sec, specs) in shown_sections(case) {
+            for s in specs.iter().filter(|s| s.folded) {
+                d.collapsed.insert((sec, s.diff.path().to_string()));
+            }
+        }
+        d.collapsed_sections = case.folded_sections.iter().copied().collect();
+        rebuild(&mut d, &data, case.split);
+        (d, data)
+    }
+
+    fn rebuild(d: &mut Detail, data: &Data, split: bool) {
+        d.rebuild(
+            data.workdir.as_ref(),
+            &HashMap::new(),
+            &Theme::default(),
+            split,
+            &Config::default(),
+        );
+    }
+
+    /// A row with its file named by path rather than by index, so that rows
+    /// can be compared across a reload.
+    fn by_path(row: &Row, data: &Data) -> (Option<(Section, String)>, Row) {
+        let mut row = row.clone();
+        let file = row
+            .file()
+            .map(|(sec, i)| (sec, data.files(sec)[i].path().to_string()));
+        if let Row::File { file, .. }
+        | Row::Notice { file, .. }
+        | Row::Hunk { file, .. }
+        | Row::Line { file, .. }
+        | Row::Split { file, .. } = &mut row
+        {
+            *file = 0;
+        }
+        (file, row)
+    }
+
+    /// Every file that should be shown has a header, and then either a
+    /// notice or its hunks. Each hunk's lines follow its header in order,
+    /// so each changed line shows up exactly once.
+    fn check_rows(d: &Detail, data: &Data, split: bool) -> Result<(), TestCaseError> {
+        let mut sections = Vec::new();
+        let mut files = Vec::new();
+        let mut notices = Vec::new();
+        let mut hunks = Vec::new();
+        // The left and right columns of each hunk. A unified row is on both.
+        let mut columns: HashMap<_, (Vec<usize>, Vec<usize>)> = HashMap::new();
+        let mut file_now = None;
+        let mut hunk_now = None;
+        for row in &d.rows {
+            match *row {
+                Row::Section(sec) => {
+                    sections.push(sec);
+                    (file_now, hunk_now) = (None, None);
+                }
+                Row::File { sec, file } => {
+                    files.push((sec, file));
+                    (file_now, hunk_now) = (Some((sec, file)), None);
+                }
+                Row::Notice { sec, file, .. } => {
+                    prop_assert_eq!(file_now, Some((sec, file)));
+                    notices.push((sec, file));
+                }
+                Row::Hunk { sec, file, hunk } => {
+                    prop_assert_eq!(file_now, Some((sec, file)));
+                    hunks.push((sec, file, hunk));
+                    hunk_now = Some((sec, file, hunk));
+                }
+                Row::Line {
+                    sec,
+                    file,
+                    hunk,
+                    line,
+                } => {
+                    prop_assert!(!split);
+                    prop_assert_eq!(hunk_now, Some((sec, file, hunk)));
+                    let (l, r) = columns.entry((sec, file, hunk)).or_default();
+                    l.push(line);
+                    r.push(line);
+                }
+                Row::Split {
+                    sec,
+                    file,
+                    hunk,
+                    left,
+                    right,
+                } => {
+                    prop_assert!(split);
+                    prop_assert_eq!(hunk_now, Some((sec, file, hunk)));
+                    let lines = &data.files(sec)[file].hunks[hunk].lines;
+                    let kind = |i: Option<usize>| i.map(|i| lines[i].kind);
+                    prop_assert!(left.is_some() || right.is_some());
+                    prop_assert_ne!(kind(left), Some(LineKind::Add));
+                    prop_assert_ne!(kind(right), Some(LineKind::Del));
+                    if kind(left) == Some(LineKind::Context)
+                        || kind(right) == Some(LineKind::Context)
+                    {
+                        prop_assert_eq!(left, right);
+                    }
+                    let (l, r) = columns.entry((sec, file, hunk)).or_default();
+                    l.extend(left);
+                    r.extend(right);
+                }
+                Row::Meta(_) | Row::Blank | Row::Empty(_) => {
+                    (file_now, hunk_now) = (None, None);
+                }
+            }
+        }
+
+        let shown: Vec<Section> = match &data.workdir {
+            Some(_) => SECTIONS
+                .into_iter()
+                .filter(|&s| !data.files(s).is_empty())
+                .collect(),
+            None => vec![Section::Commit],
+        };
+        if data.workdir.is_some() {
+            prop_assert_eq!(&sections, &shown);
+        }
+        let mut want_files = Vec::new();
+        let mut want_notices = Vec::new();
+        let mut want_hunks = Vec::new();
+        for sec in shown {
+            if sec != Section::Commit && d.collapsed_sections.contains(&sec) {
+                continue;
+            }
+            for (fi, f) in data.files(sec).iter().enumerate() {
+                want_files.push((sec, fi));
+                if d.collapsed.contains(&(sec, f.path().to_string())) {
+                    continue;
+                }
+                if f.binary || f.too_large || f.hunks.is_empty() {
+                    want_notices.push((sec, fi));
+                    continue;
+                }
+                for (hi, h) in f.hunks.iter().enumerate() {
+                    want_hunks.push((sec, fi, hi));
+                    let (left, right) = columns.remove(&(sec, fi, hi)).unwrap_or_default();
+                    let side = |skip: LineKind| -> Vec<usize> {
+                        (0..h.lines.len())
+                            .filter(|&i| split && h.lines[i].kind != skip || !split)
+                            .collect()
+                    };
+                    prop_assert_eq!(
+                        left,
+                        side(LineKind::Add),
+                        "left side of {:?}",
+                        (sec, fi, hi)
+                    );
+                    prop_assert_eq!(
+                        right,
+                        side(LineKind::Del),
+                        "right side of {:?}",
+                        (sec, fi, hi)
+                    );
+                }
+            }
+        }
+        prop_assert_eq!(files, want_files);
+        prop_assert_eq!(notices, want_notices);
+        prop_assert_eq!(hunks, want_hunks);
+        prop_assert!(columns.is_empty(), "lines of hidden hunks: {:?}", columns);
+        Ok(())
+    }
+
+    /// Selecting a hunk from its header to its last line, in either
+    /// direction, or only its lines, selects exactly its changed lines.
+    fn check_hunk_selection(d: &mut Detail, data: &Data) -> Result<(), TestCaseError> {
+        for start in 0..d.rows.len() {
+            let Row::Hunk { sec, file, hunk } = d.rows[start] else {
+                continue;
+            };
+            let end = (start + 1..d.rows.len())
+                .take_while(|&i| {
+                    matches!(d.rows[i], Row::Line { .. } | Row::Split { .. })
+                        && d.rows[i].file() == Some((sec, file))
+                })
+                .last()
+                .unwrap_or(start);
+            let want: Vec<(usize, usize)> = data.files(sec)[file].hunks[hunk]
+                .changed_lines()
+                .map(|l| (hunk, l))
+                .collect();
+            for (anchor, cursor) in [(start, end), (end, start), (start + 1, end)] {
+                d.anchor = Some(anchor);
+                d.cursor = cursor;
+                let got = d.selected_lines(|s| data.files(s));
+                let (s, f, mut lines) = got.ok_or_else(|| {
+                    TestCaseError::fail(format!("nothing selected in rows {anchor}..{cursor}"))
+                })?;
+                prop_assert_eq!((s, f), (sec, file));
+                let n = lines.len();
+                lines.sort_unstable();
+                lines.dedup();
+                prop_assert_eq!(lines.len(), n, "a line was selected twice");
+                prop_assert_eq!(&lines, &want);
+                match d.unit_at_cursor(|s| data.files(s)) {
+                    Some(Unit::Lines(s, _, mut lines)) => {
+                        prop_assert_eq!(s, sec);
+                        lines.sort_unstable();
+                        prop_assert_eq!(&lines, &want);
+                    }
+                    other => {
+                        prop_assert!(false, "unit at cursor: {:?}", other.map(|u| u.section()));
+                    }
+                }
+            }
+        }
+        d.anchor = None;
+        Ok(())
+    }
+
+    /// Whether two rows show the same thing. A unified row and a row of
+    /// the side-by-side view match when they share a line.
+    fn same_place(a: &Row, b: &Row) -> bool {
+        let lines = |r: &Row| match *r {
+            Row::Line {
+                sec,
+                file,
+                hunk,
+                line,
+            } => Some((sec, file, hunk, vec![line])),
+            Row::Split {
+                sec,
+                file,
+                hunk,
+                left,
+                right,
+            } => Some((sec, file, hunk, left.into_iter().chain(right).collect())),
+            _ => None,
+        };
+        match (lines(a), lines(b)) {
+            (Some((s, f, h, a)), Some((t, g, i, b))) => {
+                (s, f, h) == (t, g, i) && a.iter().any(|l| b.contains(l))
+            }
+            _ => a == b,
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn rows_show_every_line(case in case()) {
+            let (mut d, data) = detail(&case);
+            check_rows(&d, &data, case.split)?;
+            check_hunk_selection(&mut d, &data)?;
+        }
+
+        /// Rebuilding with the same data leaves the cursor and the line
+        /// selection on the same rows.
+        #[test]
+        fn rebuild_keeps_cursor(
+            case in case(),
+            at in prop::collection::vec((any::<Index>(), any::<Option<Index>>()), 1..8),
+        ) {
+            let (mut d, data) = detail(&case);
+            let rows = d.rows.clone();
+            for (cursor, anchor) in at {
+                let cursor = cursor.index(rows.len());
+                let anchor = anchor.map(|a| a.index(rows.len()));
+                d.cursor = cursor;
+                d.anchor = anchor;
+                rebuild(&mut d, &data, case.split);
+                prop_assert_eq!(&d.rows, &rows);
+                prop_assert_eq!(d.cursor, cursor, "cursor moved from {:?} to {:?}", rows[cursor], rows[d.cursor]);
+                prop_assert_eq!(d.anchor, anchor);
+            }
+        }
+
+        /// Switching between the unified and the side-by-side view keeps the
+        /// cursor and the line selection on the same lines.
+        #[test]
+        fn switching_views_keeps_cursor(
+            case in case(),
+            cursor in any::<Index>(),
+            anchor in any::<Option<Index>>(),
+        ) {
+            let (mut d, data) = detail(&case);
+            let rows = d.rows.clone();
+            d.cursor = cursor.index(rows.len());
+            d.anchor = anchor.map(|a| a.index(rows.len()));
+            let (old_cursor, old_anchor) = (d.cursor, d.anchor);
+            rebuild(&mut d, &data, !case.split);
+            check_rows(&d, &data, !case.split)?;
+            let (old, new) = (&rows[old_cursor], &d.rows[d.cursor]);
+            if !matches!(old, Row::Blank | Row::Empty(_)) {
+                prop_assert!(same_place(old, new), "cursor moved from {:?} to {:?}", old, new);
+            }
+            if let Some(a) = old_anchor
+                && !matches!(rows[a], Row::Blank | Row::Empty(_))
+            {
+                let new = d.anchor.map(|b| &d.rows[b]);
+                prop_assert!(
+                    new.is_some_and(|new| same_place(&rows[a], new)),
+                    "anchor moved from {:?} to {:?}", rows[a], new
+                );
+            }
+        }
+
+        /// After files change, go away or appear, the cursor is still on a
+        /// row. If its file is still shown, it stays in that file, and on
+        /// the same row if the file's diff didn't change.
+        #[test]
+        fn cursor_follows_its_file(case in case(), at in any::<Index>()) {
+            let (mut d, before) = detail(&case);
+            d.cursor = at.index(d.rows.len());
+            let old = by_path(&d.rows[d.cursor], &before);
+            let after = data(&case, true);
+            if let Some(c) = &after.commit {
+                d.set_commit(c.clone());
+            }
+            rebuild(&mut d, &after, case.split);
+            check_rows(&d, &after, case.split)?;
+            prop_assert!(d.cursor < d.rows.len());
+            let new = by_path(&d.rows[d.cursor], &after);
+            if let (Some((sec, path)), _) = &old {
+                let still_shown = d
+                    .rows
+                    .iter()
+                    .any(|r| r.file().is_some_and(|(s, i)| s == *sec && after.files(s)[i].path() == path));
+                let specs = &case.sections[if case.commit { 0 } else { *sec as usize - 1 }];
+                let changed = specs.iter().any(|s| s.diff.path() == path && s.changed.is_some());
+                if still_shown && changed {
+                    prop_assert_eq!(&new.0, &old.0);
+                } else if still_shown {
+                    prop_assert_eq!(&new, &old);
+                }
+            } else if let Row::Section(sec) = old.1
+                && !after.files(sec).is_empty()
+            {
+                prop_assert_eq!(&new.1, &Row::Section(sec));
+            }
+        }
+    }
+}

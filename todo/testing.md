@@ -10,22 +10,9 @@ and fuzzy matching (`util.rs`), staging, unstaging and discarding,
 both in a single step and in sequences of steps over several files
 (`tests/patch_props.rs`), rewriting history through the planner
 (`tests/rebase_props.rs`), odd file names with the real git
-(`tests/path_props.rs`), and commit diffs against `git diff-tree`
-(`tests/commit_props.rs`).
-
-## Rows of the detail pane
-
-This one is pure and fast. Build a `Detail` from random diffs, in both
-unified and split mode, and check that:
-
-- every changed line appears in exactly one row, in order,
-- selecting a whole hunk gives exactly its changed lines,
-- calling `rebuild` again with the same data leaves the cursor where it
-  was,
-- after files disappear, the cursor is still in range, and it stays on
-  the same path if that file is still there.
-
-The code is in `app/doc.rs`.
+(`tests/path_props.rs`), commit diffs against `git diff-tree`
+(`tests/commit_props.rs`), and the rows of the detail pane
+(`app/doc.rs`).
 
 ## Smaller ones
 
