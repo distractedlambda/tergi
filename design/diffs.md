@@ -182,11 +182,12 @@ own. Context lines use the new side's colors when it has them.
 
 We have the full text of both sides of every diff. A commit diff has
 them from gitoxide. For an unstaged file, the old side is in the index
-and the new side is on disk. For a staged file, the old side is in HEAD
-and the new side is in the index. `Workdir::load` reads the index and
-HEAD versions with `read_blobs`, which runs `git cat-file` twice: once
-with `--batch-check` to skip anything over `MAX_BLOB`, and once with
-`--batch` to read the rest. It asks for blobs by the ids in
+and the new side is on disk. For a symlink, the text on disk is the path
+it points to, which is what git stores. For a staged file, the old side
+is in HEAD and the new side is in the index. `Workdir::load` reads the
+index and HEAD versions with `read_blobs`, which runs `git cat-file`
+twice: once with `--batch-check` to skip anything over `MAX_BLOB`, and
+once with `--batch` to read the rest. It asks for blobs by the ids in
 the diff's `index` lines, which `--full-index` makes complete. Asking by
 path wouldn't work for every name. `git cat-file` reads one name per
 line, and a path like `1:x` names a stage of the index.

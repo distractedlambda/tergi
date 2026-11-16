@@ -169,8 +169,19 @@ impl Workdir {
     }
 }
 
+/// The text of a file in the working tree, as git would store it. For a
+/// symlink, that is the path it points to, not the file there.
 async fn read_text(path: &std::path::Path) -> Option<Arc<str>> {
-    let data = tokio::fs::read(path).await.ok()?;
+    let meta = tokio::fs::symlink_metadata(path).await.ok()?;
+    let data = if meta.is_symlink() {
+        tokio::fs::read_link(path)
+            .await
+            .ok()?
+            .into_os_string()
+            .into_encoded_bytes()
+    } else {
+        tokio::fs::read(path).await.ok()?
+    };
     if data.len() > MAX_BLOB || is_binary(&data) {
         return None;
     }
