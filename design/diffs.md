@@ -157,6 +157,16 @@ is gone, it tries the same hunk, then the hunk before it, then the file.
 So staging a hunk leaves the cursor near where it was, and not at the
 top of the list.
 
+The same lookup keeps the cursor in place when the user switches
+between the unified and the side-by-side view. A row of the side-by-side
+view can show a removed and an added line, and it matches the key of
+either one.
+
+The other end of a line selection, `Detail::anchor`, is a row index too.
+`rebuild` finds its row again by key, the same way. If that row is gone,
+the selection is dropped, because keeping the index would select other
+lines than the ones the user picked.
+
 ## Word marks
 
 Inside a changed line, the words that changed get a stronger background.

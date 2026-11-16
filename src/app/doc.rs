@@ -291,6 +291,10 @@ impl Detail {
         // last rebuild.
         let old_key = row_key(&self.rows, self.cursor, &self.old_paths);
         let old_cursor = self.cursor;
+        let old_anchor = self.anchor.map(|a| {
+            let key = row_key(&self.rows, a, &self.old_paths);
+            (a, key, self.rows.get(a).cloned())
+        });
         self.rows.clear();
         self.meta.clear();
 
@@ -386,15 +390,18 @@ impl Detail {
         {
             pos = find(&RowKey::File(*s, p.clone()), &self.rows);
         }
+        // The other end of the line selection has to stay on its row too,
+        // or the selection would cover lines the user didn't pick. If that
+        // row is gone, drop the selection.
+        self.anchor = match old_anchor {
+            Some((a, RowKey::Other, row)) => Some(a).filter(|&a| self.rows.get(a) == row.as_ref()),
+            Some((_, key, _)) => find(&key, &self.rows),
+            None => None,
+        };
         self.old_paths = paths;
         self.cursor = pos
             .unwrap_or(old_cursor)
             .min(self.rows.len().saturating_sub(1));
-        if let Some(a) = self.anchor
-            && a >= self.rows.len()
-        {
-            self.anchor = None;
-        }
     }
 
     fn build_meta(
