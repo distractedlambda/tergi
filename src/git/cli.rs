@@ -77,17 +77,10 @@ impl Git {
             .env("GIT_EDITOR", "true")
             .args(["-c", "color.ui=false", "-c", "core.quotepath=false"])
             .stdin(Stdio::null());
-        // These change how git reads every pathspec. With the first one,
-        // git takes the `:(literal)` prefix from `ops::pathspec` as part of
-        // the file name. With the others, a path could match other files.
-        for var in [
-            "GIT_LITERAL_PATHSPECS",
-            "GIT_GLOB_PATHSPECS",
-            "GIT_NOGLOB_PATHSPECS",
-            "GIT_ICASE_PATHSPECS",
-        ] {
-            cmd.env_remove(var);
-        }
+        // With this set, `foo` would also match `Foo`, and no pathspec
+        // magic can turn that off for one path. The other settings of this
+        // kind work together with `ops::pathspec`.
+        cmd.env_remove("GIT_ICASE_PATHSPECS");
         cmd
     }
 

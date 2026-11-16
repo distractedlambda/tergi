@@ -36,16 +36,18 @@ written. That means the history walk and commit diffs.
 - `-c color.ui=false -c core.quotepath=false`, so output has no color
   codes and paths with unusual characters aren't escaped.
 
-It also removes the `GIT_*_PATHSPECS` variables from the environment.
-They change how git reads every path we pass, and `GIT_LITERAL_PATHSPECS`
-would make git take the `:(literal)` prefix from `ops::pathspec` as part
-of the file name.
+It also removes `GIT_ICASE_PATHSPECS` from the environment. With it,
+a path like `foo` would also match `Foo`, and git has no way to turn
+that off for a single path.
 
 Arguments go straight to git, not through a shell, so they need no shell
 quoting. They still need care on git's side:
 
-- Paths go after `--`. `ops::pathspec` adds `:(literal)` to paths that
-  git would otherwise read as a pattern or as special syntax.
+- Paths go after `--`, and `ops::pathspec` adds `:(literal)` to each
+  one. Otherwise git would read `[ab].txt` as a pattern that also
+  matches `a.txt`. If the user has set `GIT_LITERAL_PATHSPECS`, git
+  already reads paths literally and would take the prefix as part of
+  the name, so `ops::pathspec` leaves it off.
 - Ref names and revisions go after `--end-of-options`. A ref name can
   start with a dash, and a remote can send us such a tag. Without it,
   git would read a tag named `-f` or a branch named `--exec=cmd` as an

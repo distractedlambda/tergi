@@ -63,14 +63,39 @@ pub async fn apply_lines(
 }
 
 /// Git reads paths on the command line as patterns, so `[ab].txt` also
-/// matches `a.txt`, and a leading colon starts special syntax. Mark such
-/// paths as literal so a command only touches the file we mean.
+/// matches `a.txt`, and a leading colon starts special syntax. Mark every
+/// path as literal so a command only touches the file we mean.
+///
+/// When the user has set `GIT_LITERAL_PATHSPECS`, git already reads every
+/// path literally, and it would take the prefix as part of the file name.
+/// Git children get our environment, so we can check it here.
 pub fn pathspec(path: &str) -> String {
-    if path.starts_with(':') || path.contains(['*', '?', '[', '\\']) {
-        format!(":(literal){path}")
-    } else {
+    pathspec_with(
+        path,
+        env_true(std::env::var_os("GIT_LITERAL_PATHSPECS").as_deref()),
+    )
+}
+
+fn pathspec_with(path: &str, literal: bool) -> String {
+    if literal {
         path.to_string()
+    } else {
+        format!(":(literal){path}")
     }
+}
+
+/// Whether git reads this value of a boolean environment variable as true.
+/// Git also accepts numbers with a unit, such as `1k`. We read those as
+/// false. A path then keeps its prefix, so the command fails instead of
+/// matching other files.
+fn env_true(value: Option<&std::ffi::OsStr>) -> bool {
+    let Some(v) = value.and_then(std::ffi::OsStr::to_str) else {
+        return false;
+    };
+    ["true", "yes", "on"]
+        .iter()
+        .any(|t| v.eq_ignore_ascii_case(t))
+        || v.parse::<i64>().is_ok_and(|n| n != 0)
 }
 
 /// Run a git command on a list of paths.
@@ -375,4 +400,24 @@ pub async fn is_ancestor(git: &Git, ancestor: &str, descendant: &str) -> bool {
     ])
     .await
     .is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+
+    use super::*;
+
+    #[test]
+    fn literal_pathspecs_setting() {
+        for v in ["1", "true", "YES", "on", "2", "-1"] {
+            assert!(env_true(Some(OsStr::new(v))), "{v}");
+        }
+        for v in ["", "0", "false", "no", "off", "1k", "junk"] {
+            assert!(!env_true(Some(OsStr::new(v))), "{v}");
+        }
+        assert!(!env_true(None));
+        assert_eq!(pathspec_with("a*", false), ":(literal)a*");
+        assert_eq!(pathspec_with("a*", true), "a*");
+    }
 }
