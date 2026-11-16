@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 50fa457aeb0e17fdfec9394a454013451f9efe64328dfc722b270753b3a19221 # shrinks to case = Case { names: ["a"], files: [Versions { head: Some(Text { text: "", exec: true }), index: Some(Binary([0])), work: Some(Binary([0])) }], context: 0, stage: false, whole: [false] }
+cc 3c6ade98ef9064ca4e419a227c8e9bdf51d97a13ac40853238f08c3b65f2e3ad # shrinks to case = Case { names: ["a"], files: [Versions { head: None, index: Some(Text { text: "", exec: false }), work: Some(Text { text: "", exec: true }) }], context: 0, stage: false, whole: [false] }

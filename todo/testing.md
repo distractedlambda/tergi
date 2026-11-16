@@ -8,25 +8,9 @@ width (`ui/text.rs`), the text area (`ui/textarea.rs`), word marks
 path quoting (`git/diff.rs`), status parsing (`git/status.rs`), dates
 and fuzzy matching (`util.rs`), staging, unstaging and discarding,
 both in a single step and in sequences of steps over several files
-(`tests/patch_props.rs`), and rewriting history through the planner
-(`tests/rebase_props.rs`).
-
-## Odd file names with the real git
-
-The current path tests only read quoting that the tests produce
-themselves. Run real git on random names instead. Use spaces, `"`, `\`,
-tabs, newlines, ` b/` and `->` inside names, a leading `-`, trailing
-spaces, and non-ASCII text. Add, edit, delete and rename files, change
-modes, and include binary files and symlinks. Then check that:
-
-- every file in `Workdir` has the path that `git status -z` reports,
-- each file's `FileTexts` matches the real blob,
-- staging one line in each file works,
-- the paths in `commit::load` match `git diff-tree -z`.
-
-The second check matters because `read_blobs` in `git/workdir.rs`
-skips names that contain a newline. If that skipping goes wrong, the
-files after such a name get the wrong text.
+(`tests/patch_props.rs`), rewriting history through the planner
+(`tests/rebase_props.rs`), and odd file names with the real git
+(`tests/path_props.rs`).
 
 ## Commit diffs against git
 

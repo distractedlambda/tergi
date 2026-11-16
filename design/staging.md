@@ -237,6 +237,13 @@ puts the cursor back on the same file and hunk by path (see
   them with `PROPTEST_CASES=5000` after changing `patch.rs`, `ops.rs` or
   `workdir.rs`. Their saved failures are in
   `tests/patch_props.proptest-regressions`.
+- `tests/path_props.rs` makes files with odd names, such as names with
+  spaces, quotes, tabs, newlines or ` b/` in them. It gives each file
+  random versions in HEAD, the index and the working tree, including
+  binary files, symlinks and executables. Then it checks the paths,
+  modes and texts in `Workdir` against git's `-z` output, stages or
+  unstages a line or all lines of each file, and checks the paths that
+  `commit::load` gives for a commit.
 - `tests/ops.rs` covers pattern-like paths, modes of untracked
   executables and symlinks, taking a side when one side deleted the
   file, and unstaging before the first commit.
