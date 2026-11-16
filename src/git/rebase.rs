@@ -184,11 +184,11 @@ pub fn build_todo(plan: &Plan, dir: &Path) -> Result<String> {
                         "Can't rewrite history in a repository whose path contains a line break."
                     );
                 }
+                let quoted = shell_quote(&file.to_string_lossy())?;
                 std::fs::write(&file, msg).context("could not write message file")?;
                 todo.push_str(&format!("{verb} {id} {summary}\n"));
                 todo.push_str(&format!(
-                    "exec git commit --amend --allow-empty --no-verify --cleanup=whitespace -F {}\n",
-                    shell_quote(&file.to_string_lossy())
+                    "exec git commit --amend --allow-empty --no-verify --cleanup=whitespace -F {quoted}\n"
                 ));
             }
         }
@@ -234,8 +234,8 @@ pub async fn run(git: &Git, plan: &Plan, exe: &Path) -> Result<Outcome> {
         .context("could not write todo")?;
     let editor = format!(
         "{} __seq-editor {}",
-        shell_quote(&exe.to_string_lossy()),
-        shell_quote(&todo_file.to_string_lossy())
+        shell_quote(&exe.to_string_lossy())?,
+        shell_quote(&todo_file.to_string_lossy())?
     );
     let base = plan.base.map(|b| b.to_string());
     let mut args = vec!["rebase", "-i", "--autostash"];

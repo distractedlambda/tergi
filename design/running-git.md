@@ -156,8 +156,9 @@ works. The app suspends while it runs (see `background-work.md`).
 - `force_push_only_pushes_the_branch_it_asked_about` in `tests/ui.rs`
   checks that a force push confirmed for one branch doesn't push another
   one that was checked out in the meantime.
-- `src/git/cli.rs` has unit tests for shell quoting and for cleaning up
-  progress output.
+- `src/git/cli.rs` has unit tests for cleaning up progress output, and
+  for shell quoting. The quoting test runs the quoted words through `sh`
+  and `bash --posix` and checks that they come back unchanged.
 
 ## Known gaps
 

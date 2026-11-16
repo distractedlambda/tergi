@@ -279,37 +279,65 @@ fn clean_progress(s: &str) -> String {
 
 /// Quote arguments for display in the command log.
 pub fn shell_join(args: &[&str]) -> String {
-    args.iter()
-        .map(|a| shell_quote(a))
-        .collect::<Vec<_>>()
-        .join(" ")
+    // Only a NUL byte makes this fail, and git can't be run with one.
+    shlex::try_join(args.iter().copied()).unwrap_or_else(|_| args.join(" "))
 }
 
-/// Quote a word for `sh`. Braces and `~` are quoted too, because bash
-/// expands `{a,b}` even in POSIX mode, which is how macOS runs `/bin/sh`.
-pub fn shell_quote(s: &str) -> String {
-    if !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_./=:@%+,^".contains(c))
-    {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', r"'\''"))
-    }
+/// Quote a word for `sh`. Fails if the word holds a NUL byte, which no
+/// shell can handle.
+pub fn shell_quote(s: &str) -> Result<String> {
+    Ok(shlex::try_quote(s)?.into_owned())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Check that `sh` turns each quoted word back into the original. On
+    /// macOS `/bin/sh` is bash, so try that too where there is one.
     #[test]
-    fn quoting() {
-        assert_eq!(shell_quote("abc"), "abc");
-        assert_eq!(shell_quote("a b"), "'a b'");
-        assert_eq!(shell_quote("it's"), r"'it'\''s'");
-        assert_eq!(shell_quote(""), "''");
-        assert_eq!(shell_quote("/a/{b,c}"), "'/a/{b,c}'");
-        assert_eq!(shell_quote("~x"), "'~x'");
+    fn quoting_survives_the_shell() {
+        let words = [
+            "abc",
+            "",
+            "a b",
+            "it's",
+            "/a/{b,c}",
+            "~x",
+            "x=~",
+            "$(touch nope)",
+            "`x`",
+            "a\nb",
+            "line\nbreak",
+            "tab\tx",
+            "\"q\"",
+            "!^#*?[a]",
+            "caf\u{e9}",
+        ];
+        let script: String = words
+            .iter()
+            .map(|w| format!("printf '%s\\0' {}\n", shell_quote(w).expect("quote")))
+            .collect();
+        let mut expected: Vec<u8> = Vec::new();
+        for w in words {
+            expected.extend(w.as_bytes());
+            expected.push(0);
+        }
+        for shell in [&["sh"][..], &["bash", "--posix"]] {
+            let Ok(out) = std::process::Command::new(shell[0])
+                .args(&shell[1..])
+                .args(["-c", &script])
+                .output()
+            else {
+                continue;
+            };
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&expected),
+                "{shell:?}"
+            );
+        }
+        assert!(shell_quote("a\0b").is_err());
     }
 
     #[test]

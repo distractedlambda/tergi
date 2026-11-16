@@ -3102,6 +3102,7 @@ dependencies = [
  "proptest",
  "ratatui",
  "serde",
+ "shlex",
  "signal-hook 0.4.6",
  "syntect",
  "tempfile",
