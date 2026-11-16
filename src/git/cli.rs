@@ -292,10 +292,12 @@ pub fn shell_join(args: &[&str]) -> String {
         .join(" ")
 }
 
+/// Quote a word for `sh`. Braces and `~` are quoted too, because bash
+/// expands `{a,b}` even in POSIX mode, which is how macOS runs `/bin/sh`.
 pub fn shell_quote(s: &str) -> String {
     if !s.is_empty()
         && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_./=:@%+,^~{}".contains(c))
+            .all(|c| c.is_ascii_alphanumeric() || "-_./=:@%+,^".contains(c))
     {
         s.to_string()
     } else {
@@ -313,6 +315,8 @@ mod tests {
         assert_eq!(shell_quote("a b"), "'a b'");
         assert_eq!(shell_quote("it's"), r"'it'\''s'");
         assert_eq!(shell_quote(""), "''");
+        assert_eq!(shell_quote("/a/{b,c}"), "'/a/{b,c}'");
+        assert_eq!(shell_quote("~x"), "'~x'");
     }
 
     #[test]

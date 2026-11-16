@@ -177,6 +177,13 @@ pub fn build_todo(plan: &Plan, dir: &Path) -> Result<String> {
                     "fixup"
                 };
                 let file = dir.join(format!("msg-{i}"));
+                // Each todo line ends at a newline, and quoting can't
+                // hide one from git.
+                if file.to_string_lossy().contains('\n') {
+                    bail!(
+                        "Can't rewrite history in a repository whose path contains a line break."
+                    );
+                }
                 std::fs::write(&file, msg).context("could not write message file")?;
                 todo.push_str(&format!("{verb} {id} {summary}\n"));
                 todo.push_str(&format!(

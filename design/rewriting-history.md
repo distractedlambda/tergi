@@ -88,6 +88,12 @@ writes its own todo list and runs that command with the list's path
 added. `main` sees `__seq-editor` before it parses any arguments, and
 calls `seq_editor_main`, which replaces git's list with ours.
 
+Git runs the editor and the `exec` lines with `sh -c`, so `shell_quote`
+quotes the paths in both. It quotes braces too, because bash expands
+`{a,b}` even when it runs as `/bin/sh`, as it does on macOS. A todo line
+can't hold a line break, so `build_todo` refuses when the path of the
+message files has one.
+
 Before it does, it checks that both lists name the same commits. Git's
 list uses short ids, so it matches them by prefix. If they differ, the
 branch moved after tergi made the plan. Then the editor fails, git
