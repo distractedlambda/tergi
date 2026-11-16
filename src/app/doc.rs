@@ -352,7 +352,9 @@ impl Detail {
 
         // Put the cursor back where it was.
         let find = |key: &RowKey, rows: &[Row]| -> Option<usize> {
-            (0..rows.len()).find(|&i| row_key(rows, i, &paths) == *key)
+            (0..rows.len()).find(|&i| {
+                row_key(rows, i, &paths) == *key || left_key(rows, i, &paths).as_ref() == Some(key)
+            })
         };
         // Blank and placeholder rows all share one key, so looking one up
         // would just find the first blank row.
@@ -705,14 +707,16 @@ impl Detail {
     }
 }
 
+fn path_at(paths: &HashMap<Section, Vec<String>>, sec: Section, file: usize) -> String {
+    paths
+        .get(&sec)
+        .and_then(|v| v.get(file))
+        .cloned()
+        .unwrap_or_default()
+}
+
 fn row_key(rows: &[Row], i: usize, paths: &HashMap<Section, Vec<String>>) -> RowKey {
-    let path = |sec: Section, file: usize| {
-        paths
-            .get(&sec)
-            .and_then(|v| v.get(file))
-            .cloned()
-            .unwrap_or_default()
-    };
+    let path = |sec: Section, file: usize| path_at(paths, sec, file);
     match rows.get(i) {
         Some(Row::Meta(m)) => RowKey::Meta(*m),
         Some(Row::Section(s)) => RowKey::Section(*s),
@@ -733,6 +737,22 @@ fn row_key(rows: &[Row], i: usize, paths: &HashMap<Section, Vec<String>>) -> Row
             right,
         }) => RowKey::Line(*sec, path(*sec, *file), *hunk, right.or(*left).unwrap_or(0)),
         _ => RowKey::Other,
+    }
+}
+
+/// A row of the side-by-side view can show two lines, and `row_key` names
+/// the one on the right. This names the one on the left, so that a removed
+/// line can still be found after switching from the unified view.
+fn left_key(rows: &[Row], i: usize, paths: &HashMap<Section, Vec<String>>) -> Option<RowKey> {
+    match rows.get(i) {
+        Some(Row::Split {
+            sec,
+            file,
+            hunk,
+            left: Some(l),
+            right: Some(_),
+        }) => Some(RowKey::Line(*sec, path_at(paths, *sec, *file), *hunk, *l)),
+        _ => None,
     }
 }
 
