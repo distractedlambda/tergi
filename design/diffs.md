@@ -186,7 +186,10 @@ and the new side is on disk. For a staged file, the old side is in HEAD
 and the new side is in the index. `Workdir::load` reads the index and
 HEAD versions with `read_blobs`, which runs `git cat-file` twice: once
 with `--batch-check` to skip anything over `MAX_BLOB`, and once with
-`--batch` to read the rest.
+`--batch` to read the rest. It asks for blobs by the ids in
+the diff's `index` lines, which `--full-index` makes complete. Asking by
+path wouldn't work for every name. `git cat-file` reads one name per
+line, and a path like `1:x` names a stage of the index.
 
 The syntax is chosen by file name, then extension, then the first line,
 such as a `#!` line. Files that come out as plain text aren't

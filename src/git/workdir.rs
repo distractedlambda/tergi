@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use gix::ObjectId;
 
 use super::cli::{Git, RunOpts};
 use super::commit::{FileTexts, MAX_BLOB, diff_texts, is_binary};
@@ -33,7 +34,14 @@ impl Workdir {
         let u = format!("-U{context}");
         let unstaged_diff = if status.unstaged().next().is_some() {
             let out = git
-                .read(&["diff", "--no-ext-diff", "--no-color", "--no-renames", &u])
+                .read(&[
+                    "diff",
+                    "--no-ext-diff",
+                    "--no-color",
+                    "--no-renames",
+                    "--full-index",
+                    &u,
+                ])
                 .await?;
             Some(out.stdout)
         } else {
@@ -46,6 +54,7 @@ impl Workdir {
                 "--no-ext-diff",
                 "--no-color",
                 "--no-renames",
+                "--full-index",
                 &u,
             ];
             if status.head_oid.is_none() {
@@ -125,20 +134,18 @@ impl Workdir {
 
         // The old side of a staged file is in HEAD, and its new side is in
         // the index. The index also has the old side of an unstaged file.
-        let blob = |f: &FileDiff, path: &Option<String>, rev: &str| {
-            path.as_ref()
-                .filter(|_| !f.binary)
-                .map(|p| format!("{rev}:{p}"))
-        };
-        let mut names = Vec::new();
+        // `--full-index` gives us their ids, so we never have to name a
+        // blob by its path.
+        let blob = |f: &FileDiff, id: Option<ObjectId>| id.filter(|id| !f.binary && !id.is_null());
+        let mut ids = Vec::new();
         for f in &wd.staged {
-            names.push(blob(f, &f.old_path, "HEAD"));
-            names.push(blob(f, &f.new_path, ""));
+            ids.push(blob(f, f.old_id));
+            ids.push(blob(f, f.new_id));
         }
         for f in &wd.unstaged {
-            names.push(blob(f, &f.old_path, ""));
+            ids.push(blob(f, f.old_id));
         }
-        let mut blobs = read_blobs(git, &names).await.into_iter();
+        let mut blobs = read_blobs(git, &ids).await.into_iter();
         for _ in &wd.staged {
             let old = blobs.next().flatten();
             let new = blobs.next().flatten();
@@ -170,18 +177,14 @@ async fn read_text(path: &std::path::Path) -> Option<Arc<str>> {
     Some(String::from_utf8_lossy(&data).into())
 }
 
-/// Read the text of each named blob, such as `HEAD:<path>` or `:<path>`
-/// for the index. Names that don't resolve to a blob, and blobs that are
-/// binary or over `MAX_BLOB`, give `None`. If git fails, every name does.
-async fn read_blobs(git: &Git, names: &[Option<String>]) -> Vec<Option<Arc<str>>> {
-    let mut texts = vec![None; names.len()];
-    // `git cat-file` reads one name per line, so a path with a newline in
-    // it can't be asked for.
-    let asked: Vec<(usize, &str)> = names
+/// Read the text of each blob. Ids that aren't blobs, and blobs that are
+/// binary or over `MAX_BLOB`, give `None`. If git fails, every id does.
+async fn read_blobs(git: &Git, ids: &[Option<ObjectId>]) -> Vec<Option<Arc<str>>> {
+    let mut texts = vec![None; ids.len()];
+    let asked: Vec<(usize, String)> = ids
         .iter()
         .enumerate()
-        .filter_map(|(i, n)| Some((i, n.as_deref()?)))
-        .filter(|(_, n)| !n.contains('\n'))
+        .filter_map(|(i, id)| Some((i, id.as_ref()?.to_string())))
         .collect();
     if asked.is_empty() {
         return texts;
@@ -198,7 +201,7 @@ async fn read_blobs(git: &Git, names: &[Option<String>]) -> Vec<Option<Arc<str>>
         }
     };
 
-    // First find out what each name is and how big it is, so we don't read
+    // First find out what each id is and how big it is, so we don't read
     // large blobs only to throw them away.
     let Ok(out) = git
         .read_opts(
@@ -206,7 +209,7 @@ async fn read_blobs(git: &Git, names: &[Option<String>]) -> Vec<Option<Arc<str>>
                 "cat-file",
                 "--batch-check=%(objectname) %(objecttype) %(objectsize)",
             ],
-            &lines(&mut asked.iter().map(|(_, n)| *n)),
+            &lines(&mut asked.iter().map(|(_, id)| id.as_str())),
         )
         .await
     else {
@@ -215,7 +218,7 @@ async fn read_blobs(git: &Git, names: &[Option<String>]) -> Vec<Option<Arc<str>>
     let info = String::from_utf8_lossy(&out.stdout);
     let mut wanted: Vec<(usize, String)> = Vec::new();
     for ((i, _), line) in asked.iter().zip(info.lines()) {
-        // A name that doesn't resolve gives "<name> missing" instead.
+        // An id that isn't there gives "<id> missing" instead.
         let fields: Vec<&str> = line.split(' ').collect();
         if let [id, "blob", size] = fields[..]
             && size.parse().is_ok_and(|n: usize| n <= MAX_BLOB)

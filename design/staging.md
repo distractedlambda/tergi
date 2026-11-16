@@ -27,7 +27,8 @@ The app's side is `Unit` and `apply_unit` in `src/app/cmd.rs`, and
 5. It reads the full text of both sides of each staged and unstaged
    file, for syntax highlighting (see `diffs.md`).
 
-Both diffs use `--no-ext-diff`, `--no-color` and `--no-renames`.
+Both diffs use `--no-ext-diff`, `--no-color`, `--no-renames` and
+`--full-index`. The full blob ids are for reading the texts in step 5.
 `Git` also sets `color.ui=false` and `core.quotepath=false` on every
 command. Renames are off because a patch for line staging must name one
 path. A staged rename therefore shows up as a deleted file and an added
