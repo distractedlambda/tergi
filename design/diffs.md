@@ -227,7 +227,12 @@ Selected lines get the selection background instead.
   that quoting round-trips, and that `diff --git` paths split correctly.
 - `src/git/commit.rs` checks that `diff_texts` matches git's output
   style, and has the property test `hunks_turn_old_into_new`.
-- `tests/ops.rs` has `a_stash_shows_its_untracked_files`.
+- `tests/commit_props.rs` builds random pairs of trees and stashes, and
+  checks what `commit::load` gives against `git diff-tree`. It checks
+  the files, renames, modes, binary flags and texts, and that the hunks
+  turn the old text into the new text.
+- `tests/ops.rs` has `a_stash_shows_its_untracked_files` and
+  `an_empty_file_can_be_renamed`.
 - `tests/staging.rs` checks the texts that `Workdir::load` reads for
   staged and unstaged files.
 - `src/git/words.rs` has property tests that the words cover the whole

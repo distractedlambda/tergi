@@ -9,18 +9,9 @@ path quoting (`git/diff.rs`), status parsing (`git/status.rs`), dates
 and fuzzy matching (`util.rs`), staging, unstaging and discarding,
 both in a single step and in sequences of steps over several files
 (`tests/patch_props.rs`), rewriting history through the planner
-(`tests/rebase_props.rs`), and odd file names with the real git
-(`tests/path_props.rs`).
-
-## Commit diffs against git
-
-`commit::load` diffs trees with gix, not with git. Build random pairs
-of trees and compare its file list, statuses and binary flags with
-`git diff-tree -r -z`. Include files that turn into directories and
-back, symlinks, empty files, binary files, and stashes with untracked
-files. Then check that applying each file's hunks to the parent blob
-gives the child blob. The existing test in `git/commit.rs` only checks
-this for one pair of texts at a time.
+(`tests/rebase_props.rs`), odd file names with the real git
+(`tests/path_props.rs`), and commit diffs against `git diff-tree`
+(`tests/commit_props.rs`).
 
 ## Rows of the detail pane
 
