@@ -39,6 +39,12 @@ text. We do this in process rather than running `git show`, because
 moving through the history loads a commit for every row the user
 passes, and that has to be fast.
 
+Renames follow `diff.renames` and `diff.renameLimit`, which gix reads
+from the config the way git does. One setting differs. Gix doesn't pair
+up empty files by default, but git does, so `rewrites` turns that on.
+Git and gix measure how similar two files are in different ways, so they
+sometimes disagree about a rename between files that both changed.
+
 `diff_texts` splits both sides into lines, runs imara-diff's histogram
 algorithm with its line post-processing, and groups the changes into
 hunks with `context` lines around them. Two changes share a hunk when

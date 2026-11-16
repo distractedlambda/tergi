@@ -103,8 +103,9 @@ pub fn diff_trees(
     line_limit: usize,
 ) -> Result<(Vec<FileDiff>, Vec<FileTexts>)> {
     use gix::object::tree::diff::ChangeDetached as C;
+    let options = gix::diff::Options::default().with_rewrites(rewrites(repo)?);
     let changes = repo
-        .diff_tree_to_tree(Some(old_tree), Some(new_tree), None)
+        .diff_tree_to_tree(Some(old_tree), Some(new_tree), options)
         .context("tree diff failed")?;
     let mut files = Vec::new();
     let mut texts = Vec::new();
@@ -244,6 +245,24 @@ pub fn diff_trees(
         files.push(f);
     }
     Ok(sort_by_path(files, texts))
+}
+
+/// How to find renames and copies, from `diff.renames` and
+/// `diff.renameLimit`, the way gix reads them. Unlike gix, git also pairs
+/// up empty files, so we do too.
+fn rewrites(repo: &gix::Repository) -> Result<Option<gix::diff::Rewrites>> {
+    let config = repo.config_snapshot();
+    let (rewrites, configured) =
+        gix::diff::new_rewrites(config.plumbing(), true).context("bad rename config")?;
+    let rewrites = match rewrites {
+        Some(r) => r,
+        None if configured => return Ok(None),
+        None => gix::diff::Rewrites::default(),
+    };
+    Ok(Some(gix::diff::Rewrites {
+        track_empty: true,
+        ..rewrites
+    }))
 }
 
 /// Sort the files by path, keeping `texts` in the same order as `files`.

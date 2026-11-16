@@ -223,3 +223,33 @@ fn a_stash_shows_its_untracked_files() {
         [('M', "a.txt".to_string()), ('A', "b.txt".to_string())]
     );
 }
+
+/// Git pairs up empty files as renames, but gix leaves them out unless
+/// asked.
+#[test]
+fn an_empty_file_can_be_renamed() {
+    let s = Scratch::new();
+    s.write("a.txt", "");
+    s.commit_all("init");
+    s.sh(&["mv", "a.txt", "b.txt"]);
+    let head = s.commit_all("move");
+    let repo = gix::open(s.path()).expect("open");
+    let id = ObjectId::from_hex(head.as_bytes()).expect("id");
+    let c = commit::load(&repo, id, 3, usize::MAX).expect("load");
+    let files: Vec<_> = c
+        .files
+        .iter()
+        .map(|f| (f.status.letter(), f.old_path.clone(), f.new_path.clone()))
+        .collect();
+    assert_eq!(
+        files,
+        [('R', Some("a.txt".to_string()), Some("b.txt".to_string()))]
+    );
+
+    // Turning renames off in the config still works.
+    s.sh(&["config", "diff.renames", "false"]);
+    let repo = gix::open(s.path()).expect("open");
+    let c = commit::load(&repo, id, 3, usize::MAX).expect("load");
+    let letters: Vec<char> = c.files.iter().map(|f| f.status.letter()).collect();
+    assert_eq!(letters, ['D', 'A']);
+}
