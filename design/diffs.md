@@ -49,9 +49,13 @@ sometimes disagree about a rename between files that both changed.
 algorithm with its line post-processing, and groups the changes into
 hunks with `context` lines around them. Two changes share a hunk when
 the gap between them is at most twice the context, which is what git
-does. The hunks have the same ranges and line numbers that `git diff`
-would print. A property test, `hunks_turn_old_into_new`, checks that
-applying the hunks to the old text gives the new text.
+does. Hunk headers and line numbers follow the same rules as in
+`git diff`. The lines that count as changed can still differ from git's.
+Git uses Myers by default, and even git's histogram algorithm sometimes
+picks other lines than imara-diff's. For example, git turns `e c é`
+into `é e é` by replacing the first two lines, while imara-diff adds one
+line and removes another. A property test, `hunks_turn_old_into_new`,
+checks that applying the hunks to the old text gives the new text.
 
 Some files aren't diffed:
 
