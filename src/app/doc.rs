@@ -137,6 +137,7 @@ enum RowKey {
     Meta(usize),
     Section(Section),
     File(Section, String),
+    Notice(Section, String),
     Hunk(Section, String, usize),
     Line(Section, String, usize, usize),
     Other,
@@ -376,7 +377,10 @@ impl Detail {
             }
         }
         if pos.is_none()
-            && let RowKey::Line(s, p, ..) | RowKey::Hunk(s, p, _) | RowKey::File(s, p) = &old_key
+            && let RowKey::Line(s, p, ..)
+            | RowKey::Hunk(s, p, _)
+            | RowKey::Notice(s, p)
+            | RowKey::File(s, p) = &old_key
         {
             pos = find(&RowKey::File(*s, p.clone()), &self.rows);
         }
@@ -712,9 +716,8 @@ fn row_key(rows: &[Row], i: usize, paths: &HashMap<Section, Vec<String>>) -> Row
     match rows.get(i) {
         Some(Row::Meta(m)) => RowKey::Meta(*m),
         Some(Row::Section(s)) => RowKey::Section(*s),
-        Some(Row::File { sec, file }) | Some(Row::Notice { sec, file, .. }) => {
-            RowKey::File(*sec, path(*sec, *file))
-        }
+        Some(Row::File { sec, file }) => RowKey::File(*sec, path(*sec, *file)),
+        Some(Row::Notice { sec, file, .. }) => RowKey::Notice(*sec, path(*sec, *file)),
         Some(Row::Hunk { sec, file, hunk }) => RowKey::Hunk(*sec, path(*sec, *file), *hunk),
         Some(Row::Line {
             sec,
