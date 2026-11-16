@@ -324,8 +324,18 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
     Ok(())
 }
 
+/// Run `cases` cases, unless `PROPTEST_CASES` asks for some other number.
+/// `ProptestConfig::with_cases` would ignore the variable.
+fn config(cases: u32) -> ProptestConfig {
+    let mut config = ProptestConfig::default();
+    if std::env::var_os("PROPTEST_CASES").is_none() {
+        config.cases = cases;
+    }
+    config
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(200))]
+    #![proptest_config(config(200))]
 
     #[test]
     fn applying_selected_lines(case in case()) {
