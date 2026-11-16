@@ -154,7 +154,12 @@ pub fn diff_trees(
                 if entry_mode.is_tree() && previous_entry_mode.is_tree() {
                     continue;
                 }
-                let status = if previous_entry_mode.kind() == entry_mode.kind() {
+                // Git treats a file that only gains or loses its executable
+                // bit as modified, but gix gives the two modes different
+                // kinds.
+                let same_type = (previous_entry_mode.is_blob() && entry_mode.is_blob())
+                    || previous_entry_mode.kind() == entry_mode.kind();
+                let status = if same_type {
                     FileStatus::Modified
                 } else {
                     FileStatus::TypeChange
