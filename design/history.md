@@ -150,6 +150,13 @@ off. Then they are the day, in the commit's own time zone.
   exactly when a newer commit has it as a parent, that horizontal lines
   join up, and that every lane going down carries on in the next row in
   the same color.
+- `tests/log_props.rs` builds random histories with merges, several
+  roots and dates out of order. It points branches, remote branches and
+  tags at them, including tags of tags and tags of trees and blobs. Then
+  it checks that `Refs::load` and `log::walk` find the same commits as
+  `git rev-list --all`, with the right parents, and children before
+  their parents. Some cases have a commit-graph file that covers all of
+  the history or only part of it.
 - `tests/ui.rs` has `selection_follows_its_commit_through_a_reload` and
   `first_load_starts_at_the_top`.
 

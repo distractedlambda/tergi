@@ -6,21 +6,15 @@ These already have property tests: graph lanes (`git/graph.rs`), text
 width (`ui/text.rs`), the text area (`ui/textarea.rs`), word marks
 (`git/words.rs`), the imara hunks (`git/commit.rs`), diff parsing and
 path quoting (`git/diff.rs`), status parsing (`git/status.rs`), dates,
-including extreme ones, and fuzzy matching (`util.rs`), staging, unstaging and discarding,
-both in a single step and in sequences of steps over several files
-(`tests/patch_props.rs`), rewriting history through the planner
-(`tests/rebase_props.rs`), odd file names with the real git
-(`tests/path_props.rs`), commit diffs against `git diff-tree`
-(`tests/commit_props.rs`), and the rows of the detail pane
-(`app/doc.rs`).
+including extreme ones, and fuzzy matching (`util.rs`), staging,
+unstaging and discarding, both in a single step and in sequences of
+steps over several files (`tests/patch_props.rs`), rewriting history
+through the planner (`tests/rebase_props.rs`), odd file names with the
+real git (`tests/path_props.rs`), commit diffs against `git diff-tree`
+(`tests/commit_props.rs`), the history walk against `git rev-list`
+(`tests/log_props.rs`), and the rows of the detail pane (`app/doc.rs`).
 
 ## Smaller ones
-
-**The history walk against `git rev-list`.** Make random histories with
-merges, several branches, and tags, including tags that point at trees.
-Check that `log::walk` returns the same commits as
-`git rev-list --all`, that children come before their parents, and
-that the parents match.
 
 **Saving the config.** Start from a random TOML file with comments,
 other keys and tables. Save random changes with `Config::save`. Check
