@@ -295,6 +295,10 @@ mod tests {
 
     /// Check that `sh` turns each quoted word back into the original. On
     /// macOS `/bin/sh` is bash, so try that too where there is one.
+    ///
+    /// If the quoting is broken, the words below run shell builtins only,
+    /// so nothing happens outside the shell. The shell runs in an empty
+    /// directory, so a stray glob or redirect can't touch real files.
     #[test]
     fn quoting_survives_the_shell() {
         let words = [
@@ -305,8 +309,11 @@ mod tests {
             "/a/{b,c}",
             "~x",
             "x=~",
-            "$(touch nope)",
-            "`x`",
+            "$(echo injected)",
+            "`echo injected`",
+            ";echo injected",
+            "|echo injected",
+            ">out",
             "a\nb",
             "line\nbreak",
             "tab\tx",
@@ -323,9 +330,11 @@ mod tests {
             expected.extend(w.as_bytes());
             expected.push(0);
         }
+        let dir = tempfile::tempdir().expect("tempdir");
         for shell in [&["sh"][..], &["bash", "--posix"]] {
             let Ok(out) = std::process::Command::new(shell[0])
                 .args(&shell[1..])
+                .current_dir(dir.path())
                 .args(["-c", &script])
                 .output()
             else {
