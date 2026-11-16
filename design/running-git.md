@@ -36,6 +36,11 @@ written. That means the history walk and commit diffs.
 - `-c color.ui=false -c core.quotepath=false`, so output has no color
   codes and paths with unusual characters aren't escaped.
 
+It also removes the `GIT_*_PATHSPECS` variables from the environment.
+They change how git reads every path we pass, and `GIT_LITERAL_PATHSPECS`
+would make git take the `:(literal)` prefix from `ops::pathspec` as part
+of the file name.
+
 Arguments go straight to git, not through a shell, so they need no shell
 quoting. They still need care on git's side:
 
