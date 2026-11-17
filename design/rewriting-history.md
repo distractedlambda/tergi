@@ -63,6 +63,13 @@ The amend runs with these options:
   as `#42 Fix the crash`, isn't taken for a comment. `ops::commit` uses
   the same setting for the same reason.
 
+The commits that git replays without our help need the same care. When
+the user sets `commit.cleanup`, git cleans up the message of every
+commit it replays, and with `strip` it removes lines like `#42 Fix the
+crash` from commits that only moved. So every rebase that tergi starts
+or continues runs with `-c commit.cleanup=verbatim`, which keeps those
+messages as they are.
+
 `build_todo` refuses plans that git can't finish, through `check`:
 
 - The oldest step is a squash or a fixup. There is nothing before it to
@@ -80,7 +87,7 @@ The amend runs with these options:
 `run` writes the todo list to `.git/tergi/todo` and starts
 
 ```sh
-git rebase -i --autostash <base>
+git -c commit.cleanup=verbatim rebase -i --autostash <base>
 ```
 
 with `GIT_SEQUENCE_EDITOR` set to `tergi __seq-editor <our todo>`. Git

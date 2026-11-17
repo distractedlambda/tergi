@@ -234,6 +234,15 @@ async fn ensure_idle(git: &Git) -> Result<()> {
     bail!("A {what} is in progress. Continue or abort it first.");
 }
 
+/// How every `git rebase` starts. When the user sets `commit.cleanup`, git
+/// cleans up the message of each commit that a rebase replays. With
+/// `strip`, that removes lines such as `#42 Fix the crash`, so a commit
+/// that only moves would lose them. tergi keeps those lines when it
+/// commits, and the messages in a plan are the ones the user saw, so git
+/// should leave them alone. Git passes the setting on to the `exec` lines,
+/// but they name their own cleanup.
+const REBASE: [&str; 3] = ["-c", "commit.cleanup=verbatim", "rebase"];
+
 /// Run the rebase described by `plan`. `exe` is the tergi executable, used
 /// as the sequence editor.
 pub async fn run(git: &Git, plan: &Plan, exe: &Path) -> Result<Outcome> {
@@ -255,7 +264,8 @@ pub async fn run(git: &Git, plan: &Plan, exe: &Path) -> Result<Outcome> {
     ]
     .concat();
     let base = plan.base.map(|b| b.to_string());
-    let mut args = vec!["rebase", "-i", "--autostash"];
+    let mut args = REBASE.to_vec();
+    args.extend(["-i", "--autostash"]);
     match &base {
         Some(b) => args.push(b),
         None => args.push("--root"),
@@ -348,12 +358,14 @@ pub fn seq_editor_main(prepared: &Path, target: &Path) -> Result<()> {
 }
 
 pub async fn continue_rebase(git: &Git) -> Result<Outcome> {
-    let r = git.run(&["rebase", "--continue"]).await.map(|_| ());
+    let r = git.run(&[&REBASE[..], &["--continue"]].concat()).await;
+    let r = r.map(|_| ());
     finish(git, r).await
 }
 
 pub async fn skip_rebase(git: &Git) -> Result<Outcome> {
-    let r = git.run(&["rebase", "--skip"]).await.map(|_| ());
+    let r = git.run(&[&REBASE[..], &["--skip"]].concat()).await;
+    let r = r.map(|_| ());
     finish(git, r).await
 }
 
@@ -366,15 +378,13 @@ pub async fn abort_rebase(git: &Git) -> Result<()> {
 /// Rebase the current branch onto another commit.
 pub async fn rebase_onto(git: &Git, upstream: impl AsRef<[u8]>) -> Result<Outcome> {
     ensure_idle(git).await?;
-    let r = git
-        .run(&[
-            OsStr::new("rebase"),
-            OsStr::new("--autostash"),
-            OsStr::new("--end-of-options"),
-            os_str(upstream.as_ref()),
-        ])
-        .await
-        .map(|_| ());
+    let mut args: Vec<&OsStr> = REBASE.iter().map(OsStr::new).collect();
+    args.extend([
+        OsStr::new("--autostash"),
+        OsStr::new("--end-of-options"),
+        os_str(upstream.as_ref()),
+    ]);
+    let r = git.run(&args).await.map(|_| ());
     finish(git, r).await
 }
 
@@ -390,7 +400,8 @@ pub async fn fixup_staged_into(git: &Git, target: ObjectId) -> Result<Outcome> {
         .await?;
     let fixup = git.read_text(&["rev-parse", "HEAD"]).await?;
     let base = plan.base.map(|b| b.to_string());
-    let mut args = vec!["rebase", "-i", "--autosquash", "--autostash"];
+    let mut args = REBASE.to_vec();
+    args.extend(["-i", "--autosquash", "--autostash"]);
     match &base {
         Some(b) => args.push(b),
         None => args.push("--root"),

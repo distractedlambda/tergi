@@ -277,10 +277,17 @@ fn clean_progress(s: &str) -> String {
 }
 
 /// The git subcommand, for error messages.
+/// The git command that `args` run, for error messages. Settings given
+/// with `-c` come before it.
 fn first_arg(args: &[&OsStr]) -> String {
-    args.first()
-        .map(|a| a.to_string_lossy().into_owned())
-        .unwrap_or_default()
+    let mut args = args.iter();
+    while let Some(a) = args.next() {
+        if *a != "-c" {
+            return a.to_string_lossy().into_owned();
+        }
+        args.next();
+    }
+    String::new()
 }
 
 /// Quote arguments for display in the command log. Bytes that aren't
