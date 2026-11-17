@@ -21,3 +21,21 @@ The cause is in gix-diff 0.70. `Tracker::emit` matches copies by
 `change.id()`, which for a modification is the new blob. We would need
 a fix upstream, or our own copy detection. `tests/commit_props.rs`
 leaves copies out until then.
+
+## Ref names that aren't UTF-8 are read as text
+
+Git allows ref names with bytes that aren't UTF-8, such as a branch
+named `caf\xe9` ("café" in Latin-1). `Refs::load` in `git/refs.rs` reads
+`git for-each-ref` as text, so such a byte turns into U+FFFD. The
+sidebar shows the branch, but every command that names it, such as
+checkout, merge, delete or push, passes the replaced name to git. Git
+then fails because no such ref exists. Two such names can also look
+like one ref.
+
+To see it, run `git branch "$(printf 'caf\xe9')"` and check the branch
+out from the sidebar.
+
+Paths are kept as bytes (see `design/running-git.md`). Ref names would
+need the same: `BString` in `Refs`, `Label` and the commands that carry
+a ref name, and `OsStr` arguments when they go to git. `Status::branch`
+and the rebase state's `head_name` have the same problem.
