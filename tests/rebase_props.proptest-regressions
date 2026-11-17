@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc a53398095605465ed1aa77360384a4d7ff23af9ff736a6ce83c4714f65f397db # shrinks to case = Case { messages: [""], start: 0, moves: [], actions: [(Drop, None)] }
+cc ddc09d60fd22caacb501a4c6ff21d34b36432fbd0e1da5cc5a24736fff83bcc0 # shrinks to case = Case { messages: ["", "#42 Fix the crash"], start: 0, moves: [Row(0, 1), Row(0, 1), Row(0, 1), Row(1, 0), Row(1, 0), Selected(1, true), Row(1, 0)], actions: [(Fixup, None), (Edit, None)], settings: Settings([("commit.cleanup", "strip")]) }

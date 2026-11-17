@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use common::Scratch;
+use common::settings::{Settings, settings};
 use gix::ObjectId;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
@@ -36,6 +37,7 @@ struct Case {
     /// The action and message for each row, newest first, after the moves.
     /// There is one for each commit from `start` on.
     actions: Vec<(PlanAction, Option<String>)>,
+    settings: Settings,
 }
 
 fn message_line() -> impl Strategy<Value = &'static str> {
@@ -94,13 +96,15 @@ fn case() -> impl Strategy<Value = Case> {
                 Just(before),
                 prop::collection::vec(mv, 0..12),
                 prop::collection::vec(row, n),
+                settings(),
             )
         })
-        .prop_map(|(messages, start, moves, actions)| Case {
+        .prop_map(|(messages, start, moves, actions, settings)| Case {
             messages,
             start,
             moves,
             actions,
+            settings,
         })
 }
 
@@ -218,7 +222,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
         .enable_all()
         .build()
         .expect("runtime");
-    let s = Scratch::new();
+    let s = Scratch::with(&case.settings);
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_tergi"));
     let msg_file = s.path().join(".git").join("test-message");
     let mut ids = Vec::new();

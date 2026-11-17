@@ -26,6 +26,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
 
 use common::Scratch;
+use common::settings::{Settings, settings};
 use gix::bstr::{BStr, BString, ByteSlice as _};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
@@ -133,6 +134,7 @@ struct Case {
     context: u32,
     renames: Renames,
     stash: bool,
+    settings: Settings,
 }
 
 /// A few paths, so that the same path often shows up on both sides, and
@@ -224,12 +226,14 @@ fn case() -> impl Strategy<Value = Case> {
         0u32..4,
         prop::sample::select(vec![Renames::Off, Renames::On]),
         prop::bool::weighted(0.3),
+        settings(),
     )
-        .prop_map(|(entries, context, renames, stash)| Case {
+        .prop_map(|(entries, context, renames, stash, settings)| Case {
             entries,
             context,
             renames,
             stash,
+            settings,
         })
 }
 
@@ -652,7 +656,7 @@ fn check_stash(s: &Scratch, case: &Case) -> Result<(), TestCaseError> {
 }
 
 fn check(case: &Case) -> Result<(), TestCaseError> {
-    let s = Scratch::new();
+    let s = Scratch::with(&case.settings);
     s.sh(&["config", "diff.renames", case.renames.config()]);
     if case.stash {
         check_stash(&s, case)

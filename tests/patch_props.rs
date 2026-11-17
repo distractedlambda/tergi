@@ -22,6 +22,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use common::Scratch;
+use common::settings::{Settings, settings};
 use gix::bstr::ByteSlice as _;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
@@ -80,6 +81,7 @@ struct Case {
     context: u32,
     /// Whether each changed line is selected, repeated as needed.
     mask: Vec<bool>,
+    settings: Settings,
 }
 
 fn line() -> impl Strategy<Value = String> {
@@ -131,15 +133,19 @@ fn case() -> impl Strategy<Value = Case> {
         mode,
         0u32..4,
         prop::collection::vec(any::<bool>(), 1..40),
+        settings(),
     )
-        .prop_map(|(old, ops, eol, exists, mode, context, mask)| Case {
-            new: edit(&old, &ops, eol),
-            old,
-            exists,
-            mode,
-            context,
-            mask,
-        })
+        .prop_map(
+            |(old, ops, eol, exists, mode, context, mask, settings)| Case {
+                new: edit(&old, &ops, eol),
+                old,
+                exists,
+                mode,
+                context,
+                mask,
+                settings,
+            },
+        )
 }
 
 /// What the target file should hold after applying the selected lines of
@@ -228,7 +234,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
         .enable_all()
         .build()
         .expect("runtime");
-    let s = Scratch::new();
+    let s = Scratch::with(&case.settings);
     // A HEAD commit, so every case has something to compare with.
     s.write("keep.txt", "keep\n");
     let old = matches!(case.exists, Exists::Both | Exists::OnlyOld).then(|| case.old.text());
@@ -432,6 +438,7 @@ struct Steps {
     files: Vec<Versions>,
     context: u32,
     steps: Vec<Step>,
+    settings: Settings,
 }
 
 fn layer() -> impl Strategy<Value = Layer> {
@@ -473,8 +480,9 @@ fn steps() -> impl Strategy<Value = Steps> {
         prop::collection::vec(versions, 1..=PATHS.len()),
         0u32..4,
         prop::collection::vec(step(), 1..10),
+        settings(),
     )
-        .prop_map(|(born, files, context, steps)| Steps {
+        .prop_map(|(born, files, context, steps, settings)| Steps {
             files: files
                 .into_iter()
                 .map(|(head, in_head, index, work)| {
@@ -487,6 +495,7 @@ fn steps() -> impl Strategy<Value = Steps> {
             born,
             context,
             steps,
+            settings,
         })
 }
 
@@ -798,7 +807,7 @@ fn check_steps(case: &Steps) -> Result<(), TestCaseError> {
         .enable_all()
         .build()
         .expect("runtime");
-    let s = Scratch::new();
+    let s = Scratch::with(&case.settings);
     let n = case.files.len();
     for (p, v) in PATHS.iter().zip(&case.files) {
         put(&s, p, v.head.as_deref());

@@ -204,6 +204,14 @@ works. The app suspends while it runs (see `background-work.md`).
   prompt that aren't UTF-8.
 - `editor_setting_keeps_its_bytes` in `tests/ops.rs` checks that an
   editor setting that isn't UTF-8 comes back as it is.
+- The property tests that use the real git, such as
+  `tests/patch_props.rs` and `tests/rebase_props.rs`, write a random set
+  of settings to each scratch repository's config. The list is in
+  `tests/common/settings.rs`. It holds settings that change what git
+  prints, such as `diff.mnemonicPrefix` and `diff.interHunkContext`, and
+  settings that change what it does, such as `commit.cleanup`. The
+  checks stay the same, because tergi should behave the same under all
+  of them.
 - `ref_names_that_are_not_utf8` in `tests/ops.rs` loads branches, tags
   and remotes whose names aren't UTF-8, and checks out, renames and
   deletes them. `branches_and_remotes_whose_names_are_not_utf8` in

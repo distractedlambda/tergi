@@ -21,6 +21,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use common::Scratch;
+use common::settings::{Settings, settings};
 use gix::ObjectId;
 use proptest::prelude::*;
 use proptest::sample::Index;
@@ -128,6 +129,7 @@ struct Case {
     /// Point `refs/remotes/origin/HEAD` at the first remote branch.
     remote_head: bool,
     graph: CommitGraph,
+    settings: Settings,
 }
 
 fn commit() -> impl Strategy<Value = (usize, [Index; 4], Commit)> {
@@ -194,8 +196,9 @@ fn case() -> impl Strategy<Value = Case> {
         head,
         any::<bool>(),
         graph,
+        settings(),
     )
-        .prop_map(|(raw, long, refs, head, remote_head, graph)| {
+        .prop_map(|(raw, long, refs, head, remote_head, graph, settings)| {
             let mut commits = Vec::new();
             for (k, (count, parents, mut commit)) in raw.into_iter().enumerate() {
                 if k > 0 {
@@ -229,6 +232,7 @@ fn case() -> impl Strategy<Value = Case> {
                 head,
                 remote_head,
                 graph,
+                settings,
             }
         })
 }
@@ -394,7 +398,7 @@ fn id(s: &str) -> ObjectId {
 }
 
 fn check(case: &Case) -> Result<(), TestCaseError> {
-    let s = Scratch::new();
+    let s = Scratch::with(&case.settings);
     let ids = build(&s, case);
     let model: HashMap<ObjectId, &Commit> = ids
         .iter()

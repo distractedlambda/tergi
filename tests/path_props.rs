@@ -26,6 +26,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use common::Scratch;
+use common::settings::{Settings, settings};
 use gix::bstr::{BStr, BString, ByteSlice as _};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
@@ -99,6 +100,7 @@ struct Case {
     /// For each file, whether to apply all of its lines or only the first
     /// changed line. Repeated as needed.
     whole: Vec<bool>,
+    settings: Settings,
 }
 
 /// One component of a path, which can't contain a slash. Git and Unix
@@ -207,8 +209,9 @@ fn case() -> impl Strategy<Value = Case> {
         0u32..4,
         any::<bool>(),
         prop::collection::vec(any::<bool>(), 1..6),
+        settings(),
     )
-        .prop_map(|(files, context, stage, whole)| {
+        .prop_map(|(files, context, stage, whole, settings)| {
             let (names, files) = usable(files).into_iter().unzip();
             Case {
                 names,
@@ -216,6 +219,7 @@ fn case() -> impl Strategy<Value = Case> {
                 context,
                 stage,
                 whole,
+                settings,
             }
         })
 }
@@ -739,7 +743,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
         .enable_all()
         .build()
         .expect("runtime");
-    let s = Scratch::new();
+    let s = Scratch::with(&case.settings);
     s.write("keep.txt", "keep\n");
     let layers: [fn(&Versions) -> Option<&Content>; 3] = [
         |v| v.head.as_ref(),
@@ -766,6 +770,11 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
         .expect("load");
     check_workdir(&s, case, &wd)?;
     check_staging(&rt, &s, case, &wd)?;
+    // Gix finds copies in a different way from git, which `todo/bugs.md`
+    // describes, so the commit is compared without them.
+    if case.settings.get("diff.renames") == Some("copies") {
+        s.sh(&["config", "diff.renames", "true"]);
+    }
     check_commit(&s)
 }
 

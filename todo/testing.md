@@ -13,27 +13,8 @@ through the planner (`tests/rebase_props.rs`), odd file names with the
 real git (`tests/path_props.rs`), commit diffs against `git diff-tree`
 (`tests/commit_props.rs`), the history walk against `git rev-list`
 (`tests/log_props.rs`), and the rows of the detail pane (`app/doc.rs`).
-
-## Random git settings
-
-Everything we run through `git/cli.rs` reads the user's config, and so
-does gix. The tests run with the dev image's config, so they never see
-settings that change git's output. Give each case of the tests that use
-the real git a random set of settings, written to the scratch
-repository's config. Good ones to pick from are `diff.mnemonicPrefix`,
-`diff.noprefix`, `diff.renames`, `diff.algorithm`, `diff.context`,
-`diff.suppressBlankEmpty`, `color.diff = always`, `core.autocrlf`,
-`core.commentChar`, `commit.cleanup`, `commit.verbose`,
-`status.showUntrackedFiles`, `status.relativePaths`,
-`rebase.abbreviateCommands`, `rebase.instructionFormat`,
-`rebase.updateRefs`, `log.showSignature` and `i18n.logOutputEncoding`.
-The checks stay the same, because tergi should behave the same with any
-of them. `diff.mnemonicPrefix` alone already breaks the working
-directory diffs, which `todo/bugs.md` describes.
-
-The easiest start is a helper in `tests/common` that `Scratch` calls,
-so `patch_props`, `path_props`, `commit_props`, `log_props` and
-`rebase_props` all pick it up.
+The tests that use the real git run each case with random git settings
+from `tests/common/settings.rs`.
 
 ## Refs against `git for-each-ref`
 

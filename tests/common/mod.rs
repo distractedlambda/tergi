@@ -2,10 +2,14 @@
 
 #![allow(dead_code)]
 
+pub mod settings;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use tergi::git::cli::Git;
+
+use settings::Settings;
 
 pub struct Scratch {
     pub dir: tempfile::TempDir,
@@ -19,6 +23,15 @@ impl Scratch {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().to_path_buf();
         Scratch::init(dir, root)
+    }
+
+    /// A repository with the given settings in its config.
+    pub fn with(settings: &Settings) -> Scratch {
+        let s = Scratch::new();
+        for (key, value) in &settings.0 {
+            s.sh(&["config", key, value]);
+        }
+        s
     }
 
     /// A repository in a folder of the temporary directory. The name is
