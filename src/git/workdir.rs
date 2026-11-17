@@ -28,6 +28,18 @@ pub struct Workdir {
     pub untracked_texts: Vec<FileTexts>,
 }
 
+/// How every `git diff` we parse starts. The user's config can change what
+/// git prints. `diff.mnemonicPrefix` and `diff.noprefix` change the prefixes
+/// on the paths, which `parse_unified` strips, so we name the usual ones.
+const DIFF: &[&str] = &[
+    "diff",
+    "--no-ext-diff",
+    "--no-color",
+    "--no-renames",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+];
+
 /// Only this many untracked files get their contents read and shown.
 const MAX_UNTRACKED_DIFFS: usize = 200;
 
@@ -36,30 +48,16 @@ impl Workdir {
         let status = Status::load(git).await?;
         let u = format!("-U{context}");
         let unstaged_diff = if status.unstaged().next().is_some() {
-            let out = git
-                .read(&[
-                    "diff",
-                    "--no-ext-diff",
-                    "--no-color",
-                    "--no-renames",
-                    "--full-index",
-                    &u,
-                ])
-                .await?;
+            let mut args = DIFF.to_vec();
+            args.extend(["--full-index", &u]);
+            let out = git.read(&args).await?;
             Some(out.stdout)
         } else {
             None
         };
         let staged_diff = if status.has_staged() {
-            let mut args = vec![
-                "diff",
-                "--cached",
-                "--no-ext-diff",
-                "--no-color",
-                "--no-renames",
-                "--full-index",
-                &u,
-            ];
+            let mut args = DIFF.to_vec();
+            args.extend(["--cached", "--full-index", &u]);
             if status.head_oid.is_none() {
                 // There is no HEAD to compare against yet.
                 args.push("--root");
@@ -384,8 +382,9 @@ pub async fn load_full_diff(
     context: u32,
 ) -> Result<Option<FileDiff>> {
     let u = format!("-U{context}");
-    let mut args: Vec<OsString> = ["diff", "--no-ext-diff", "--no-color", "--no-renames", &u]
+    let mut args: Vec<OsString> = DIFF
         .iter()
+        .chain([&u.as_str()])
         .map(OsString::from)
         .collect();
     if staged {

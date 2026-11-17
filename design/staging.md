@@ -32,7 +32,9 @@ Both diffs use `--no-ext-diff`, `--no-color`, `--no-renames` and
 `Git` also sets `color.ui=false` and `core.quotepath=false` on every
 command. Renames are off because a patch for line staging must name one
 path. A staged rename therefore shows up as a deleted file and an added
-file.
+file. They also pass `--src-prefix=a/` and `--dst-prefix=b/`, because
+the user's `diff.mnemonicPrefix` or `diff.noprefix` would change the
+prefixes that the parser strips from the paths.
 
 `git diff` lists a conflicted file as an unmerged combined diff. We don't
 show those. The parser marks them `too_large` and skips their lines, and
