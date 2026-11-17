@@ -15,7 +15,9 @@ with the old content of `a`. Git shows `b` as a copy of `a`, and tergi
 shows it as an added file. If `b` has the new content of `a` instead,
 tergi shows a copy, and git only does if the old and new `a` are
 similar enough. When both find a copy, tergi diffs `b` against the new
-version of `a` rather than the old one.
+version of `a` rather than the old one. And when tergi finds the copy,
+the change to `a` itself is missing from the list. Git lists `a` as
+modified and `b` as a copy, but tergi only lists the copy.
 
 The cause is in gix-diff 0.70. `Tracker::emit` matches copies by
 `change.id()`, which for a modification is the new blob. We would need
