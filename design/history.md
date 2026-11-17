@@ -28,6 +28,13 @@ example one left over from a removed remote, goes under its first folder.
 That folder gets added to the remotes, so that the ref still shows up in
 the sidebar.
 
+Each stash in the sidebar keeps its commit id, not its `stash@{n}` name.
+Pushing a stash renumbers all the others, and dropping one renumbers the
+ones after it. Either can happen outside tergi between loading the list
+and acting on it. So applying, popping or dropping a stash goes through
+`stash_ref` in `git/ops.rs`. It finds the stash's current number in `git
+stash list` just before running git, and fails if the stash is gone.
+
 From the refs the app makes two things:
 
 - `labels`, the names drawn next to each commit in the history and in
@@ -173,6 +180,11 @@ off. Then they are the day, in the commit's own time zone.
   what it built and against `git rev-list --left-right --count`. Then
   it checks that the sidebar lists each ref once, in its group and under
   its remote, and that each label is on the commit git peels its ref to.
+- `tests/stash_props.rs` pushes, drops and stores random stashes,
+  through tergi and with git directly, and applies, pops or drops them
+  through tergi by id. Each stash holds its own text, so applying one
+  shows which stash git used. After each step it checks the stash list
+  from git and from `Refs::load` against a model.
 - `tests/ui.rs` has `selection_follows_its_commit_through_a_reload` and
   `first_load_starts_at_the_top`.
 

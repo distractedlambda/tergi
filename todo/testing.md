@@ -16,23 +16,12 @@ steps, along with the single commit operations
 (`tests/rebase_stop_props.rs`), the history walk against `git rev-list`
 (`tests/log_props.rs`), refs, the sidebar and labels against git
 (`tests/refs_props.rs`), random sessions in the UI
-(`tests/ui_props.rs`), the file watcher (`tests/watch_props.rs`), and
-the rows of the detail pane (`app/doc.rs`).
+(`tests/ui_props.rs`), the file watcher (`tests/watch_props.rs`), the
+rows of the detail pane (`app/doc.rs`), stash actions by id
+(`tests/stash_props.rs`), and taking a side in each kind of conflict
+(`tests/conflict_props.rs`).
 The tests that use the real git run each case with random git settings
 from `tests/common/settings.rs`.
-
-## Stashes and conflicts
-
-Stash operations name a stash by id and look up its current index with
-`stash_ref`. Push and drop random stashes, in tergi and directly with
-git, then apply, pop or drop one by its id. Check that it is always the
-right stash, and that the others are still there.
-
-For `take_side`, make each kind of conflict that a merge can leave:
-both changed, both added, deleted by us, deleted by them, and a file on
-one side against a symlink or a folder on the other. Check that the
-file in the working tree and in the index matches the side we took,
-and that the conflict is gone.
 
 ## Smaller ones
 
