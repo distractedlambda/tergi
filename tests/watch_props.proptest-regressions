@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 07221046b319769453ce962cd0479395933953694d0066438fab855baf49562c # shrinks to case = Case { setup: [], bursts: [[MoveOut(Index(0)), Ignore(Sub, [false, false, false, false, false, false])]], reftable: false, worktree: false, quiet: 10, settings: Settings([]) }
+cc 2ba10c5cba268704934468c1811a737ac518e9b4c358b3d9660459cf63825b92 # shrinks to case = Case { setup: [], bursts: [[MoveOut(Index(0)), MoveIn { to: Index(15811494920322472814), deep: false }], [Ignore(Sub, [false, false, false, false, false, false])]], reftable: false, worktree: false, settings: Settings([]) }

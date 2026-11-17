@@ -171,6 +171,12 @@ watcher on a scratch repository and check what it reports. The `tell`
 helper runs `git status` with the same arguments as the app and sends
 the result to the watcher, the way the app does after a refresh.
 
+`tests/watch_props.rs` runs random bursts of file and git changes in a
+scratch repository and checks that the watcher reports everything that
+changes what git says. It gives the watcher shorter delays through
+`start_with`, mostly 10 or 30 ms instead of 120 ms. That makes the test
+faster, and it splits bursts into more batches.
+
 The tests run on both platforms, but the code that differs between
 platforms only runs on one of them. The macOS-only parts have been tested
 less, because the development container runs Linux.

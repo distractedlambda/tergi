@@ -16,25 +16,10 @@ steps, along with the single commit operations
 (`tests/rebase_stop_props.rs`), the history walk against `git rev-list`
 (`tests/log_props.rs`), refs, the sidebar and labels against git
 (`tests/refs_props.rs`), random sessions in the UI
-(`tests/ui_props.rs`), and the rows of the detail pane (`app/doc.rs`).
+(`tests/ui_props.rs`), the file watcher (`tests/watch_props.rs`), and
+the rows of the detail pane (`app/doc.rs`).
 The tests that use the real git run each case with random git settings
 from `tests/common/settings.rs`.
-
-## The watcher never misses a change
-
-Run random file system operations in a scratch repository: create,
-change, delete and rename files and folders, nested several levels deep
-and in quick succession. Move folders in from outside, edit
-`.gitignore` and `.git/info/exclude`, and run git commands such as
-commit, checkout, stash and branch. After each burst, wait for the
-watcher to go quiet. Whenever `git status` or `git for-each-ref` gives
-a different answer than before the burst, the watcher must have sent
-the matching flag.
-
-On Linux the watcher adds a watch to each new folder, so a folder that
-gets files right after it's created is the likeliest place to miss
-something. `design/watching.md` explains why. The test needs a timeout
-for "quiet", so it should run few cases.
 
 ## Stashes and conflicts
 

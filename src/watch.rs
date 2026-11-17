@@ -66,10 +66,23 @@ impl Updates {
     }
 }
 
-/// Wait this long after the last event before reporting...
-const QUIET: Duration = Duration::from_millis(120);
-/// ...but never longer than this after the first one.
-const MAX_DELAY: Duration = Duration::from_millis(600);
+/// How long the watcher collects events before it reports them.
+#[derive(Clone, Copy, Debug)]
+pub struct Delays {
+    /// Wait this long after the last event before reporting...
+    pub quiet: Duration,
+    /// ...but never longer than this after the first one.
+    pub max: Duration,
+}
+
+impl Default for Delays {
+    fn default() -> Delays {
+        Delays {
+            quiet: Duration::from_millis(120),
+            max: Duration::from_millis(600),
+        }
+    }
+}
 
 #[derive(Clone)]
 struct Roots {
@@ -85,6 +98,17 @@ pub fn start(
     workdir: &Path,
     git_dir: &Path,
     common_dir: &Path,
+    report: impl Fn(Event) + Send + 'static,
+) -> Result<(Handle, impl Future<Output = ()> + Send + 'static)> {
+    start_with(workdir, git_dir, common_dir, Delays::default(), report)
+}
+
+/// Like `start`, with other delays. The tests use shorter ones.
+pub fn start_with(
+    workdir: &Path,
+    git_dir: &Path,
+    common_dir: &Path,
+    delays: Delays,
     report: impl Fn(Event) + Send + 'static,
 ) -> Result<(Handle, impl Future<Output = ()> + Send + 'static)> {
     let roots = Roots {
@@ -158,7 +182,9 @@ pub fn start(
         let mut first: Option<Instant> = None;
         let mut new_dirs: HashSet<PathBuf> = HashSet::new();
         loop {
-            let timeout = first.map_or(QUIET, |t| QUIET.min(MAX_DELAY.saturating_sub(t.elapsed())));
+            let timeout = first.map_or(delays.quiet, |t| {
+                delays.quiet.min(delays.max.saturating_sub(t.elapsed()))
+            });
             // Adding watches walks folders, so we do that off the async
             // threads. Both branches that do it hand back an error if
             // adding a watch failed.
