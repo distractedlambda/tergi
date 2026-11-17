@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use gix::bstr::BString;
-use notify::event::ModifyKind;
+use notify::event::{ModifyKind, RenameMode};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
@@ -168,6 +168,19 @@ pub fn start(
                         Some(Ok(ev)) => {
                             if matches!(ev.kind, EventKind::Access(_)) {
                                 continue;
+                            }
+                            // notify drops its watch on a folder that was
+                            // deleted or moved away, and on everything under
+                            // it. We forget them too, so that we watch the
+                            // folder again if it comes back.
+                            if matches!(
+                                ev.kind,
+                                EventKind::Remove(_)
+                                    | EventKind::Modify(ModifyKind::Name(RenameMode::From))
+                            ) {
+                                for p in &ev.paths {
+                                    watches.tree.retain(|d| !d.starts_with(p));
+                                }
                             }
                             // A folder can also appear by being moved in.
                             let appeared = matches!(
@@ -606,6 +619,28 @@ mod tests {
         std::fs::write(dir.path().join("sub/file.txt"), "x").unwrap();
         let written = rx.recv_timeout(Duration::from_secs(5));
         assert_eq!(written.map(|f| f & WORKTREE), Ok(WORKTREE));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn watches_a_folder_that_comes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(git(dir.path(), &["init", "-q"]));
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let (dir, _handle, rx, _rt) = watch_repo(dir);
+        let sub = dir.path().join("sub");
+        let outside = tempfile::tempdir_in(dir.path().parent().unwrap()).unwrap();
+        // Deleted and made again, then moved away and made again.
+        std::fs::remove_dir(&sub).unwrap();
+        settle(&rx);
+        std::fs::create_dir(&sub).unwrap();
+        let written = write(&rx, &sub.join("a"));
+        assert_eq!(written.map(|f| f & WORKTREE), Some(WORKTREE));
+        std::fs::rename(&sub, outside.path().join("sub")).unwrap();
+        settle(&rx);
+        std::fs::create_dir(&sub).unwrap();
+        let written = write(&rx, &sub.join("b"));
+        assert_eq!(written.map(|f| f & WORKTREE), Some(WORKTREE));
     }
 
     #[test]

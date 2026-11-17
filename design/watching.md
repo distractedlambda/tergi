@@ -121,6 +121,10 @@ refreshes.
 - We don't follow symlinks, because git doesn't either.
 - The `Watches` struct remembers which folders we watch, in `tree`. That
   lets us remove watches later.
+- When a folder is deleted or moved away, its parent reports it, and
+  notify drops its watches on the folder and everything under it. We
+  forget those folders in `tree` too. Otherwise a folder that comes back
+  with the same name would look watched, and we would skip it.
 - When a later status lists different ignored folders, we walk the whole
   tree again. We add watches for folders that are no longer ignored, and
   remove the watches for folders that now are. If that added any
@@ -195,8 +199,6 @@ least likely to matter.
   cause refreshes unless git ignores them. The status lists an untracked
   nested repository as a folder with a trailing slash, so we could drop
   those too.
-- **Old watches.** A deleted folder stays in `Watches::tree` until the
-  next walk of the whole tree.
 - **Other platforms.** Everything that isn't Linux takes the macOS path.
   On a BSD, notify uses kqueue, which needs a file descriptor for every
   watched file, so a recursive watch of a large tree would hit the
