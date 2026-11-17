@@ -568,6 +568,18 @@ impl App {
         });
     }
 
+    /// Whether nothing is running in the background that will change what
+    /// the app shows: no operation, no load of the refs or the working
+    /// directory, no history walk and no commit load. The file watcher may
+    /// still report a change later.
+    pub fn idle(&self) -> bool {
+        self.busy.is_none()
+            && !self.refs_load.running
+            && !self.workdir_load.running
+            && !self.history.loading
+            && !self.detail.loading
+    }
+
     fn update_animating(&self) {
         let anim = self.busy.is_some() || self.history.loading || self.detail.loading;
         self.animating.store(anim, Ordering::Relaxed);

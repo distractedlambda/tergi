@@ -230,6 +230,10 @@ impl Detail {
     pub fn set_source(&mut self, source: Source) {
         self.source = source;
         self.commit = None;
+        // A load for the old source may still be running. Its answer will
+        // be dropped, so it can't clear this. A load for the new source
+        // sets it again.
+        self.loading = false;
         self.cursor = 0;
         self.anchor = None;
         self.scroll = 0;

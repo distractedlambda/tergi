@@ -282,6 +282,19 @@ fn folds_do_not_carry_over_to_other_commits() {
 }
 
 #[test]
+fn leaving_a_commit_while_it_loads_stops_loading() {
+    let s = repo_with_change();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    // The commit can't load before the working directory is selected
+    // again, because events are only handled in `wait`.
+    ui.app.select_history(1);
+    assert!(ui.app.detail.loading);
+    ui.app.select_history(0);
+    ui.wait("the app to go idle", |u| u.app.idle());
+}
+
+#[test]
 fn draws_at_any_size() {
     let s = repo_with_change();
     let mut ui = Ui::open(&s);

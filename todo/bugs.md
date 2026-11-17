@@ -23,15 +23,3 @@ The cause is in gix-diff 0.70. `Tracker::emit` matches copies by
 `change.id()`, which for a modification is the new blob. We would need
 a fix upstream, or our own copy detection. `tests/commit_props.rs`
 leaves copies out until then.
-
-## Moving away from a commit that is loading leaves it loading
-
-If you select a commit and then select the working directory before the
-commit's details arrive, `detail.loading` stays true. The answer for the
-commit is dropped because the detail pane no longer shows it, and that
-answer was the only thing that cleared the flag. The app then keeps
-ticking every 120 ms as if something were still running. To see it,
-call `select_history(1)` and then `select_history(0)` in one go.
-
-The cause is in `App::show_source`. `Detail::set_source` doesn't clear
-`loading`, and only `request_commit` sets it again.
