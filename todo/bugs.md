@@ -32,3 +32,17 @@ from `git remote`, so `a/b` shows up with no branches, and `b/main`
 doesn't show up anywhere because there is no remote `a`.
 
 To see it, run `git remote add a/b <url>` and fetch from it.
+
+## Diff prefix settings break the working directory diffs
+
+The working directory diffs come from `git diff`, which follows the
+user's `diff.mnemonicPrefix` and `diff.noprefix` settings.
+`parse_unified` in `git/diff.rs` expects the paths to start with `a/`
+and `b/`. With `diff.mnemonicPrefix = true`, git writes `i/f.txt` and
+`w/f.txt` instead, so tergi shows a file named `w/f.txt`, and staging
+its lines builds a patch for the wrong path. With `diff.noprefix =
+true` most paths happen to come out right, but a file named `a/x` turns
+into `x`.
+
+Passing `--src-prefix=a/ --dst-prefix=b/` to the diff commands in
+`git/workdir.rs` would make git use the usual prefixes.
