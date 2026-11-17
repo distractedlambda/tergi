@@ -12,27 +12,10 @@ steps over several files (`tests/patch_props.rs`), rewriting history
 through the planner (`tests/rebase_props.rs`), odd file names with the
 real git (`tests/path_props.rs`), commit diffs against `git diff-tree`
 (`tests/commit_props.rs`), the history walk against `git rev-list`
-(`tests/log_props.rs`), and the rows of the detail pane (`app/doc.rs`).
+(`tests/log_props.rs`), refs, the sidebar and labels against git
+(`tests/refs_props.rs`), and the rows of the detail pane (`app/doc.rs`).
 The tests that use the real git run each case with random git settings
 from `tests/common/settings.rs`.
-
-## Refs against `git for-each-ref`
-
-`log_props` loads refs, but it only checks the tips. Build random refs
-instead: branches with and without upstreams, upstreams that are ahead,
-behind, both or gone, several remotes, remotes and branches whose names
-hold slashes or bytes that aren't UTF-8, annotated and nested tags, and
-a few stashes. Then check `Refs::load`, `sidebar_rows` and
-`Refs::labels` against git:
-
-- each ref shows up exactly once in the sidebar, in the right group and
-  under the right remote,
-- ahead and behind counts match `git rev-list --left-right --count`,
-- each label sits on the commit that `git rev-parse <ref>^{commit}`
-  gives,
-- each stash row names the stash that `git stash list` puts there.
-
-This would have found the bug with remote names that hold a slash.
 
 ## Random sessions in the UI
 

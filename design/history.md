@@ -166,6 +166,13 @@ off. Then they are the day, in the commit's own time zone.
   `git rev-list --all`, with the right parents, and children before
   their parents. Some cases have a commit-graph file that covers all of
   the history or only part of it.
+- `tests/refs_props.rs` builds random remotes, remote branches, local
+  branches with upstreams that are ahead, behind or gone, tags and
+  stashes. The names hold slashes and bytes that aren't UTF-8, and some
+  remote names are folders of others. It checks `Refs::load` against
+  what it built and against `git rev-list --left-right --count`. Then
+  it checks that the sidebar lists each ref once, in its group and under
+  its remote, and that each label is on the commit git peels its ref to.
 - `tests/ui.rs` has `selection_follows_its_commit_through_a_reload` and
   `first_load_starts_at_the_top`.
 
