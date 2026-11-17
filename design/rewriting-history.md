@@ -66,9 +66,23 @@ The amend runs with these options:
 The commits that git replays without our help need the same care. When
 the user sets `commit.cleanup`, git cleans up the message of every
 commit it replays, and with `strip` it removes lines like `#42 Fix the
-crash` from commits that only moved. So every rebase that tergi starts
-or continues runs with `-c commit.cleanup=verbatim`, which keeps those
-messages as they are.
+crash` from commits that only moved.
+
+We can't just turn cleanup off, though. When a rebase stops, git
+prepares the next message with comments in it, and expects them to be
+stripped. After a conflict it lists the files that conflicted. When the
+user stages changes at an `edit` step and continues, git amends the
+commit with its usual template. When a fixup conflicts, the message
+starts as `# This is a combination of 2 commits.` with both messages
+below. A user at the command line would see these in an editor, but
+tergi's `GIT_EDITOR=true` accepts them as they are.
+
+So every rebase that tergi starts, continues or skips runs with
+`-c commit.cleanup=strip -c core.commentChar=<U+0001>`. Git strips its
+comments, which now start with that control character, and leaves
+lines that start with `#` alone. The cleanup also strips trailing
+whitespace and extra blank lines from the messages of the commits that
+git replays, which `git commit` would have done to them anyway.
 
 `build_todo` refuses plans that git can't finish, through `check`:
 
@@ -87,7 +101,7 @@ messages as they are.
 `run` writes the todo list to `.git/tergi/todo` and starts
 
 ```sh
-git -c commit.cleanup=verbatim rebase -i --autostash <base>
+git -c commit.cleanup=strip -c core.commentChar=<U+0001> rebase -i --autostash <base>
 ```
 
 with `GIT_SEQUENCE_EDITOR` set to `tergi __seq-editor <our todo>`. Git

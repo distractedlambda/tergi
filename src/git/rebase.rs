@@ -234,14 +234,27 @@ async fn ensure_idle(git: &Git) -> Result<()> {
     bail!("A {what} is in progress. Continue or abort it first.");
 }
 
-/// How every `git rebase` starts. When the user sets `commit.cleanup`, git
-/// cleans up the message of each commit that a rebase replays. With
-/// `strip`, that removes lines such as `#42 Fix the crash`, so a commit
-/// that only moves would lose them. tergi keeps those lines when it
-/// commits, and the messages in a plan are the ones the user saw, so git
-/// should leave them alone. Git passes the setting on to the `exec` lines,
-/// but they name their own cleanup.
-const REBASE: [&str; 3] = ["-c", "commit.cleanup=verbatim", "rebase"];
+/// How every `git rebase` starts.
+///
+/// When a rebase stops, git prepares the next commit message with comments
+/// in it: the files that conflicted, the template for an amend, or the
+/// messages of a fixup that conflicted. It expects `git commit` to strip
+/// them, and with `GIT_EDITOR=true` nobody edits them out. So the rebase
+/// runs with `commit.cleanup=strip`, whatever the user set.
+///
+/// Stripping removes every line that starts with the comment character.
+/// With `#`, that would include lines such as `#42 Fix the crash`. tergi
+/// keeps those lines when it commits, so a commit that only moves
+/// shouldn't lose them. So the comment character is a control character
+/// that no message line starts with. Git passes both settings on to the
+/// `exec` lines, but those name their own cleanup.
+const REBASE: [&str; 5] = [
+    "-c",
+    "commit.cleanup=strip",
+    "-c",
+    "core.commentChar=\x01",
+    "rebase",
+];
 
 /// Run the rebase described by `plan`. `exe` is the tergi executable, used
 /// as the sequence editor.

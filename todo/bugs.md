@@ -24,25 +24,6 @@ The cause is in gix-diff 0.70. `Tracker::emit` matches copies by
 a fix upstream, or our own copy detection. `tests/commit_props.rs`
 leaves copies out until then.
 
-## Messages pick up git's comments after a rebase stops
-
-When a rebase stops and the user continues it in tergi, the commit
-message can end up full of lines that git meant as comments:
-
-- After a conflict, the message gets `# Conflicts:` and the list of
-  files.
-- At an `edit` step with staged changes, continuing amends the commit,
-  and the message gets git's whole template, from `# Please enter the
-  commit message` down.
-- When a fixup conflicts, the message becomes `# This is a combination
-  of 2 commits.` followed by both messages.
-
-To see it, stop at an edit step, stage a change, and continue.
-
-The cause is `-c commit.cleanup=verbatim` in `REBASE` in
-`git/rebase.rs`. Git writes these comments expecting them to be
-stripped, and `GIT_EDITOR=true` accepts them as they are.
-
 ## Skipping a conflicted reword renames the commit before it
 
 A reword is a `pick` followed by an `exec git commit --amend` line. When
