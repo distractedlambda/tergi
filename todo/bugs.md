@@ -2,6 +2,51 @@
 
 Known problems that nobody has fixed yet.
 
+## Highlighting JavaScript can hang forever
+
+A JavaScript line with a value, a space and a block comment makes
+syntect loop forever. `a = 1 /* c */`, `return x /* c */` and
+``x = `a` /* c */`` all do it. So does ``"`a` /*"``, with no end to the
+comment. `f() /* c */`, `a = 1; /* c */` and ``a = `s` // c`` don't.
+The highlighter handles one job at a time, so after this no file gets
+colors for the rest of the session. A blocking thread also spins at
+full CPU until tergi exits, because nothing can stop it.
+
+To see it, run `highlight_lines` with the JavaScript syntax on
+`"a = 1 /* c */\n"`. It never returns, in debug or release builds.
+
+The cause is two rules in the JavaScript syntax from two-face 0.5.2
+(bat 0.26.1), together with syntect 5.3.0. After an expression, one
+context has a lookahead for "only spaces and comments until the end of
+the line", roughly `(?=(?:\s+|/\*.*?\*/)*(?:/\*.*)?$)`. It `set`s
+another context without consuming anything. That context has a
+lookahead for a binary operator after optional spaces, `(?=\s*[-+*/%...])`.
+The `/` of the comment matches it, so it `set`s the first context back,
+again without consuming anything. `ParseState::parse_next_token` in
+syntect only breaks loops where a push that consumes nothing is
+followed by a pop that consumes nothing. Its own comment says that a
+`set` can loop too, but it doesn't check for that. Without the space,
+the comment rule in the prototype matches first at the same position,
+so there's no loop.
+
+To trace it, copy syntect into a scratch folder, point a
+`[patch.crates-io]` entry at it, and print each match in
+`parse_next_token` (position, stack depth, operation and regex). The
+two contexts were 148 and 11 of syntax 37 in that build.
+
+Things to find out before fixing it:
+
+- Does upstream syntect or bat already know about this? A fix in
+  syntect that also breaks loops of `set`s would be best. Sublime Text
+  moves on by one character when it sees such a loop.
+- Until then, tergi could guard against it. Some options are a patched
+  syntect, editing the syntax before use, or highlighting in a separate
+  process that we can kill after a timeout.
+- Do other syntaxes, such as TypeScript or JSX, have the same loop?
+
+The property test in `src/highlight.rs` leaves JavaScript out because of
+this. Put `a.js` back in its `PATHS` once it's fixed.
+
 ## Copies are found from the wrong version of a changed file
 
 With `diff.renames = copies`, a commit diff looks for copies among the
