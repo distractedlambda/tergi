@@ -265,6 +265,15 @@ puts the cursor back on the same file and hunk by path (see
 - `tests/ops.rs` covers pattern-like paths, modes of untracked
   executables and symlinks, taking a side when one side deleted the
   file, and unstaging before the first commit.
+- `tests/conflict_props.rs` gives a few files random versions in a base
+  commit and two branches, and merges them. The versions are text,
+  binary and executable files, symlinks, folders and missing files, so
+  the merge leaves every kind of conflict. When a file meets a symlink
+  or a folder, git moves one of them to a path like `f~other`. The test
+  takes a random side on each unmerged path. Then it checks that the
+  index and the working tree have the entry that git recorded for that
+  side, or no file if the side has none, and that `Workdir::load` lists
+  no conflicts.
 - `tests/ui.rs` checks that a file or hunk waiting in the discard dialog
   stays the same one after a reload, and that discarding a section
   spares files that show up later.
