@@ -169,6 +169,15 @@ and Abort buttons. A merge has no Skip. Each button runs `continue_op`,
 and Skip for a rebase go through `finish` again, so they can stop once
 more.
 
+Skipping needs care with rewords and squashes. Each one is a `pick` or
+`fixup` followed by the `exec` line that amends the message. If the
+pick or fixup conflicts and the user skips it, git would still run the
+`exec` line, and the new message would go to the commit before. So
+`skip_rebase` first looks at the last line git did and the next one it
+will do. If they are a pick or fixup and our `exec` line, it takes the
+`exec` line out of `.git/rebase-merge/git-rebase-todo`. A user who
+skips from the command line doesn't get this.
+
 ## Single-commit actions
 
 The actions in the history menu each build a plan and change one step:
@@ -184,7 +193,11 @@ The actions in the history menu each build a plan and change one step:
   `git commit --fixup=<target>`, then runs `git rebase -i --autosquash`
   with `GIT_SEQUENCE_EDITOR=true`, which accepts git's own todo list. If
   the rebase didn't start, it resets the fixup commit away, so the
-  changes are staged again as they were.
+  changes are staged again as they were. If the rebase stops, it writes
+  the id of the fixup commit to `.git/rebase-merge/tergi-fixup`.
+  Aborting goes back to that commit, so `abort_rebase` then resets it
+  away too. Git deletes the folder when the rebase ends, so the file
+  can't outlive the rebase it belongs to.
 
 Reword and squash need a message first. `run_cmd` reads the current
 message in the background and opens a dialog with it. For a squash, the

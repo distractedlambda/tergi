@@ -194,9 +194,7 @@ pub fn build_todo(plan: &Plan, dir: &Path) -> Result<Vec<u8>> {
                 let quoted = shell_quote(path_bytes(&file))?;
                 std::fs::write(&file, msg).context("could not write message file")?;
                 todo.extend(format!("{verb} {id} {summary}\n").bytes());
-                todo.extend(
-                    b"exec git commit --amend --allow-empty --no-verify --cleanup=whitespace -F ",
-                );
+                todo.extend(AMEND);
                 todo.extend(quoted);
                 todo.push(b'\n');
             }
@@ -204,6 +202,15 @@ pub fn build_todo(plan: &Plan, dir: &Path) -> Result<Vec<u8>> {
     }
     Ok(todo)
 }
+
+/// How the `exec` line after a reword or squash starts. It gives the commit
+/// its new message.
+const AMEND: &[u8] = b"exec git commit --amend --allow-empty --no-verify --cleanup=whitespace -F ";
+
+/// The file in `.git/rebase-merge/` where `fixup_staged_into` leaves the
+/// id of its fixup commit when the rebase stops. Git deletes the folder
+/// when the rebase ends, however it ends.
+const FIXUP_FILE: &str = "tergi-fixup";
 
 /// The git directory. Git prints it as bytes, and it needn't be UTF-8.
 async fn git_dir(git: &Git) -> Result<PathBuf> {
@@ -377,13 +384,55 @@ pub async fn continue_rebase(git: &Git) -> Result<Outcome> {
 }
 
 pub async fn skip_rebase(git: &Git) -> Result<Outcome> {
+    if let Ok(dir) = git_dir(git).await {
+        drop_amend_line(&dir.join("rebase-merge"))?;
+    }
     let r = git.run(&[&REBASE[..], &["--skip"]].concat()).await;
     let r = r.map(|_| ());
     finish(git, r).await
 }
 
+/// A reword or squash is a `pick` or `fixup` followed by an `exec` line
+/// that amends the commit with the new message. When the pick or fixup
+/// conflicts and the user skips it, git would still run that line, and it
+/// would give the message to the commit before. So skipping takes the line
+/// out of the todo list too.
+fn drop_amend_line(dir: &Path) -> Result<()> {
+    let (Ok(done), Ok(todo)) = (
+        std::fs::read(dir.join("done")),
+        std::fs::read(dir.join("git-rebase-todo")),
+    ) else {
+        return Ok(());
+    };
+    let last = done.trim_ascii_end().rsplit(|&b| b == b'\n').next();
+    let verb = last.and_then(|l| l.split(u8::is_ascii_whitespace).next());
+    if !matches!(verb, Some(b"pick" | b"p" | b"fixup" | b"f")) || !todo.starts_with(AMEND) {
+        return Ok(());
+    }
+    let rest = todo
+        .iter()
+        .position(|&b| b == b'\n')
+        .map_or(&[][..], |i| &todo[i + 1..]);
+    std::fs::write(dir.join("git-rebase-todo"), rest).context("could not write the todo list")
+}
+
 pub async fn abort_rebase(git: &Git) -> Result<()> {
+    let fixup = match git_dir(git).await {
+        Ok(dir) => std::fs::read_to_string(dir.join("rebase-merge").join(FIXUP_FILE)).ok(),
+        Err(_) => None,
+    };
     git.run(&["rebase", "--abort"]).await?;
+    // Aborting goes back to where the rebase started, which for
+    // `fixup_staged_into` is its fixup commit. Take that commit off again,
+    // so the changes are staged as they were.
+    if let Some(fixup) = fixup
+        && git
+            .read_text(&["rev-parse", "HEAD"])
+            .await
+            .is_ok_and(|head| head.trim() == fixup.trim())
+    {
+        git.run(&["reset", "--soft", "HEAD~1"]).await?;
+    }
     remove_scratch_dir(git).await;
     Ok(())
 }
@@ -439,6 +488,14 @@ pub async fn fixup_staged_into(git: &Git, target: ObjectId) -> Result<Outcome> {
         // The rebase never started. Take the fixup commit off again, so the
         // changes are staged as they were.
         let _ = git.run(&["reset", "--soft", "HEAD~1"]).await;
+    }
+    if let Ok(dir) = git_dir(git).await {
+        let dir = dir.join("rebase-merge");
+        if dir.is_dir() {
+            // Without the file, aborting would leave the fixup commit
+            // behind. That's not worth failing a rebase that has started.
+            let _ = std::fs::write(dir.join(FIXUP_FILE), fixup.trim());
+        }
     }
     finish(git, r).await
 }

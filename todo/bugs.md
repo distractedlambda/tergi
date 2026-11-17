@@ -24,14 +24,6 @@ The cause is in gix-diff 0.70. `Tracker::emit` matches copies by
 a fix upstream, or our own copy detection. `tests/commit_props.rs`
 leaves copies out until then.
 
-## Skipping a conflicted reword renames the commit before it
-
-A reword is a `pick` followed by an `exec git commit --amend` line. When
-the pick conflicts and the user skips it, git still runs the `exec`
-line, which gives the new message to whatever commit came before. A
-squash does the same with its combined message. The cause is in
-`build_todo` and `skip_rebase` in `git/rebase.rs`.
-
 ## An empty root commit after resolving the first pick of a `--root` rebase
 
 A rebase with `--root` replays the commits onto an empty commit that git
@@ -45,12 +37,3 @@ a file that the first added. Then move the second commit down with
 Ctrl+J, take either side and continue. This is git's behavior. The
 command line does the same, and tergi doesn't work around it.
 `tests/rebase_stop_props.rs` expects it.
-
-## Aborting a fixup of staged changes leaves the fixup commit
-
-`fixup_staged_into` commits the staged changes with `--fixup` and then
-rebases. When that rebase stops on a conflict and the user aborts it,
-git goes back to where the rebase started, which is the `fixup!`
-commit. The changes the user had staged are now a commit on the
-branch. If the rebase doesn't start at all, `fixup_staged_into` resets
-the commit away, but `abort_rebase` doesn't know to do the same.
