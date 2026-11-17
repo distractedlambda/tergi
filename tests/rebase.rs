@@ -269,6 +269,53 @@ async fn conflict_stops_and_aborts() {
     assert_eq!(s.log(), ["c", "b", "a"]);
 }
 
+/// A reword is a pick and then an `exec` line that amends the message.
+/// Skipping the pick must skip the new message too, or it would go to the
+/// commit before.
+#[tokio::test]
+async fn skipping_a_conflicted_reword_skips_its_message() {
+    let s = Scratch::new();
+    s.write("f.txt", "a\n");
+    let a = s.commit_all("a");
+    s.write("f.txt", "b\n");
+    let b = s.commit_all("b");
+    s.write("f.txt", "c\n");
+    s.commit_all("c");
+    let mut plan = rebase::plan_from(&s.git, id(&b)).await.expect("plan");
+    plan.steps[0].action = Action::Drop;
+    plan.steps[1].action = Action::Reword("C".into());
+    let r = rebase::run(&s.git, &plan, &exe()).await.expect("run");
+    assert_eq!(r, Outcome::Stopped);
+    let st = rebase::state(&s.git).await;
+    let r = rebase::skip_op(&s.git, &st).await.expect("skip");
+    assert_eq!(r, Outcome::Done);
+    assert_eq!(s.log(), ["a"]);
+    assert_eq!(s.sh(&["rev-parse", "HEAD"]).trim(), a);
+}
+
+/// `fixup_staged_into` commits the staged changes before it rebases.
+/// Aborting must stage them again rather than leave that commit.
+#[tokio::test]
+async fn aborting_a_staged_fixup_stages_the_changes_again() {
+    let s = Scratch::new();
+    s.write("f.txt", "a\n");
+    let a = s.commit_all("a");
+    s.write("f.txt", "b\n");
+    let b = s.commit_all("b");
+    s.write("f.txt", "x\n");
+    s.sh(&["add", "f.txt"]);
+    let r = rebase::fixup_staged_into(&s.git, id(&a))
+        .await
+        .expect("fixup");
+    assert_eq!(r, Outcome::Stopped);
+    let st = rebase::state(&s.git).await;
+    rebase::abort_op(&s.git, &st).await.expect("abort");
+    assert_eq!(rebase::state(&s.git).await, RepoState::Clean);
+    assert_eq!(s.sh(&["rev-parse", "HEAD"]).trim(), b);
+    assert_eq!(s.index("f.txt"), "x\n");
+    assert_eq!(s.read("f.txt"), "x\n");
+}
+
 #[tokio::test]
 async fn fixup_staged_changes() {
     let (s, ids) = four();

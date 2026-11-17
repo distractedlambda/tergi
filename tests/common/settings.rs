@@ -36,6 +36,7 @@ const SETTINGS: &[(&str, &[&str])] = &[
     ("status.relativePaths", &["false"]),
     ("status.renames", &["false", "copies"]),
     ("apply.whitespace", &["error", "fix"]),
+    ("merge.conflictStyle", &["diff3", "zdiff3"]),
     ("rebase.abbreviateCommands", &["true"]),
     ("rebase.instructionFormat", &["%s (%an)", "%H"]),
     ("rebase.updateRefs", &["true"]),

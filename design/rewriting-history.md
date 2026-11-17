@@ -242,8 +242,9 @@ planner closes.
 four commits. It covers rewording HEAD, an older commit and the root
 commit, message lines that start with `#`, drop, fixup, squash, moves,
 edit with continue, a planner-style plan, autostash, a conflict that
-stops and aborts, amending staged changes into an older commit, refusing
-merges in the range, and refusing to start during another rebase.
+stops and aborts, skipping a reword that conflicts, amending staged
+changes into an older commit and aborting that, refusing merges in the
+range, and refusing to start during another rebase.
 `reword_where_paths_are_not_utf8` rewords and squashes in a repository
 whose path isn't UTF-8, with tergi run from a folder whose name isn't
 UTF-8 either.
@@ -257,6 +258,18 @@ messages, and runs the plan with the real git. A model works out which
 commits should come out, with which messages and files, and which plans
 the planner must refuse. The messages have `#` lines, blank lines,
 quotes and non-ASCII text.
+
+`tests/rebase_stop_props.rs` covers rebases that stop. Most of its
+commits change one of three lines in a shared file, so reordering,
+dropping and melding them can conflict. It starts each rebase through
+the planner or one of the single-commit actions. At a conflict it takes
+a side with `take_side`, edits the file, skips or aborts. At an `edit`
+step it continues, amends the commit, skips or aborts. A model replays
+the todo list with a three-way merge of each line and file. It says
+where the rebase stops, what `state_in` reports there, and which
+commits and messages come out. After an abort, the branch, index and
+working tree must be as they were before, including uncommitted changes
+that `--autostash` put away.
 
 `src/app/planner.rs` has unit tests for the row order and the oldest
 commit check. Its property test checks that moves only reorder the

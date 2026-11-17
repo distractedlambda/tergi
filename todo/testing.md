@@ -11,27 +11,14 @@ unstaging and discarding, both in a single step and in sequences of
 steps over several files (`tests/patch_props.rs`), rewriting history
 through the planner (`tests/rebase_props.rs`), odd file names with the
 real git (`tests/path_props.rs`), commit diffs against `git diff-tree`
-(`tests/commit_props.rs`), the history walk against `git rev-list`
+(`tests/commit_props.rs`), rebases that stop on conflicts and edit
+steps, along with the single commit operations
+(`tests/rebase_stop_props.rs`), the history walk against `git rev-list`
 (`tests/log_props.rs`), refs, the sidebar and labels against git
 (`tests/refs_props.rs`), random sessions in the UI
 (`tests/ui_props.rs`), and the rows of the detail pane (`app/doc.rs`).
 The tests that use the real git run each case with random git settings
 from `tests/common/settings.rs`.
-
-## Rebases that stop
-
-`rebase_props` only builds histories that can't conflict. Make the
-commits touch the same few lines of one file, so that reordering,
-squashing and dropping can conflict, and mix in `edit` steps. When the
-rebase stops, pick randomly between taking a side with `take_side`,
-editing the file, skipping and aborting, then continue. Check that:
-
-- `state_in` reports the right state at each stop,
-- aborting gives back the original branch, index and working tree,
-- a finished rebase has the commits and messages that the model says.
-
-The single commit operations in `git/rebase.rs` (`reword`, `single`,
-`move_commit` and `fixup_staged_into`) can share the same model.
 
 ## The watcher never misses a change
 

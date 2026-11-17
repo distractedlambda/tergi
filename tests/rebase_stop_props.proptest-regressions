@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9d1c22a0f076d65a88483733465cdf05a2f961b3297ad2fbbcbb44ad2829a85a # shrinks to case = Case { commits: [(None, 0), (Some(0), 0)], op: Single(1, Edit, 0), stops: [(Ours, Amend)], dirty: (false, false), settings: Settings([]) }
+cc cb1d2dbc92cdc86aecb7bb4a1c5e5ea367d90b55dfeab05ed9aa36dec85a410d # shrinks to case = Case { commits: [(None, 0), (Some(0), 0)], op: Move(1, false), stops: [], dirty: (false, false), settings: Settings([]) }
+cc 4b37523da521dc7ededa195f22d0cecd19e865b49a31071dba92d7f19ad8a8b3 # shrinks to case = Case { commits: [(None, 0), (Some(0), 0)], op: Move(1, false), stops: [(Theirs, Continue), (Skip, Continue)], dirty: (true, false), settings: Settings([]) }
+cc 165fbdcd4d488d3a371cba269b9219987b261011f13f6c5efa5cc9489580041d # shrinks to case = Case { commits: [(None, 0), (None, 0), (Some(1), 0), (None, 0)], op: FixupStaged(1, 1), stops: [(Abort, Continue)], dirty: (false, false), settings: Settings([]) }
