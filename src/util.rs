@@ -1,6 +1,10 @@
 //! Small helpers: dates, base64 for the clipboard, running blocking work
-//! from async code, and numbering background requests.
+//! from async code, numbering background requests, and turning git's paths
+//! into file system paths.
 
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -39,6 +43,23 @@ impl Generation {
     pub fn is_current(&self, generation: u64) -> bool {
         self.current() == generation
     }
+}
+
+/// A path as git prints it, as a path for the file system. Git stores the
+/// bytes of a file name as they are, and so does Unix, so nothing is lost
+/// even when the name isn't UTF-8.
+pub fn fs_path(bytes: &[u8]) -> &Path {
+    Path::new(OsStr::from_bytes(bytes))
+}
+
+/// The bytes of a file system path, as git would print them.
+pub fn path_bytes(path: &Path) -> &[u8] {
+    path.as_os_str().as_bytes()
+}
+
+/// A byte string as an argument or environment value for a child process.
+pub fn os_str(bytes: &[u8]) -> &OsStr {
+    OsStr::from_bytes(bytes)
 }
 
 pub fn now() -> i64 {

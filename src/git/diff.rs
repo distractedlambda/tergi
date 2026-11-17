@@ -2,6 +2,7 @@
 //! for the unified diffs that `git diff` prints.
 
 use gix::ObjectId;
+use gix::bstr::{BStr, BString, ByteSlice as _};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
@@ -119,12 +120,14 @@ impl FileStatus {
     }
 }
 
+/// A file in a diff. Paths are bytes, because git stores file names as
+/// they are, and they needn't be UTF-8.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiff {
     /// `None` when the file didn't exist before.
-    pub old_path: Option<String>,
+    pub old_path: Option<BString>,
     /// `None` when the file was deleted.
-    pub new_path: Option<String>,
+    pub new_path: Option<BString>,
     pub status: FileStatus,
     pub old_mode: Option<String>,
     pub new_mode: Option<String>,
@@ -138,7 +141,7 @@ pub struct FileDiff {
 }
 
 impl FileDiff {
-    pub fn new(status: FileStatus, old_path: Option<String>, new_path: Option<String>) -> Self {
+    pub fn new(status: FileStatus, old_path: Option<BString>, new_path: Option<BString>) -> Self {
         Self {
             old_path,
             new_path,
@@ -154,14 +157,16 @@ impl FileDiff {
         }
     }
 
-    /// The path to show for this file.
-    pub fn path(&self) -> &str {
+    /// The path that names this file.
+    pub fn path(&self) -> &BStr {
         self.new_path
-            .as_deref()
-            .or(self.old_path.as_deref())
-            .unwrap_or("")
+            .as_ref()
+            .or(self.old_path.as_ref())
+            .map_or(b"".as_bstr(), |p| p.as_bstr())
     }
 
+    /// The path to show for this file. Bytes that aren't UTF-8 show up as
+    /// replacement characters.
     pub fn display_path(&self) -> String {
         match (&self.old_path, &self.new_path) {
             (Some(o), Some(n)) if o != n => format!("{o} → {n}"),
@@ -274,18 +279,18 @@ pub fn parse_unified(text: impl AsRef<[u8]>, line_limit: usize) -> Vec<FileDiff>
             continue;
         }
 
-        // Headers hold paths, which we keep as strings anyway.
-        let line = String::from_utf8_lossy(line);
-        let line: &str = &line;
-        if let Some(rest) = line.strip_prefix("diff --git ") {
+        // Headers hold paths, which are bytes. The rest of a header is
+        // ASCII, apart from the section text after a hunk header.
+        let text = |b: &[u8]| b.to_str_lossy().into_owned();
+        if let Some(rest) = line.strip_prefix(b"diff --git ") {
             let (a, b) = split_git_paths(rest);
             // The paths are refined later by the ---/+++ and rename lines.
             files.push(FileDiff::new(FileStatus::Modified, a, b));
             file_lines = 0;
             combined = false;
         } else if let Some(rest) = line
-            .strip_prefix("diff --cc ")
-            .or(line.strip_prefix("diff --combined "))
+            .strip_prefix(b"diff --cc ")
+            .or(line.strip_prefix(b"diff --combined "))
         {
             let p = unquote(rest);
             let mut f = FileDiff::new(FileStatus::Conflicted, Some(p.clone()), Some(p));
@@ -296,8 +301,8 @@ pub fn parse_unified(text: impl AsRef<[u8]>, line_limit: usize) -> Vec<FileDiff>
         } else if combined {
             continue;
         } else if let Some(file) = files.last_mut() {
-            if let Some(rest) = line.strip_prefix("@@ ") {
-                if let Some(h) = parse_hunk_header(rest) {
+            if let Some(rest) = line.strip_prefix(b"@@ ") {
+                if let Some(h) = parse_hunk_header(&rest.to_str_lossy()) {
                     old_left = h.old_len;
                     new_left = h.new_len;
                     old_no = h.old_start;
@@ -313,55 +318,57 @@ pub fn parse_unified(text: impl AsRef<[u8]>, line_limit: usize) -> Vec<FileDiff>
                         file.hunks.push(h);
                     }
                 }
-            } else if line.starts_with("\\ ") {
+            } else if line.starts_with(b"\\ ") {
                 mark_no_eol(file);
-            } else if let Some(rest) = line.strip_prefix("--- ") {
-                file.old_path = header_path(rest, "a/");
-            } else if let Some(rest) = line.strip_prefix("+++ ") {
-                file.new_path = header_path(rest, "b/");
-            } else if let Some(m) = line.strip_prefix("new file mode ") {
+            } else if let Some(rest) = line.strip_prefix(b"--- ") {
+                file.old_path = header_path(rest, b"a/");
+            } else if let Some(rest) = line.strip_prefix(b"+++ ") {
+                file.new_path = header_path(rest, b"b/");
+            } else if let Some(m) = line.strip_prefix(b"new file mode ") {
                 file.status = FileStatus::Added;
                 file.old_path = None;
-                file.new_mode = Some(m.to_string());
-            } else if let Some(m) = line.strip_prefix("deleted file mode ") {
+                file.new_mode = Some(text(m));
+            } else if let Some(m) = line.strip_prefix(b"deleted file mode ") {
                 file.status = FileStatus::Deleted;
                 file.new_path = None;
-                file.old_mode = Some(m.to_string());
-            } else if let Some(m) = line.strip_prefix("old mode ") {
-                file.old_mode = Some(m.to_string());
-            } else if let Some(m) = line.strip_prefix("new mode ") {
-                file.new_mode = Some(m.to_string());
+                file.old_mode = Some(text(m));
+            } else if let Some(m) = line.strip_prefix(b"old mode ") {
+                file.old_mode = Some(text(m));
+            } else if let Some(m) = line.strip_prefix(b"new mode ") {
+                let m = text(m);
                 if file.status == FileStatus::Modified
-                    && file.old_mode.as_deref().map(mode_kind) != Some(mode_kind(m))
+                    && file.old_mode.as_deref().map(mode_kind) != Some(mode_kind(&m))
                 {
                     file.status = FileStatus::TypeChange;
                 }
-            } else if let Some(p) = line.strip_prefix("rename from ") {
+                file.new_mode = Some(m);
+            } else if let Some(p) = line.strip_prefix(b"rename from ") {
                 file.status = FileStatus::Renamed;
                 file.old_path = Some(unquote(p));
-            } else if let Some(p) = line.strip_prefix("rename to ") {
+            } else if let Some(p) = line.strip_prefix(b"rename to ") {
                 file.new_path = Some(unquote(p));
-            } else if let Some(p) = line.strip_prefix("copy from ") {
+            } else if let Some(p) = line.strip_prefix(b"copy from ") {
                 file.status = FileStatus::Copied;
                 file.old_path = Some(unquote(p));
-            } else if let Some(p) = line.strip_prefix("copy to ") {
+            } else if let Some(p) = line.strip_prefix(b"copy to ") {
                 file.new_path = Some(unquote(p));
             } else if let Some(s) = line
-                .strip_prefix("similarity index ")
-                .and_then(|s| s.strip_suffix('%'))
+                .strip_prefix(b"similarity index ")
+                .and_then(|s| s.strip_suffix(b"%"))
             {
-                file.similarity = s.parse().ok();
-            } else if let Some(rest) = line.strip_prefix("index ") {
-                let ids = rest.split(' ').next().unwrap_or("");
-                if let Some((a, b)) = ids.split_once("..") {
-                    file.old_id = ObjectId::from_hex(a.as_bytes()).ok();
-                    file.new_id = ObjectId::from_hex(b.as_bytes()).ok();
+                file.similarity = s.to_str().ok().and_then(|s| s.parse().ok());
+            } else if let Some(rest) = line.strip_prefix(b"index ") {
+                let mut fields = rest.split(|&b| b == b' ');
+                let ids = fields.next().unwrap_or_default();
+                if let Some((a, b)) = ids.split_once_str("..") {
+                    file.old_id = ObjectId::from_hex(a).ok();
+                    file.new_id = ObjectId::from_hex(b).ok();
                 }
-                if let Some(mode) = rest.split(' ').nth(1) {
-                    file.old_mode.get_or_insert_with(|| mode.to_string());
-                    file.new_mode.get_or_insert_with(|| mode.to_string());
+                if let Some(mode) = fields.next() {
+                    file.old_mode.get_or_insert_with(|| text(mode));
+                    file.new_mode.get_or_insert_with(|| text(mode));
                 }
-            } else if line.starts_with("Binary files ") || line == "GIT binary patch" {
+            } else if line.starts_with(b"Binary files ") || line == b"GIT binary patch" {
                 file.binary = true;
             }
         }
@@ -408,78 +415,68 @@ pub fn parse_hunk_header(rest: &str) -> Option<Hunk> {
     })
 }
 
-fn header_path(rest: &str, prefix: &str) -> Option<String> {
+fn header_path(rest: &[u8], prefix: &[u8]) -> Option<BString> {
     // Paths with spaces may be followed by a tab.
-    let rest = rest.split('\t').next().unwrap_or(rest);
-    if rest == "/dev/null" {
+    let rest = rest.split(|&b| b == b'\t').next().unwrap_or(rest);
+    if rest == b"/dev/null" {
         return None;
     }
     let p = unquote(rest);
-    Some(p.strip_prefix(prefix).map(str::to_string).unwrap_or(p))
+    Some(p.strip_prefix(prefix).map_or(p.clone(), BString::from))
 }
 
 /// Split the `a/x b/y` part of a `diff --git` line. Unquoted paths with spaces
 /// are ambiguous, so we assume both sides are the same length when they are
 /// not renamed, which is what git does too.
-fn split_git_paths(rest: &str) -> (Option<String>, Option<String>) {
-    if rest.starts_with('"') {
+fn split_git_paths(rest: &[u8]) -> (Option<BString>, Option<BString>) {
+    let strip = |p: &[u8], prefix: &[u8]| BString::from(p.strip_prefix(prefix).unwrap_or(p));
+    if rest.starts_with(b"\"") {
         let (a, tail) = take_quoted(rest);
-        let b = unquote(tail.trim_start());
-        return (
-            Some(a.strip_prefix("a/").unwrap_or(&a).to_string()),
-            Some(b.strip_prefix("b/").unwrap_or(&b).to_string()),
-        );
+        let b = unquote(tail.trim_ascii_start());
+        return (Some(strip(&a, b"a/")), Some(strip(&b, b"b/")));
     }
     if let Some(idx) = rest.find(" \"b/") {
-        let a = &rest[..idx];
         let b = unquote(&rest[idx + 1..]);
-        return (
-            Some(a.strip_prefix("a/").unwrap_or(a).to_string()),
-            Some(b.strip_prefix("b/").unwrap_or(&b).to_string()),
-        );
+        return (Some(strip(&rest[..idx], b"a/")), Some(strip(&b, b"b/")));
     }
     let n = rest.len();
     if n % 2 == 1 {
         let half = n / 2;
         let (a, b) = (&rest[..half], &rest[half + 1..]);
-        if let (Some(a2), Some(b2)) = (a.strip_prefix("a/"), b.strip_prefix("b/"))
+        if let (Some(a2), Some(b2)) = (a.strip_prefix(b"a/"), b.strip_prefix(b"b/"))
             && a2 == b2
         {
-            return (Some(a2.to_string()), Some(b2.to_string()));
+            return (Some(a2.into()), Some(b2.into()));
         }
     }
-    match rest.split_once(" b/") {
-        Some((a, b)) => (
-            Some(a.strip_prefix("a/").unwrap_or(a).to_string()),
-            Some(b.to_string()),
-        ),
-        None => (Some(rest.to_string()), Some(rest.to_string())),
+    match rest.split_once_str(" b/") {
+        Some((a, b)) => (Some(strip(a, b"a/")), Some(b.into())),
+        None => (Some(rest.into()), Some(rest.into())),
     }
 }
 
-fn take_quoted(s: &str) -> (String, &str) {
-    let bytes = s.as_bytes();
+fn take_quoted(s: &[u8]) -> (BString, &[u8]) {
     let mut i = 1;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' {
+    while i < s.len() {
+        if s[i] == b'\\' {
             i += 2;
             continue;
         }
-        if bytes[i] == b'"' {
+        if s[i] == b'"' {
             return (unquote(&s[..=i]), &s[i + 1..]);
         }
         i += 1;
     }
-    (unquote(s), "")
+    (unquote(s), b"")
 }
 
-/// Undo git's C-style path quoting (used for unusual characters).
-pub fn unquote(s: &str) -> String {
-    let Some(inner) = s.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
-        return s.to_string();
+/// Undo git's C-style path quoting (used for unusual characters). The
+/// result is bytes, since an escape can stand for any byte.
+pub fn unquote(s: &[u8]) -> BString {
+    let Some(b) = s.strip_prefix(b"\"").and_then(|s| s.strip_suffix(b"\"")) else {
+        return s.into();
     };
-    let mut out: Vec<u8> = Vec::with_capacity(inner.len());
-    let b = inner.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
         if b[i] != b'\\' || i + 1 >= b.len() {
@@ -510,7 +507,7 @@ pub fn unquote(s: &str) -> String {
             other => out.push(other),
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out.into()
 }
 
 #[cfg(test)]
@@ -624,8 +621,8 @@ diff --git a/x b/x
         let files = parse_unified(text, DEFAULT_LINE_LIMIT);
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].status, FileStatus::Conflicted);
-        assert_eq!(files[0].old_path.as_deref(), Some("list.md"));
-        assert_eq!(files[0].new_path.as_deref(), Some("list.md"));
+        assert_eq!(files[0].old_path, Some("list.md".into()));
+        assert_eq!(files[0].new_path, Some("list.md".into()));
         assert_eq!(files[1].path(), "x");
         assert_eq!(files[1].hunks[0].lines.len(), 2);
     }
@@ -640,13 +637,46 @@ diff --git a/x b/x
 
     #[test]
     fn quoted_paths() {
-        assert_eq!(unquote(r#""a\tb\303\251""#), "a\tbé");
-        let (a, b) = split_git_paths(r#""a/x y\t" "b/x y\t""#);
-        assert_eq!(a.as_deref(), Some("x y\t"));
-        assert_eq!(b.as_deref(), Some("x y\t"));
-        let (a, b) = split_git_paths("a/a b b/a b");
-        assert_eq!(a.as_deref(), Some("a b"));
-        assert_eq!(b.as_deref(), Some("a b"));
+        assert_eq!(unquote(br#""a\tb\303\251""#), "a\tbé");
+        assert_eq!(unquote(br#""caf\351""#), b"caf\xe9".as_bstr());
+        let (a, b) = split_git_paths(br#""a/x y\t" "b/x y\t""#);
+        assert_eq!(a, Some("x y\t".into()));
+        assert_eq!(b, Some("x y\t".into()));
+        let (a, b) = split_git_paths(b"a/a b b/a b");
+        assert_eq!(a, Some("a b".into()));
+        assert_eq!(b, Some("a b".into()));
+    }
+
+    #[test]
+    fn paths_that_are_not_utf8() {
+        // With `core.quotepath=false`, git prints bytes over 0x7f as they
+        // are. Here 0xe9 is "é" in Latin-1.
+        let diff = b"diff --git a/caf\xe9 b/caf\xe9\nnew file mode 100644\n\
+--- /dev/null\n+++ b/caf\xe9\n@@ -0,0 +1 @@\n+x\n\
+diff --git a/\xff b/\xfe\nsimilarity index 100%\nrename from \xff\nrename to \xfe\n";
+        let files = parse_unified(diff, DEFAULT_LINE_LIMIT);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].new_path, Some(BString::from(&b"caf\xe9"[..])));
+        assert_eq!(files[0].display_path(), "caf\u{fffd}");
+        assert_eq!(files[1].old_path, Some(BString::from(&b"\xff"[..])));
+        assert_eq!(files[1].new_path, Some(BString::from(&b"\xfe"[..])));
+    }
+
+    /// A file name made of pieces that git has to quote, and bytes that
+    /// aren't UTF-8.
+    fn path_component() -> impl Strategy<Value = Vec<u8>> {
+        let piece = prop::sample::select(vec![
+            &b"a"[..],
+            b"z",
+            b" ",
+            b"\"",
+            b"\\",
+            b"\t",
+            "\u{e9}".as_bytes(),
+            b"\x80",
+            b"\xff",
+        ]);
+        prop::collection::vec(piece, 1..10).prop_map(|v| v.concat())
     }
 
     /// Text made of pieces of diff syntax, in any order, with some made-up
@@ -696,16 +726,19 @@ diff --git a/x b/x
         }
 
         #[test]
-        fn quoting_round_trips(path in any::<String>()) {
-            prop_assert_eq!(unquote(&quote_path(&path)), path);
+        fn quoting_round_trips(path in any::<Vec<u8>>()) {
+            prop_assert_eq!(unquote(&quote_path(&path)), BString::from(path));
         }
 
         #[test]
-        fn git_paths_split(path in "[a-z \"\\\té]{1,10}(/[a-z \"\\\té]{1,10}){0,2}") {
-            let line = format!("{} {}", quote_path(&format!("a/{path}")), quote_path(&format!("b/{path}")));
+        fn git_paths_split(path in prop::collection::vec(path_component(), 1..4)) {
+            let path = path.join(&b'/');
+            let mut line = quote_path(&[b"a/", &path[..]].concat());
+            line.push(b' ');
+            line.extend(quote_path(&[b"b/", &path[..]].concat()));
             let (a, b) = split_git_paths(&line);
-            prop_assert_eq!(a.as_deref(), Some(path.as_str()));
-            prop_assert_eq!(b.as_deref(), Some(path.as_str()));
+            prop_assert_eq!(a, Some(BString::from(path.clone())));
+            prop_assert_eq!(b, Some(BString::from(path)));
         }
     }
 }

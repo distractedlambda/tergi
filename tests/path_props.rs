@@ -2,7 +2,8 @@
 //!
 //! Each case makes a scratch repository with a few files whose names hold
 //! spaces, quotes, backslashes, tabs, newlines, ` b/`, `->`, a leading `-`,
-//! trailing spaces and non-ASCII text. Each file gets random versions in
+//! trailing spaces, non-ASCII text and bytes that aren't UTF-8. Each file
+//! gets random versions in
 //! HEAD, the index and the working tree. A version can be text, binary or a
 //! symlink, and text can be executable. So the files get added, edited,
 //! deleted, change their mode and change their type.
@@ -25,6 +26,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use common::Scratch;
+use gix::bstr::{BStr, BString, ByteSlice as _};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use tergi::git::commit::{self, FileTexts};
@@ -32,6 +34,7 @@ use tergi::git::diff::{FileDiff, FileStatus};
 use tergi::git::ops::{ApplyMode, apply_lines};
 use tergi::git::patch::build_patch;
 use tergi::git::workdir::Workdir;
+use tergi::util::fs_path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Content {
@@ -41,7 +44,7 @@ enum Content {
     },
     Binary(Vec<u8>),
     /// A symlink to the given target.
-    Link(String),
+    Link(BString),
 }
 
 impl Content {
@@ -50,7 +53,7 @@ impl Content {
         match self {
             Content::Text { text, .. } => text.as_bytes(),
             Content::Binary(data) => data,
-            Content::Link(target) => target.as_bytes(),
+            Content::Link(target) => target,
         }
     }
 
@@ -88,7 +91,7 @@ struct Versions {
 
 #[derive(Debug, Clone)]
 struct Case {
-    names: Vec<String>,
+    names: Vec<BString>,
     files: Vec<Versions>,
     context: u32,
     /// Stage the unstaged and untracked files, or unstage the staged ones.
@@ -98,28 +101,54 @@ struct Case {
     whole: Vec<bool>,
 }
 
-/// One component of a path, which can't contain a slash.
-fn component() -> impl Strategy<Value = String> {
+/// One component of a path, which can't contain a slash. Git and Unix
+/// store names as bytes, so some pieces aren't UTF-8: "caf\xe9" is "café"
+/// in Latin-1, and the others are bytes that can't start a character.
+fn component() -> impl Strategy<Value = BString> {
     let piece = prop::sample::select(vec![
-        "a", "b", "x", " ", "  ", "\"", "\\", "\t", "\n", "\r", " b", "->", "-", "é", "日本", ":",
-        "1:", "*", "?", "[a]", "#", "'", "~",
+        &b"a"[..],
+        b"b",
+        b"x",
+        b" ",
+        b"  ",
+        b"\"",
+        b"\\",
+        b"\t",
+        b"\n",
+        b"\r",
+        b" b",
+        b"->",
+        b"-",
+        "é".as_bytes(),
+        "日本".as_bytes(),
+        b":",
+        b"1:",
+        b"*",
+        b"?",
+        b"[a]",
+        b"#",
+        b"'",
+        b"~",
+        b"caf\xe9",
+        b"\xff",
+        b"\x80",
     ]);
     prop::collection::vec(piece, 1..4)
-        .prop_map(|pieces| pieces.concat())
+        .prop_map(|pieces| BString::from(pieces.concat()))
         .prop_filter("reserved name", |c| {
-            !matches!(c.as_str(), "." | ".." | ".git")
+            !matches!(c.as_slice(), b"." | b".." | b".git")
         })
 }
 
-fn name() -> impl Strategy<Value = String> {
-    prop::collection::vec(component(), 1..3).prop_map(|cs| cs.join("/"))
+fn name() -> impl Strategy<Value = BString> {
+    prop::collection::vec(component(), 1..3).prop_map(|cs| cs.join(&b'/').into())
 }
 
 /// Keep only the files whose names can all exist at once: no repeats, and
 /// no name that is a folder of another.
-fn usable(files: Vec<(String, Versions)>) -> Vec<(String, Versions)> {
-    let clash = |a: &str, b: &str| a == b || b.starts_with(&format!("{a}/"));
-    let mut out: Vec<(String, Versions)> = Vec::new();
+fn usable(files: Vec<(BString, Versions)>) -> Vec<(BString, Versions)> {
+    let clash = |a: &[u8], b: &[u8]| a == b || b.starts_with(&[a, b"/"].concat());
+    let mut out: Vec<(BString, Versions)> = Vec::new();
     for (n, v) in files {
         if n != "keep.txt" && !out.iter().any(|(o, _)| clash(o, &n) || clash(&n, o)) {
             out.push((n, v));
@@ -149,8 +178,8 @@ fn content() -> impl Strategy<Value = Content> {
         }),
         // Targets that exist, one that doesn't, and other odd names.
         2 => prop_oneof![
-            Just("keep.txt".to_string()),
-            Just("nowhere".to_string()),
+            Just(BString::from("keep.txt")),
+            Just(BString::from("nowhere")),
             name(),
         ]
         .prop_map(Content::Link),
@@ -191,9 +220,14 @@ fn case() -> impl Strategy<Value = Case> {
         })
 }
 
+/// A path in the working tree.
+fn file(s: &Scratch, rel: &[u8]) -> std::path::PathBuf {
+    s.path().join(fs_path(rel))
+}
+
 /// Put `content` at `rel` in the working tree, or remove what is there.
-fn put(s: &Scratch, rel: &str, content: Option<&Content>) {
-    let path = s.file(rel);
+fn put(s: &Scratch, rel: &[u8], content: Option<&Content>) {
+    let path = file(s, rel);
     if std::fs::symlink_metadata(&path).is_ok() {
         std::fs::remove_file(&path).expect("remove");
     }
@@ -202,7 +236,9 @@ fn put(s: &Scratch, rel: &str, content: Option<&Content>) {
         std::fs::create_dir_all(parent).expect("mkdir");
     }
     match content {
-        Content::Link(target) => std::os::unix::fs::symlink(target, &path).expect("symlink"),
+        Content::Link(target) => {
+            std::os::unix::fs::symlink(fs_path(target), &path).expect("symlink");
+        }
         _ => {
             std::fs::write(&path, content.bytes()).expect("write");
             let mode = if content.mode() == "100755" {
@@ -241,13 +277,11 @@ fn git_in(dir: &Path, args: &[&str], stdin: Option<&[u8]>) -> Vec<u8> {
     out.stdout
 }
 
-/// The fields of a `-z` listing, as strings.
-fn fields(out: &[u8]) -> Vec<String> {
-    let mut v: Vec<String> = out
-        .split(|&b| b == 0)
-        .map(|f| String::from_utf8(f.to_vec()).expect("utf-8"))
-        .collect();
-    if v.last().is_some_and(String::is_empty) {
+/// The fields of a `-z` listing. They are bytes, because paths needn't be
+/// UTF-8.
+fn fields(out: &[u8]) -> Vec<BString> {
+    let mut v: Vec<BString> = out.split(|&b| b == 0).map(BString::from).collect();
+    if v.last().is_some_and(|f| f.is_empty()) {
         v.pop();
     }
     v
@@ -257,7 +291,7 @@ fn fields(out: &[u8]) -> Vec<String> {
 /// `None` for the working tree side, where git has no blob yet.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Side {
-    path: String,
+    path: BString,
     mode: String,
     id: Option<String>,
 }
@@ -282,6 +316,7 @@ fn raw(out: &[u8], split_types: bool) -> Vec<Change> {
         let [meta, path] = pair else {
             panic!("odd raw output: {f:?}")
         };
+        let meta = meta.to_str().expect("ASCII");
         let parts: Vec<&str> = meta.trim_start_matches(':').split(' ').collect();
         let [old_mode, new_mode, old_id, new_id, status] = parts[..] else {
             panic!("odd raw line: {meta}")
@@ -331,7 +366,7 @@ fn raw(out: &[u8], split_types: bool) -> Vec<Change> {
 /// left out of working tree diffs, which only have abbreviated ones.
 fn change_of(f: &FileDiff, with_ids: bool) -> Change {
     let id = |id: Option<gix::ObjectId>| id.filter(|_| with_ids).map(|i| i.to_string());
-    let side = |path: &Option<String>, mode: &Option<String>, i| {
+    let side = |path: &Option<BString>, mode: &Option<String>, i| {
         path.as_ref().map(|p| Side {
             path: p.clone(),
             mode: mode.clone().unwrap_or_default(),
@@ -362,8 +397,8 @@ fn text_of(data: &[u8]) -> Option<String> {
 }
 
 /// What git would store for a file in the working tree.
-fn disk(s: &Scratch, rel: &str) -> Vec<u8> {
-    let path = s.file(rel);
+fn disk(s: &Scratch, rel: &[u8]) -> Vec<u8> {
+    let path = file(s, rel);
     let meta = std::fs::symlink_metadata(&path).expect("stat");
     if meta.is_symlink() {
         std::fs::read_link(&path)
@@ -435,7 +470,7 @@ fn check_list(
 }
 
 /// Paths and original paths from `git status --porcelain=v1 -z`.
-fn status_paths(s: &Scratch) -> Vec<(String, Option<String>)> {
+fn status_paths(s: &Scratch) -> Vec<(BString, Option<BString>)> {
     let f = fields(&git(
         s,
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
@@ -443,16 +478,16 @@ fn status_paths(s: &Scratch) -> Vec<(String, Option<String>)> {
     let mut out = Vec::new();
     let mut it = f.into_iter();
     while let Some(rec) = it.next() {
-        let renamed = matches!(rec.as_bytes()[0], b'R' | b'C');
+        let renamed = matches!(rec[0], b'R' | b'C');
         let orig = if renamed { it.next() } else { None };
-        out.push((rec[3..].to_string(), orig));
+        out.push((rec[3..].into(), orig));
     }
     out.sort();
     out
 }
 
 fn check_workdir(s: &Scratch, case: &Case, wd: &Workdir) -> Result<(), TestCaseError> {
-    let mut got: Vec<(String, Option<String>)> = wd
+    let mut got: Vec<(BString, Option<BString>)> = wd
         .status
         .entries
         .iter()
@@ -460,7 +495,7 @@ fn check_workdir(s: &Scratch, case: &Case, wd: &Workdir) -> Result<(), TestCaseE
             tergi::git::status::Entry::Changed {
                 path, orig_path, ..
             } => (path.clone(), orig_path.clone()),
-            e => (e.path().to_string(), None),
+            e => (e.path().to_owned(), None),
         })
         .collect();
     got.sort();
@@ -495,7 +530,7 @@ fn check_workdir(s: &Scratch, case: &Case, wd: &Workdir) -> Result<(), TestCaseE
 
     // Untracked files have no mode in git yet, so the model says which
     // mode git would record.
-    let mode_of = |path: &str| {
+    let mode_of = |path: &BStr| {
         let i = case.names.iter().position(|n| n == path)?;
         Some(case.files[i].work.as_ref()?.mode().to_string())
     };
@@ -505,7 +540,7 @@ fn check_workdir(s: &Scratch, case: &Case, wd: &Workdir) -> Result<(), TestCaseE
             status: '?',
             old: None,
             new: Some(Side {
-                mode: mode_of(&path).unwrap_or_default(),
+                mode: mode_of(path.as_bstr()).unwrap_or_default(),
                 path,
                 id: None,
             }),
@@ -523,7 +558,7 @@ fn check_workdir(s: &Scratch, case: &Case, wd: &Workdir) -> Result<(), TestCaseE
 }
 
 /// The entries of the index, or of a tree, by path, as (mode, id).
-fn entries(s: &Scratch, tree: Option<&str>) -> BTreeMap<String, (String, String)> {
+fn entries(s: &Scratch, tree: Option<&str>) -> BTreeMap<BString, (String, String)> {
     let out = match tree {
         None => git(s, &["ls-files", "-s", "-z"]),
         Some(t) => git(s, &["ls-tree", "-r", "-z", t]),
@@ -531,13 +566,13 @@ fn entries(s: &Scratch, tree: Option<&str>) -> BTreeMap<String, (String, String)
     fields(&out)
         .into_iter()
         .map(|rec| {
-            let (meta, path) = rec.split_once('\t').expect("tab");
-            let parts: Vec<&str> = meta.split(' ').collect();
+            let (meta, path) = rec.split_once_str("\t").expect("tab");
+            let parts: Vec<&str> = meta.to_str().expect("ASCII").split(' ').collect();
             let (mode, id) = match tree {
                 None => (parts[0], parts[1]),
                 Some(_) => (parts[0], parts[2]),
             };
-            (path.to_string(), (mode.to_string(), id.to_string()))
+            (path.into(), (mode.to_string(), id.to_string()))
         })
         .collect()
 }
@@ -566,7 +601,7 @@ fn check_staging(
     // A file that changed type is listed twice. Applying one half changes
     // what the other half applies to, so leave those alone.
     let mut seen = HashSet::new();
-    let twice: HashSet<&str> = files
+    let twice: HashSet<&BStr> = files
         .iter()
         .map(|f| f.path())
         .filter(|p| !seen.insert(*p))
@@ -600,7 +635,7 @@ fn check_staging(
             f.path(),
             result
         );
-        touched.insert(f.path().to_string(), (Arc::clone(f), whole || total == 1));
+        touched.insert(f.path().to_owned(), (Arc::clone(f), whole || total == 1));
     }
 
     let after = entries(s, None);

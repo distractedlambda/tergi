@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gix::ObjectId;
+use gix::bstr::BString;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -136,10 +137,10 @@ pub struct MetaLine {
 enum RowKey {
     Meta(usize),
     Section(Section),
-    File(Section, String),
-    Notice(Section, String),
-    Hunk(Section, String, usize),
-    Line(Section, String, usize, usize),
+    File(Section, BString),
+    Notice(Section, BString),
+    Hunk(Section, BString, usize),
+    Line(Section, BString, usize, usize),
     Other,
 }
 
@@ -158,9 +159,9 @@ pub struct Detail {
     pub anchor: Option<usize>,
     pub scroll: usize,
     pub hscroll: usize,
-    pub collapsed: HashSet<(Section, String)>,
+    pub collapsed: HashSet<(Section, BString)>,
     pub collapsed_sections: HashSet<Section>,
-    seen: HashSet<(Section, String)>,
+    seen: HashSet<(Section, BString)>,
     pub highlights: HashMap<(u8, usize), Arc<FileHighlight>>,
     pub requested: HashSet<(u8, usize)>,
     pub marks: HashMap<(Section, usize), Arc<Vec<Marks>>>,
@@ -168,7 +169,7 @@ pub struct Detail {
     pub gutter: usize,
     /// File paths per section as of the last rebuild, for keeping the
     /// cursor in place.
-    old_paths: HashMap<Section, Vec<String>>,
+    old_paths: HashMap<Section, Vec<BString>>,
 }
 
 impl Default for Detail {
@@ -270,7 +271,7 @@ impl Detail {
         cfg: &Config,
     ) {
         let commit = self.commit.clone();
-        let paths: HashMap<Section, Vec<String>> = [
+        let paths: HashMap<Section, Vec<BString>> = [
             Section::Commit,
             Section::Conflicted,
             Section::Untracked,
@@ -281,7 +282,7 @@ impl Detail {
         .map(|sec| {
             let v = section_files(workdir, commit.as_deref(), sec)
                 .iter()
-                .map(|f| f.path().to_string())
+                .map(|f| f.path().to_owned())
                 .collect();
             (sec, v)
         })
@@ -531,7 +532,7 @@ impl Detail {
     fn build_files(&mut self, sec: Section, files: &[Arc<FileDiff>], split: bool, staging: bool) {
         let many = files.len() > 40;
         for (fi, f) in files.iter().enumerate() {
-            let key = (sec, f.path().to_string());
+            let key = (sec, f.path().to_owned());
             if self.seen.insert(key.clone()) && (f.line_count() > 400 || (many && !staging)) {
                 self.collapsed.insert(key.clone());
             }
@@ -659,7 +660,7 @@ impl Detail {
         Some(match *row {
             Row::Section(s) => Unit::Section(s),
             Row::File { sec, file: i } | Row::Notice { sec, file: i, .. } => {
-                Unit::File(sec, file(sec, i)?.path().to_string())
+                Unit::File(sec, file(sec, i)?.path().to_owned())
             }
             Row::Hunk { sec, file: i, hunk } => Unit::Hunk(sec, file(sec, i)?, hunk),
             Row::Line {
@@ -714,7 +715,7 @@ impl Detail {
     }
 }
 
-fn path_at(paths: &HashMap<Section, Vec<String>>, sec: Section, file: usize) -> String {
+fn path_at(paths: &HashMap<Section, Vec<BString>>, sec: Section, file: usize) -> BString {
     paths
         .get(&sec)
         .and_then(|v| v.get(file))
@@ -722,7 +723,7 @@ fn path_at(paths: &HashMap<Section, Vec<String>>, sec: Section, file: usize) -> 
         .unwrap_or_default()
 }
 
-fn row_key(rows: &[Row], i: usize, paths: &HashMap<Section, Vec<String>>) -> RowKey {
+fn row_key(rows: &[Row], i: usize, paths: &HashMap<Section, Vec<BString>>) -> RowKey {
     let path = |sec: Section, file: usize| path_at(paths, sec, file);
     match rows.get(i) {
         Some(Row::Meta(m)) => RowKey::Meta(*m),
@@ -750,7 +751,7 @@ fn row_key(rows: &[Row], i: usize, paths: &HashMap<Section, Vec<String>>) -> Row
 /// A row of the side-by-side view can show two lines, and `row_key` names
 /// the one on the right. This names the one on the left, so that a removed
 /// line can still be found after switching from the unified view.
-fn left_key(rows: &[Row], i: usize, paths: &HashMap<Section, Vec<String>>) -> Option<RowKey> {
+fn left_key(rows: &[Row], i: usize, paths: &HashMap<Section, Vec<BString>>) -> Option<RowKey> {
     match rows.get(i) {
         Some(Row::Split {
             sec,
@@ -903,8 +904,8 @@ mod tests {
                     let diff = |(kind, hunks): (u8, Vec<Hunk>)| {
                         let mut diff = FileDiff::new(
                             FileStatus::Modified,
-                            Some(path.clone()),
-                            Some(path.clone()),
+                            Some(path.clone().into()),
+                            Some(path.clone().into()),
                         );
                         match kind {
                             0 => diff.binary = true,
@@ -1024,7 +1025,7 @@ mod tests {
         }
         for (sec, specs) in shown_sections(case) {
             for s in specs.iter().filter(|s| s.folded) {
-                d.collapsed.insert((sec, s.diff.path().to_string()));
+                d.collapsed.insert((sec, s.diff.path().to_owned()));
             }
         }
         d.collapsed_sections = case.folded_sections.iter().copied().collect();
@@ -1044,11 +1045,11 @@ mod tests {
 
     /// A row with its file named by path rather than by index, so that rows
     /// can be compared across a reload.
-    fn by_path(row: &Row, data: &Data) -> (Option<(Section, String)>, Row) {
+    fn by_path(row: &Row, data: &Data) -> (Option<(Section, BString)>, Row) {
         let mut row = row.clone();
         let file = row
             .file()
-            .map(|(sec, i)| (sec, data.files(sec)[i].path().to_string()));
+            .map(|(sec, i)| (sec, data.files(sec)[i].path().to_owned()));
         if let Row::File { file, .. }
         | Row::Notice { file, .. }
         | Row::Hunk { file, .. }
@@ -1151,7 +1152,7 @@ mod tests {
             }
             for (fi, f) in data.files(sec).iter().enumerate() {
                 want_files.push((sec, fi));
-                if d.collapsed.contains(&(sec, f.path().to_string())) {
+                if d.collapsed.contains(&(sec, f.path().to_owned())) {
                     continue;
                 }
                 if f.binary || f.too_large || f.hunks.is_empty() {

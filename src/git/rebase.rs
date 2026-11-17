@@ -5,12 +5,15 @@
 //! reword and squash are applied with `exec git commit --amend -F <file>`
 //! lines, so git never needs to open an editor.
 
+use std::ffi::OsString;
+use std::os::unix::ffi::OsStringExt as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use gix::ObjectId;
 
 use super::cli::{Git, RunOpts, shell_quote};
+use crate::util::{fs_path, path_bytes};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -159,17 +162,20 @@ pub fn check(plan: &Plan) -> Result<()> {
 }
 
 /// Write the todo list for `plan`, with message files in `dir`.
-pub fn build_todo(plan: &Plan, dir: &Path) -> Result<String> {
+///
+/// The list is bytes, because it names the message files by their paths,
+/// and a path needn't be UTF-8. Git reads it as bytes too.
+pub fn build_todo(plan: &Plan, dir: &Path) -> Result<Vec<u8>> {
     check(plan)?;
-    let mut todo = String::new();
+    let mut todo = Vec::new();
     for (i, step) in plan.steps.iter().enumerate() {
         let id = step.id;
         let summary = step.summary.replace('\n', " ");
         match &step.action {
-            Action::Pick => todo.push_str(&format!("pick {id} {summary}\n")),
-            Action::Edit => todo.push_str(&format!("edit {id} {summary}\n")),
-            Action::Drop => todo.push_str(&format!("drop {id} {summary}\n")),
-            Action::Fixup => todo.push_str(&format!("fixup {id} {summary}\n")),
+            Action::Pick => todo.extend(format!("pick {id} {summary}\n").bytes()),
+            Action::Edit => todo.extend(format!("edit {id} {summary}\n").bytes()),
+            Action::Drop => todo.extend(format!("drop {id} {summary}\n").bytes()),
+            Action::Fixup => todo.extend(format!("fixup {id} {summary}\n").bytes()),
             Action::Reword(msg) | Action::Squash(msg) => {
                 let verb = if matches!(step.action, Action::Reword(_)) {
                     "pick"
@@ -179,26 +185,34 @@ pub fn build_todo(plan: &Plan, dir: &Path) -> Result<String> {
                 let file = dir.join(format!("msg-{i}"));
                 // Each todo line ends at a newline, and quoting can't
                 // hide one from git.
-                if file.to_string_lossy().contains('\n') {
+                if path_bytes(&file).contains(&b'\n') {
                     bail!(
                         "Can't rewrite history in a repository whose path contains a line break."
                     );
                 }
-                let quoted = shell_quote(&file.to_string_lossy())?;
+                let quoted = shell_quote(path_bytes(&file))?;
                 std::fs::write(&file, msg).context("could not write message file")?;
-                todo.push_str(&format!("{verb} {id} {summary}\n"));
-                todo.push_str(&format!(
-                    "exec git commit --amend --allow-empty --no-verify --cleanup=whitespace -F {quoted}\n"
-                ));
+                todo.extend(format!("{verb} {id} {summary}\n").bytes());
+                todo.extend(
+                    b"exec git commit --amend --allow-empty --no-verify --cleanup=whitespace -F ",
+                );
+                todo.extend(quoted);
+                todo.push(b'\n');
             }
         }
     }
     Ok(todo)
 }
 
+/// The git directory. Git prints it as bytes, and it needn't be UTF-8.
+async fn git_dir(git: &Git) -> Result<PathBuf> {
+    let out = git.read(&["rev-parse", "--absolute-git-dir"]).await?;
+    let dir = out.stdout.strip_suffix(b"\n").unwrap_or(&out.stdout);
+    Ok(fs_path(dir).to_path_buf())
+}
+
 async fn scratch_dir(git: &Git) -> Result<PathBuf> {
-    let git_dir = git.read_text(&["rev-parse", "--absolute-git-dir"]).await?;
-    let dir = PathBuf::from(git_dir.trim()).join("tergi");
+    let dir = git_dir(git).await?.join("tergi");
     tokio::fs::create_dir_all(&dir)
         .await
         .context("could not create scratch dir")?;
@@ -232,11 +246,13 @@ pub async fn run(git: &Git, plan: &Plan, exe: &Path) -> Result<Outcome> {
     tokio::fs::write(&todo_file, todo)
         .await
         .context("could not write todo")?;
-    let editor = format!(
-        "{} __seq-editor {}",
-        shell_quote(&exe.to_string_lossy())?,
-        shell_quote(&todo_file.to_string_lossy())?
-    );
+    // Git runs this through the shell, so the paths are quoted as bytes.
+    let editor = [
+        shell_quote(path_bytes(exe))?,
+        b" __seq-editor ".to_vec(),
+        shell_quote(path_bytes(&todo_file))?,
+    ]
+    .concat();
     let base = plan.base.map(|b| b.to_string());
     let mut args = vec!["rebase", "-i", "--autostash"];
     match &base {
@@ -247,7 +263,7 @@ pub async fn run(git: &Git, plan: &Plan, exe: &Path) -> Result<Outcome> {
         .run_opts(
             &args,
             &RunOpts {
-                env: vec![("GIT_SEQUENCE_EDITOR".into(), editor)],
+                env: vec![("GIT_SEQUENCE_EDITOR", OsString::from_vec(editor))],
                 ..Default::default()
             },
         )
@@ -258,10 +274,9 @@ pub async fn run(git: &Git, plan: &Plan, exe: &Path) -> Result<Outcome> {
 /// Delete `.git/tergi/` once no rebase is in progress. A stopped rebase
 /// still needs it, because its `exec` lines read the message files.
 async fn remove_scratch_dir(git: &Git) {
-    let Ok(git_dir) = git.read_text(&["rev-parse", "--absolute-git-dir"]).await else {
+    let Ok(git_dir) = git_dir(git).await else {
         return;
     };
-    let git_dir = PathBuf::from(git_dir.trim());
     if matches!(state_in(&git_dir), RepoState::Rebase { .. }) {
         return;
     }
@@ -286,8 +301,10 @@ async fn finish(git: &Git, result: Result<()>) -> Result<Outcome> {
 /// with ours, after checking both mention the same commits. If they don't,
 /// the history changed under us and the rebase is aborted.
 pub fn seq_editor_main(prepared: &Path, target: &Path) -> Result<()> {
-    let ours = std::fs::read_to_string(prepared).context("could not read prepared todo")?;
-    let theirs = std::fs::read_to_string(target).context("could not read git's todo")?;
+    // Both lists can hold bytes that aren't UTF-8, in paths and in commit
+    // subjects. Only the ids matter here, and those are ASCII.
+    let ours = std::fs::read(prepared).context("could not read prepared todo")?;
+    let theirs = std::fs::read(target).context("could not read git's todo")?;
     let ids = |s: &str| -> Vec<String> {
         let mut v: Vec<String> = s
             .lines()
@@ -317,8 +334,8 @@ pub fn seq_editor_main(prepared: &Path, target: &Path) -> Result<()> {
         v.sort();
         v
     };
-    let a = ids(&ours);
-    let b = ids(&theirs);
+    let a = ids(&String::from_utf8_lossy(&ours));
+    let b = ids(&String::from_utf8_lossy(&theirs));
     let same = a.len() == b.len()
         && a.iter()
             .all(|full| b.iter().any(|short| full.starts_with(short.as_str())));
@@ -376,7 +393,7 @@ pub async fn fixup_staged_into(git: &Git, target: ObjectId) -> Result<Outcome> {
         .run_opts(
             &args,
             &RunOpts {
-                env: vec![("GIT_SEQUENCE_EDITOR".into(), "true".into())],
+                env: vec![("GIT_SEQUENCE_EDITOR", "true".into())],
                 ..Default::default()
             },
         )
@@ -481,10 +498,10 @@ pub enum RepoState {
 }
 
 pub async fn state(git: &Git) -> RepoState {
-    let Ok(dir) = git.read_text(&["rev-parse", "--absolute-git-dir"]).await else {
+    let Ok(dir) = git_dir(git).await else {
         return RepoState::Clean;
     };
-    state_in(Path::new(dir.trim()))
+    state_in(&dir)
 }
 
 pub fn state_in(git_dir: &Path) -> RepoState {

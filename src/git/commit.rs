@@ -199,11 +199,7 @@ pub fn diff_trees(
                 )
             }
         };
-        let mut f = FileDiff::new(
-            status,
-            old_path.map(|p| p.to_string()),
-            new_path.map(|p| p.to_string()),
-        );
+        let mut f = FileDiff::new(status, old_path, new_path);
         f.old_id = old.map(|o| o.0);
         f.new_id = new.map(|n| n.0);
         f.old_mode = old.map(|o| o.1.kind().as_octal_str().to_string());

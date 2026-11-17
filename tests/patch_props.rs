@@ -22,6 +22,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use common::Scratch;
+use gix::bstr::ByteSlice as _;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use tergi::git::commit::FileTexts;
@@ -358,6 +359,11 @@ proptest! {
 
 const PATHS: [&str; 3] = ["a.txt", "b.txt", "c.txt"];
 
+/// The path of a file, which is always one of `PATHS`.
+fn path_of(f: &FileDiff) -> &str {
+    f.path().to_str().expect("utf-8")
+}
+
 /// How one version of a file comes from the version below it.
 #[derive(Debug, Clone)]
 enum Layer {
@@ -579,7 +585,7 @@ fn check_list(
         .filter(|(_, v)| listed(v))
         .map(|(p, _)| *p)
         .collect();
-    let got: Vec<&str> = diffs.iter().map(|f| f.path()).collect();
+    let got: Vec<&str> = diffs.iter().map(|f| path_of(f)).collect();
     prop_assert_eq!(got, want, "the {} files", name);
     for (i, f) in diffs.iter().enumerate() {
         let Some(v) = PATHS.iter().position(|p| *p == f.path()).map(|i| &model[i]) else {
@@ -702,9 +708,9 @@ fn run_step(
         Pick::Section => candidates
             .iter()
             .filter(|(s, _)| *s == sec)
-            .map(|(_, f)| f.path())
+            .map(|(_, f)| path_of(f))
             .collect(),
-        Pick::File => vec![diff.path()],
+        Pick::File => vec![path_of(diff)],
         Pick::Hunk(_) | Pick::Lines(_) => Vec::new(),
     };
     if !paths.is_empty() {
@@ -765,7 +771,7 @@ fn run_step(
     // Staging and unstaging change the index, and discarding changes the
     // working tree. Either way, the patch applies to the side of the diff
     // that the target has now.
-    let v = &mut model[index_of(diff.path())];
+    let v = &mut model[index_of(path_of(diff))];
     let target = match mode {
         ApplyMode::Stage | ApplyMode::Unstage => &mut v.index,
         ApplyMode::Discard => &mut v.work,

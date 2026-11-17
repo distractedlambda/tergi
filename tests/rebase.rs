@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use common::Scratch;
 use gix::ObjectId;
 use tergi::git::rebase::{self, Action, Outcome, RepoState};
+use tergi::util::fs_path;
 
 fn exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_tergi"))
@@ -80,6 +81,41 @@ async fn refuses_plans_git_cannot_finish() {
     assert!(rebase::run(&s.git, &plan, &exe()).await.is_err());
     assert_eq!(s.log(), ["four", "three", "two", "one"]);
     assert_eq!(rebase::state(&s.git).await, RepoState::Clean);
+}
+
+/// Git runs the message files and tergi itself by their paths, through
+/// the shell. Here both paths hold bytes that aren't UTF-8: the repository
+/// is in a folder named "café" in Latin-1, and tergi runs from another one.
+#[tokio::test]
+async fn reword_where_paths_are_not_utf8() {
+    let s = Scratch::in_folder(b"caf\xe9");
+    let mut ids = Vec::new();
+    for name in ["one", "two", "three"] {
+        s.write(&format!("{name}.txt"), &format!("{name}\n"));
+        ids.push(s.commit_all(name));
+    }
+    let bin = tempfile::tempdir().expect("tempdir");
+    let folder = bin.path().join(fs_path(b"bin\xff"));
+    std::fs::create_dir(&folder).expect("mkdir");
+    let exe = folder.join("tergi");
+    std::os::unix::fs::symlink(self::exe(), &exe).expect("symlink");
+
+    rebase::reword(&s.git, &exe, id(&ids[0]), "ONE")
+        .await
+        .expect("reword");
+    // The reword gave "three" a new id.
+    let head = s.sh(&["rev-parse", "HEAD"]);
+    rebase::single(
+        &s.git,
+        &exe,
+        id(head.trim()),
+        Action::Squash("two and three".into()),
+    )
+    .await
+    .expect("squash");
+    assert_eq!(s.log(), ["two and three", "ONE"]);
+    assert_eq!(rebase::state(&s.git).await, RepoState::Clean);
+    assert!(!s.file(".git/tergi").exists(), "message files are removed");
 }
 
 #[tokio::test]

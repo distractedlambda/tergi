@@ -944,7 +944,7 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 let bg = if is_cursor { t.sel } else { t.file_bg };
                 fill(buf, rr, bg);
                 let st = Style::default().bg(bg).fg(t.fg);
-                let folded = det.collapsed.contains(&(*sec, f.path().to_string()));
+                let folded = det.collapsed.contains(&(*sec, f.path().to_owned()));
                 let mut x = put(
                     buf,
                     a.x + 1,
@@ -967,11 +967,11 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                     match sec {
                         Section::Staged => vec![(
                             "Unstage",
-                            Cmd::Unstage(Unit::File(*sec, f.path().to_string())),
+                            Cmd::Unstage(Unit::File(*sec, f.path().to_owned())),
                             None,
                         )],
                         Section::Conflicted => {
-                            let p = f.path().to_string();
+                            let p = f.path().to_owned();
                             vec![
                                 ("Ours", Cmd::TakeSide(p.clone(), true), None),
                                 ("Theirs", Cmd::TakeSide(p.clone(), false), None),
@@ -981,12 +981,12 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                         _ => vec![
                             (
                                 "Stage",
-                                Cmd::Stage(Unit::File(*sec, f.path().to_string())),
+                                Cmd::Stage(Unit::File(*sec, f.path().to_owned())),
                                 None,
                             ),
                             (
                                 "Discard",
-                                Cmd::Discard(Unit::File(*sec, f.path().to_string())),
+                                Cmd::Discard(Unit::File(*sec, f.path().to_owned())),
                                 None,
                             ),
                         ],

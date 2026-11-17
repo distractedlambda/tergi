@@ -173,6 +173,12 @@ line isn't valid UTF-8, `DiffLine` also keeps its original bytes in
 `raw`. Patches are built from `DiffLine::bytes`, so they match the file
 exactly. The same goes for CRLF line endings, which stay in the line.
 
+File names are bytes everywhere, and never display text (see
+`running-git.md`). A patch header gets the name as it is, quoted the
+way git quotes it with `core.quotePath` off. A `Unit` that names files
+holds their bytes, so two names that only differ in bytes that aren't
+UTF-8 stay apart, although they look the same on screen.
+
 ### The last line of a file
 
 A line without a trailing newline must be the last line on its side of a
@@ -238,7 +244,8 @@ puts the cursor back on the same file and hunk by path (see
   `workdir.rs`. Their saved failures are in
   `tests/patch_props.proptest-regressions`.
 - `tests/path_props.rs` makes files with odd names, such as names with
-  spaces, quotes, tabs, newlines or ` b/` in them. It gives each file
+  spaces, quotes, tabs, newlines or ` b/` in them, and names that aren't
+  UTF-8. It gives each file
   random versions in HEAD, the index and the working tree, including
   binary files, symlinks and executables. Then it checks the paths,
   modes and texts in `Workdir` against git's `-z` output, stages or
@@ -250,6 +257,9 @@ puts the cursor back on the same file and hunk by path (see
 - `tests/ui.rs` checks that a file or hunk waiting in the discard dialog
   stays the same one after a reload, and that discarding a section
   spares files that show up later.
+  `stages_and_discards_files_whose_names_are_not_utf8` stages one of two
+  files whose names look the same on screen, and discards a third, in a
+  repository whose own path isn't UTF-8.
 
 ## Known gaps
 

@@ -21,6 +21,7 @@ use tergi::app::planner::PlanAction;
 use tergi::app::{After, App, AppEvent, Repo};
 use tergi::config::Config;
 use tergi::ui::draw::draw;
+use tergi::util::fs_path;
 
 struct Ui {
     app: App,
@@ -225,6 +226,67 @@ fn clicking_stage_stages_the_file() {
         "notes.txt"
     );
     assert_eq!(s.sh(&["diff", "--name-only"]).trim(), "");
+}
+
+/// Files whose names aren't UTF-8, in a repository whose path isn't
+/// either. Two of the names look the same on screen, so the app has to
+/// tell them apart by their bytes.
+#[test]
+fn stages_and_discards_files_whose_names_are_not_utf8() {
+    let s = Scratch::in_folder(b"caf\xe9");
+    let put = |name: &[u8], text: &str| {
+        std::fs::write(s.path().join(fs_path(name)), text).expect("write");
+    };
+    put(b"caf\xe9.txt", "one\n");
+    s.commit_all("init");
+    put(b"caf\xe9.txt", "two\n");
+    put(b"\xfe.txt", "a\n");
+    put(b"\xff.txt", "b\n");
+    let git_z = |args: &[&str]| -> Vec<Vec<u8>> {
+        let out = std::process::Command::new("git")
+            .current_dir(s.path())
+            .args(args)
+            .output()
+            .expect("run git");
+        let mut v: Vec<Vec<u8>> = out.stdout.split(|&b| b == 0).map(<[u8]>::to_vec).collect();
+        v.retain(|f| !f.is_empty());
+        v
+    };
+
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(1);
+    assert!(ui.screen().contains("caf\u{fffd}.txt"), "{}", ui.screen());
+    let r = ui.find_hit(|t| {
+        matches!(t, Target::Button(Cmd::Stage(Unit::File(_, p))) if p == b"\xff.txt".as_slice())
+    });
+    ui.click(MouseButton::Left, r);
+    ui.settle();
+    assert_eq!(
+        git_z(&["diff", "--cached", "--name-only", "-z"]),
+        [b"\xff.txt"]
+    );
+
+    ui.wait("the staged file", |u| {
+        u.screen().contains("Staged changes (1)")
+    });
+    ui.key(KeyCode::Char('3'));
+    ask_to_discard(
+        &mut ui,
+        |ui, r| matches!(r, Row::File { sec: Section::Unstaged, file } if ui.app.section_files(Section::Unstaged)[*file].path() == b"caf\xe9.txt".as_slice()),
+    );
+    assert!(
+        ui.screen()
+            .contains("unstaged changes to caf\u{fffd}.txt will be"),
+        "{}",
+        ui.screen()
+    );
+    ui.key(KeyCode::Char('y'));
+    ui.settle();
+    assert_eq!(
+        std::fs::read(s.path().join(fs_path(b"caf\xe9.txt"))).expect("read"),
+        b"one\n"
+    );
+    assert_eq!(git_z(&["ls-files", "-o", "-z"]), [b"\xfe.txt"]);
 }
 
 #[test]

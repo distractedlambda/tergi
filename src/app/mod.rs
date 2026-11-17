@@ -6,6 +6,7 @@ pub mod input;
 pub mod planner;
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use gix::ObjectId;
+use gix::bstr::ByteSlice as _;
 use ratatui::layout::Rect;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -84,20 +86,17 @@ impl Repo {
         })
     }
 
-    /// Environment for commands that may need to ask for credentials.
-    pub fn remote_env(&self) -> Vec<(String, String)> {
+    /// Environment for commands that may need to ask for credentials. The
+    /// paths in it are passed as they are, even if they aren't UTF-8.
+    pub fn remote_env(&self) -> Vec<(&'static str, OsString)> {
         let Some(sock) = &self.askpass_socket else {
             return Vec::new();
         };
-        let exe = self.exe.to_string_lossy().into_owned();
         vec![
-            ("GIT_ASKPASS".into(), exe.clone()),
-            ("SSH_ASKPASS".into(), exe),
-            ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
-            (
-                crate::askpass::SOCKET_ENV.into(),
-                sock.to_string_lossy().into_owned(),
-            ),
+            ("GIT_ASKPASS", self.exe.clone().into()),
+            ("SSH_ASKPASS", self.exe.clone().into()),
+            ("SSH_ASKPASS_REQUIRE", "force".into()),
+            (crate::askpass::SOCKET_ENV, sock.clone().into()),
         ]
     }
 }
@@ -1122,7 +1121,7 @@ impl App {
                 section: sec as u8,
                 file,
             },
-            path: f.path().to_string(),
+            path: f.path().to_str_lossy().into_owned(),
             hunks: f.hunks.clone(),
             old: texts.old,
             new: texts.new,

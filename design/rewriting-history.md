@@ -89,7 +89,12 @@ added. `main` sees `__seq-editor` before it parses any arguments, and
 calls `seq_editor_main`, which replaces git's list with ours.
 
 Git runs the editor and the `exec` lines with `sh -c`, so
-`shell_quote` quotes the paths in both. It uses the `shlex` crate.
+`shell_quote` quotes the paths in both. It uses the `shlex` crate, and
+works on bytes, because the repository and the tergi executable can
+have paths that aren't UTF-8. For the same reason the todo list is
+bytes, and `seq_editor_main` reads both lists as bytes. Git's list also
+holds the commit subjects as they are, so they needn't be UTF-8
+either.
 Writing our own is easy to get subtly wrong. For example, bash expands
 `{a,b}` even when it runs as `/bin/sh`, as it does on macOS. A todo line
 can't hold a line break, so `build_todo` refuses when the path of the
@@ -205,6 +210,9 @@ commit, message lines that start with `#`, drop, fixup, squash, moves,
 edit with continue, a planner-style plan, autostash, a conflict that
 stops and aborts, amending staged changes into an older commit, refusing
 merges in the range, and refusing to start during another rebase.
+`reword_where_paths_are_not_utf8` rewords and squashes in a repository
+whose path isn't UTF-8, with tergi run from a folder whose name isn't
+UTF-8 either.
 `message_files_are_removed_when_the_rebase_ends` checks that the message
 files stay while the rebase is stopped and go away when it ends.
 

@@ -377,7 +377,7 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             let todo = rebase::build_todo(&plan, dir.path());
             prop_assert!(todo.is_ok(), "{:?}", todo);
-            let todo = todo.expect("todo");
+            let todo = String::from_utf8_lossy(&todo.expect("todo")).into_owned();
             let mut lines = todo.lines();
             for (step, row) in plan.steps.iter().zip(p.rows.iter().rev()) {
                 prop_assert_eq!(step.id, row.id);

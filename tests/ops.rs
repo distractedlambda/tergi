@@ -2,6 +2,9 @@
 
 mod common;
 
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt as _;
+
 use common::Scratch;
 use gix::ObjectId;
 use tergi::git::commit;
@@ -115,11 +118,11 @@ async fn take_side_when_one_side_deleted() {
     s.commit_all("change f");
     assert!(s.git.run(&["merge", "other"]).await.is_err());
     // f.txt: we changed it, they deleted it. g.txt is the other way round.
-    ops::take_side(&s.git, "f.txt", false)
+    ops::take_side(&s.git, b"f.txt", false)
         .await
         .expect("theirs deletes f");
     assert!(!s.file("f.txt").exists());
-    ops::take_side(&s.git, "g.txt", false)
+    ops::take_side(&s.git, b"g.txt", false)
         .await
         .expect("theirs keeps g");
     assert_eq!(s.read("g.txt"), "theirs\n");
@@ -241,10 +244,7 @@ fn an_empty_file_can_be_renamed() {
         .iter()
         .map(|f| (f.status.letter(), f.old_path.clone(), f.new_path.clone()))
         .collect();
-    assert_eq!(
-        files,
-        [('R', Some("a.txt".to_string()), Some("b.txt".to_string()))]
-    );
+    assert_eq!(files, [('R', Some("a.txt".into()), Some("b.txt".into()))]);
 
     // Turning renames off in the config still works.
     s.sh(&["config", "diff.renames", "false"]);
@@ -275,4 +275,20 @@ async fn ref_names_that_look_like_options() {
     ops::delete_tag(&s.git, "-f").await.expect("delete tag");
     assert_eq!(s.sh(&["tag", "-l"]), "");
     assert_eq!(s.read("base.txt"), "dirty\n");
+}
+
+/// The editor setting is a shell command, and it can name a program by a
+/// path that isn't UTF-8.
+#[tokio::test]
+async fn editor_setting_keeps_its_bytes() {
+    let s = Scratch::new();
+    let editor = OsStr::from_bytes(b"/opt/caf\xe9/edit --wait");
+    let status = std::process::Command::new("git")
+        .current_dir(s.path())
+        .args(["config", "core.editor"])
+        .arg(editor)
+        .status()
+        .expect("run git");
+    assert!(status.success());
+    assert_eq!(s.git.editor().await.expect("editor"), editor);
 }

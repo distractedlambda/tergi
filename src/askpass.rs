@@ -64,7 +64,7 @@ pub fn cleanup(path: &Path) {
 }
 
 /// Run as git's askpass helper: forward the prompt and print the answer.
-pub fn client_main(socket: &str, prompt: &str) -> ExitCode {
+pub fn client_main(socket: &Path, prompt: &str) -> ExitCode {
     let Ok(mut stream) = UnixStream::connect(socket) else {
         return ExitCode::FAILURE;
     };

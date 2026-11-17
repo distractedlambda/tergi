@@ -1,3 +1,5 @@
+use std::ffi::OsString;
+use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -20,12 +22,18 @@ struct Cli {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().collect();
+    // Arguments and the socket path can be paths that aren't UTF-8, so
+    // they are read as they are. `std::env::args` would panic on them.
+    let args: Vec<OsString> = std::env::args_os().collect();
     // Modes used when git calls back into tergi.
-    if let Ok(sock) = std::env::var(tergi::askpass::SOCKET_ENV) {
-        return tergi::askpass::client_main(&sock, args.get(1).map_or("Password:", String::as_str));
+    if let Some(sock) = std::env::var_os(tergi::askpass::SOCKET_ENV) {
+        let prompt = args.get(1).map(|p| p.to_string_lossy());
+        return tergi::askpass::client_main(
+            Path::new(&sock),
+            prompt.as_deref().unwrap_or("Password:"),
+        );
     }
-    if args.get(1).map(String::as_str) == Some("__seq-editor") && args.len() >= 4 {
+    if args.get(1).is_some_and(|a| a == "__seq-editor") && args.len() >= 4 {
         return match tergi::git::rebase::seq_editor_main(Path::new(&args[2]), Path::new(&args[3])) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
@@ -133,9 +141,12 @@ async fn run(path: &Path) -> Result<()> {
 /// Open a file in the user's editor, as configured for git.
 async fn edit(repo: &Repo, file: &Path) -> Result<()> {
     let editor = repo.git.editor().await.unwrap_or_else(|_| "vi".into());
+    // The setting is a shell command, as bytes, since it can name a program
+    // by a path that isn't UTF-8.
+    let script = [editor.as_bytes(), b" \"$@\""].concat();
     let status = tokio::process::Command::new("sh")
         .arg("-c")
-        .arg(format!("{editor} \"$@\""))
+        .arg(OsString::from_vec(script))
         .arg("editor")
         .arg(file)
         .current_dir(&repo.workdir)

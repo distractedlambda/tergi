@@ -25,11 +25,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use gix::bstr::BString;
 use notify::event::ModifyKind;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::git::status::Status;
+use crate::util::fs_path;
 
 pub const WORKTREE: u8 = 1;
 pub const INDEX: u8 = 2;
@@ -56,7 +58,7 @@ impl Handle {
 
 /// Tells the watcher what git ignores. The app sends every status it loads.
 #[derive(Clone)]
-pub struct Updates(UnboundedSender<Vec<String>>);
+pub struct Updates(UnboundedSender<Vec<BString>>);
 
 impl Updates {
     pub fn send(&self, status: &Status) {
@@ -96,7 +98,7 @@ pub fn start(
     })
     .context("could not start file watcher")?;
     let watcher = Arc::new(Mutex::new(watcher));
-    let (updates_tx, mut updates_rx) = unbounded_channel::<Vec<String>>();
+    let (updates_tx, mut updates_rx) = unbounded_channel::<Vec<BString>>();
 
     {
         let mut w = watcher
@@ -294,12 +296,12 @@ struct Ignored {
 
 impl Ignored {
     /// Read the ignored paths from a status. A folder ends in a slash.
-    fn new(workdir: &Path, paths: &[String], old: &Ignored) -> Ignored {
+    fn new(workdir: &Path, paths: &[BString], old: &Ignored) -> Ignored {
         let mut new = Ignored::default();
         for p in paths {
-            match p.strip_suffix('/') {
-                Some(dir) => new.dirs.insert(workdir.join(dir)),
-                None => new.files.insert(workdir.join(p)),
+            match p.strip_suffix(b"/") {
+                Some(dir) => new.dirs.insert(workdir.join(fs_path(dir))),
+                None => new.files.insert(workdir.join(fs_path(p))),
             };
         }
         // Git can only list folders that exist. A build tool may have just
@@ -348,7 +350,7 @@ impl Watches {
         &mut self,
         watcher: &Arc<Mutex<RecommendedWatcher>>,
         workdir: &Path,
-        paths: &[String],
+        paths: &[BString],
     ) -> std::result::Result<bool, String> {
         let ignored = Ignored::new(workdir, paths, &self.ignored);
         let walk =
@@ -563,9 +565,7 @@ mod tests {
         assert!(out.status.success());
         handle
             .updates()
-            .send(&crate::git::status::parse(&String::from_utf8_lossy(
-                &out.stdout,
-            )));
+            .send(&crate::git::status::parse(&out.stdout));
     }
 
     /// Run git quietly and say whether it succeeded.
@@ -763,13 +763,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir(root.join("out")).unwrap();
-        let paths = |ps: &[&str]| ps.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        let paths = |ps: &[&[u8]]| ps.iter().map(|&p| BString::from(p)).collect::<Vec<_>>();
         let first = Ignored::new(
             root,
-            &paths(&["target/", "out/", "a.log"]),
+            &paths(&[b"target/", b"out/", b"a.log", b"caf\xe9/"]),
             &Ignored::default(),
         );
         assert!(first.covers(root, &root.join("target/debug/x")));
+        // A folder whose name isn't UTF-8 is still the folder git meant,
+        // and not the one with a similar name that is.
+        assert!(first.covers(root, &root.join(fs_path(b"caf\xe9/x"))));
+        assert!(!first.covers(root, &root.join("caf\u{e9}/x")));
         assert!(first.covers(root, &root.join("a.log")));
         assert!(!first.covers(root, &root.join("src/a.rs")));
         // `target` doesn't exist, so it stays. `out` and `a.log` exist and

@@ -73,6 +73,32 @@ sides would wait for each other forever.
 When a command fails, the error is git's stderr, or its stdout if
 stderr is empty. That is what the error dialog shows.
 
+### Names that aren't UTF-8
+
+Git and Unix store file names as bytes, and those bytes needn't be
+UTF-8. A file can have a name in Latin-1, for example. So tergi keeps
+paths as bytes all the way from git's output back to git's arguments.
+Paths in the repository are `BString`s, and arguments and environment
+values are `OsStr`s, which on Unix hold any bytes. `util::fs_path` and
+`util::path_bytes` convert between git's bytes and file system paths.
+Nothing is lost on the way, so a command always gets the exact name git
+gave us.
+
+Names only turn into text when they are shown. Bytes that aren't UTF-8
+then show up as replacement characters. Two different names can look
+the same on screen this way, so the app never uses the text to find a
+file again. It keeps the bytes.
+
+The same goes for the places where a path ends up in an environment
+variable or a shell command: the askpass helper and its socket, the
+sequence editor and the message files of a rebase, and the user's
+editor. `shell_quote` quotes bytes. `main` reads its arguments and
+`TERGI_ASKPASS_SOCK` with `args_os` and `var_os`, because `args` and
+`var` panic or fail on values that aren't UTF-8.
+
+The command log shows commands as text, so a name that isn't UTF-8
+shows up there with replacement characters.
+
 ### The command log
 
 `Git` keeps the last 500 commands it ran with `run`, with their output
@@ -158,7 +184,12 @@ works. The app suspends while it runs (see `background-work.md`).
   one that was checked out in the meantime.
 - `src/git/cli.rs` has unit tests for cleaning up progress output, and
   for shell quoting. The quoting test runs the quoted words through `sh`
-  and `bash --posix` and checks that they come back unchanged.
+  and `bash --posix` and checks that they come back unchanged. Some of
+  the words aren't UTF-8.
+- `tests/askpass.rs` runs the real helper with a socket path and a
+  prompt that aren't UTF-8.
+- `editor_setting_keeps_its_bytes` in `tests/ops.rs` checks that an
+  editor setting that isn't UTF-8 comes back as it is.
 
 ## Known gaps
 

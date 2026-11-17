@@ -9,14 +9,31 @@ use tergi::git::cli::Git;
 
 pub struct Scratch {
     pub dir: tempfile::TempDir,
+    /// The working tree. This is `dir` itself, or a folder in it.
+    root: PathBuf,
     pub git: Git,
 }
 
 impl Scratch {
     pub fn new() -> Scratch {
         let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        Scratch::init(dir, root)
+    }
+
+    /// A repository in a folder of the temporary directory. The name is
+    /// bytes, so it can be one that isn't UTF-8.
+    pub fn in_folder(name: &[u8]) -> Scratch {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join(tergi::util::fs_path(name));
+        std::fs::create_dir(&root).expect("mkdir");
+        Scratch::init(dir, root)
+    }
+
+    fn init(dir: tempfile::TempDir, root: PathBuf) -> Scratch {
         let s = Scratch {
-            git: Git::new(dir.path()),
+            git: Git::new(&root),
+            root,
             dir,
         };
         s.sh(&["init", "-q", "-b", "main"]);
@@ -27,11 +44,11 @@ impl Scratch {
     }
 
     pub fn path(&self) -> &Path {
-        self.dir.path()
+        &self.root
     }
 
     pub fn file(&self, rel: &str) -> PathBuf {
-        self.dir.path().join(rel)
+        self.root.join(rel)
     }
 
     pub fn write(&self, rel: &str, content: &str) {
@@ -49,7 +66,7 @@ impl Scratch {
     /// Run git and return stdout, panicking on failure.
     pub fn sh(&self, args: &[&str]) -> String {
         let out = Command::new("git")
-            .current_dir(self.dir.path())
+            .current_dir(&self.root)
             .env("GIT_EDITOR", "true")
             .args(args)
             .output()

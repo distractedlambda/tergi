@@ -39,7 +39,7 @@ pub fn build_patch(
     }
     let full = chosen == total;
 
-    let mut out = header(file, full, reverse).into_bytes();
+    let mut out = header(file, full, reverse);
     let mut delta: i64 = 0;
     for (hi, h) in file.hunks.iter().enumerate() {
         let mut body: Vec<(u8, &[u8], bool)> = Vec::new();
@@ -138,70 +138,81 @@ fn range_start(first: i64, count: i64, towards: bool) -> i64 {
     }
 }
 
-fn header(file: &FileDiff, full: bool, reverse: bool) -> String {
+/// The file header of the patch. Paths go in as bytes, because a file
+/// name needn't be UTF-8.
+fn header(file: &FileDiff, full: bool, reverse: bool) -> Vec<u8> {
     let old = file
         .old_path
-        .as_deref()
-        .or(file.new_path.as_deref())
-        .unwrap_or("");
+        .as_ref()
+        .or(file.new_path.as_ref())
+        .map_or(&b""[..], |p| p.as_slice());
     let new = file
         .new_path
-        .as_deref()
-        .or(file.old_path.as_deref())
-        .unwrap_or("");
-    let a = quote_path(&format!("a/{old}"));
-    let b = quote_path(&format!("b/{new}"));
-    let mut s = format!("diff --git {a} {b}\n");
+        .as_ref()
+        .or(file.old_path.as_ref())
+        .map_or(&b""[..], |p| p.as_slice());
+    let a = quote_path(&[b"a/", old].concat());
+    let b = quote_path(&[b"b/", new].concat());
+    let mut s = Vec::new();
+    let mut put = |parts: &[&[u8]]| {
+        for p in parts {
+            s.extend_from_slice(p);
+        }
+    };
+    put(&[b"diff --git ", &a, b" ", &b, b"\n"]);
     if file.is_new() && (!reverse || full) {
         let mode = file.new_mode.as_deref().unwrap_or("100644");
-        s.push_str(&format!("new file mode {mode}\n--- /dev/null\n+++ {b}\n"));
+        put(&[b"new file mode ", mode.as_bytes(), b"\n"]);
+        put(&[b"--- /dev/null\n+++ ", &b, b"\n"]);
     } else if file.is_deleted() && (reverse || full) {
         let mode = file.old_mode.as_deref().unwrap_or("100644");
-        s.push_str(&format!("deleted file mode {mode}\n"));
+        put(&[b"deleted file mode ", mode.as_bytes(), b"\n"]);
         // Applied in reverse, this patch creates the file. `git apply`
         // then ignores the mode above and makes a plain file, unless the
         // patch also names a new mode.
         if reverse {
-            s.push_str(&format!("new mode {mode}\n"));
+            put(&[b"new mode ", mode.as_bytes(), b"\n"]);
         }
-        s.push_str(&format!("--- {a}\n+++ /dev/null\n"));
+        put(&[b"--- ", &a, b"\n+++ /dev/null\n"]);
     } else {
         if full
             && let (Some(om), Some(nm)) = (&file.old_mode, &file.new_mode)
             && om != nm
         {
-            s.push_str(&format!("old mode {om}\nnew mode {nm}\n"));
+            put(&[
+                b"old mode ",
+                om.as_bytes(),
+                b"\nnew mode ",
+                nm.as_bytes(),
+                b"\n",
+            ]);
         }
-        s.push_str(&format!("--- {a}\n+++ {b}\n"));
+        put(&[b"--- ", &a, b"\n+++ ", &b, b"\n"]);
     }
     s
 }
 
-/// Quote a path the way git does when it contains characters that would
-/// confuse the patch parser.
-pub fn quote_path(p: &str) -> String {
-    let needs = p.chars().any(|c| c == '"' || c == '\\' || c.is_control());
-    if !needs {
-        return p.to_string();
+/// Quote a path the way git does when it contains bytes that would confuse
+/// the patch parser. Like git with `core.quotePath` off, this leaves bytes
+/// over 0x7f alone, whether or not they are UTF-8.
+pub fn quote_path(p: &[u8]) -> Vec<u8> {
+    let special = |b: u8| b == b'"' || b == b'\\' || b < 0x20 || b == 0x7f;
+    if !p.iter().any(|&b| special(b)) {
+        return p.to_vec();
     }
-    let mut s = String::from("\"");
-    for c in p.chars() {
-        match c {
-            '"' => s.push_str("\\\""),
-            '\\' => s.push_str("\\\\"),
-            '\n' => s.push_str("\\n"),
-            '\t' => s.push_str("\\t"),
-            '\r' => s.push_str("\\r"),
-            c if c.is_control() => {
-                let mut buf = [0u8; 4];
-                for b in c.encode_utf8(&mut buf).bytes() {
-                    s.push_str(&format!("\\{b:03o}"));
-                }
-            }
-            c => s.push(c),
+    let mut s = vec![b'"'];
+    for &b in p {
+        match b {
+            b'"' => s.extend_from_slice(b"\\\""),
+            b'\\' => s.extend_from_slice(b"\\\\"),
+            b'\n' => s.extend_from_slice(b"\\n"),
+            b'\t' => s.extend_from_slice(b"\\t"),
+            b'\r' => s.extend_from_slice(b"\\r"),
+            b if special(b) => s.extend_from_slice(format!("\\{b:03o}").as_bytes()),
+            b => s.push(b),
         }
     }
-    s.push('"');
+    s.push(b'"');
     s
 }
 
@@ -289,8 +300,22 @@ diff --git a/f b/f
 
     #[test]
     fn quoting() {
-        assert_eq!(quote_path("a/b c"), "a/b c");
-        assert_eq!(quote_path("a/b\"c"), "\"a/b\\\"c\"");
-        assert_eq!(quote_path("a/\tx"), "\"a/\\tx\"");
+        assert_eq!(quote_path(b"a/b c"), b"a/b c");
+        assert_eq!(quote_path(b"a/b\"c"), b"\"a/b\\\"c\"");
+        assert_eq!(quote_path(b"a/\tx"), b"\"a/\\tx\"");
+        assert_eq!(quote_path(b"a/\x01\x7f"), b"\"a/\\001\\177\"");
+        assert_eq!(quote_path(b"caf\xe9"), b"caf\xe9");
+    }
+
+    #[test]
+    fn keeps_paths_that_are_not_utf8() {
+        let diff =
+            b"diff --git a/caf\xe9 b/caf\xe9\n--- a/caf\xe9\n+++ b/caf\xe9\n@@ -1 +1 @@\n-x\n+y\n";
+        let f = &parse_unified(diff, DEFAULT_LINE_LIMIT)[0];
+        let p = build_patch(f, &|_, _| true, false).unwrap().unwrap();
+        assert_eq!(
+            p,
+            b"diff --git a/caf\xe9 b/caf\xe9\n--- a/caf\xe9\n+++ b/caf\xe9\n@@ -1,1 +1,1 @@\n-x\n+y\n"
+        );
     }
 }

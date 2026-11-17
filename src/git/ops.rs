@@ -5,6 +5,9 @@
 //! `--exec=cmd` as an option, so we put `--end-of-options` in front of
 //! every ref and revision we pass.
 
+use std::ffi::OsString;
+use std::os::unix::ffi::OsStringExt as _;
+
 use anyhow::{Result, bail};
 use gix::ObjectId;
 
@@ -69,19 +72,19 @@ pub async fn apply_lines(
 /// When the user has set `GIT_LITERAL_PATHSPECS`, git already reads every
 /// path literally, and it would take the prefix as part of the file name.
 /// Git children get our environment, so we can check it here.
-pub fn pathspec(path: &str) -> String {
+///
+/// The path is bytes, and so is the result, because a file name needn't be
+/// UTF-8.
+pub fn pathspec(path: &[u8]) -> OsString {
     pathspec_with(
         path,
         env_true(std::env::var_os("GIT_LITERAL_PATHSPECS").as_deref()),
     )
 }
 
-fn pathspec_with(path: &str, literal: bool) -> String {
-    if literal {
-        path.to_string()
-    } else {
-        format!(":(literal){path}")
-    }
+fn pathspec_with(path: &[u8], literal: bool) -> OsString {
+    let prefix: &[u8] = if literal { b"" } else { b":(literal)" };
+    OsString::from_vec([prefix, path].concat())
 }
 
 /// Whether git reads this value of a boolean environment variable as true.
@@ -99,19 +102,18 @@ fn env_true(value: Option<&std::ffi::OsStr>) -> bool {
 }
 
 /// Run a git command on a list of paths.
-async fn run_on_paths(git: &Git, command: &[&str], paths: &[&str]) -> Result<()> {
+async fn run_on_paths(git: &Git, command: &[&str], paths: &[impl AsRef<[u8]>]) -> Result<()> {
     if paths.is_empty() {
         return Ok(());
     }
-    let specs: Vec<String> = paths.iter().map(|p| pathspec(p)).collect();
-    let mut args = command.to_vec();
-    args.push("--");
-    args.extend(specs.iter().map(String::as_str));
+    let mut args: Vec<OsString> = command.iter().map(OsString::from).collect();
+    args.push("--".into());
+    args.extend(paths.iter().map(|p| pathspec(p.as_ref())));
     git.run(&args).await?;
     Ok(())
 }
 
-pub async fn stage_paths(git: &Git, paths: &[&str]) -> Result<()> {
+pub async fn stage_paths(git: &Git, paths: &[impl AsRef<[u8]>]) -> Result<()> {
     run_on_paths(git, &["add", "-A"], paths).await
 }
 
@@ -120,7 +122,7 @@ pub async fn stage_all(git: &Git) -> Result<()> {
     Ok(())
 }
 
-pub async fn unstage_paths(git: &Git, paths: &[&str], has_head: bool) -> Result<()> {
+pub async fn unstage_paths(git: &Git, paths: &[impl AsRef<[u8]>], has_head: bool) -> Result<()> {
     if has_head {
         run_on_paths(git, &["restore", "--staged"], paths).await
     } else {
@@ -150,12 +152,12 @@ pub async fn head_branch(git: &Git) -> Option<String> {
 }
 
 /// Throw away unstaged changes to tracked files.
-pub async fn discard_paths(git: &Git, paths: &[&str]) -> Result<()> {
+pub async fn discard_paths(git: &Git, paths: &[impl AsRef<[u8]>]) -> Result<()> {
     run_on_paths(git, &["restore", "--worktree"], paths).await
 }
 
 /// Delete untracked files.
-pub async fn delete_untracked(git: &Git, paths: &[&str]) -> Result<()> {
+pub async fn delete_untracked(git: &Git, paths: &[impl AsRef<[u8]>]) -> Result<()> {
     run_on_paths(git, &["clean", "-f", "-q"], paths).await
 }
 
@@ -362,13 +364,18 @@ async fn stash_ref(git: &Git, stash: ObjectId) -> Result<String> {
 }
 
 /// Resolve a conflicted file by taking one side.
-pub async fn take_side(git: &Git, path: &str, ours: bool) -> Result<()> {
+pub async fn take_side(git: &Git, path: &[u8], ours: bool) -> Result<()> {
     let spec = pathspec(path);
+    let args = |cmd: &[&str]| -> Vec<OsString> {
+        let mut args: Vec<OsString> = cmd.iter().map(OsString::from).collect();
+        args.extend(["--".into(), spec.clone()]);
+        args
+    };
     // Unmerged entries are listed as "<mode> <id> <stage>\t<path>", where
     // stage 2 is our version and stage 3 is theirs. A side that deleted the
     // file has no entry, and taking that side means deleting the file.
     let entries = git
-        .read_text(&["ls-files", "--unmerged", "-z", "--", &spec])
+        .read_text(&args(&["ls-files", "--unmerged", "-z"]))
         .await?;
     let stage = if ours { "2" } else { "3" };
     let has_side = entries
@@ -376,16 +383,11 @@ pub async fn take_side(git: &Git, path: &str, ours: bool) -> Result<()> {
         .filter_map(|e| e.split_once('\t'))
         .any(|(meta, _)| meta.split(' ').nth(2) == Some(stage));
     if has_side {
-        git.run(&[
-            "checkout",
-            if ours { "--ours" } else { "--theirs" },
-            "--",
-            &spec,
-        ])
-        .await?;
-        git.run(&["add", "--", &spec]).await?;
+        let side = if ours { "--ours" } else { "--theirs" };
+        git.run(&args(&["checkout", side])).await?;
+        git.run(&args(&["add"])).await?;
     } else {
-        git.run(&["rm", "-q", "--", &spec]).await?;
+        git.run(&args(&["rm", "-q"])).await?;
     }
     Ok(())
 }
@@ -417,7 +419,11 @@ mod tests {
             assert!(!env_true(Some(OsStr::new(v))), "{v}");
         }
         assert!(!env_true(None));
-        assert_eq!(pathspec_with("a*", false), ":(literal)a*");
-        assert_eq!(pathspec_with("a*", true), "a*");
+        assert_eq!(pathspec_with(b"a*", false), ":(literal)a*");
+        assert_eq!(pathspec_with(b"a*", true), "a*");
+        assert_eq!(
+            pathspec_with(b"caf\xe9", false),
+            OsString::from_vec(b":(literal)caf\xe9".to_vec())
+        );
     }
 }

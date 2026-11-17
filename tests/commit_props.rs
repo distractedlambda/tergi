@@ -26,6 +26,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
 
 use common::Scratch;
+use gix::bstr::{BStr, BString, ByteSlice as _};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use tergi::git::commit::{self, CommitDetail};
@@ -468,9 +469,9 @@ fn exact_renames(changes: &[Change]) -> Vec<Change> {
 }
 
 fn change_of(f: &FileDiff) -> Change {
-    let side = |path: &Option<String>, mode: &Option<String>, id: Option<gix::ObjectId>| {
+    let side = |path: &Option<BString>, mode: &Option<String>, id: Option<gix::ObjectId>| {
         path.as_ref().map(|p| Side {
-            path: p.clone(),
+            path: p.to_str().expect("utf-8").to_string(),
             mode: mode.clone().unwrap_or_default(),
             id: id.map(|i| i.to_string()).unwrap_or_default(),
         })
@@ -540,7 +541,7 @@ fn check_detail(s: &Scratch, detail: &CommitDetail, want: &[Change]) -> Result<(
     let got: Vec<Change> = detail.files.iter().map(|f| change_of(f)).collect();
     prop_assert_eq!(exact_renames(&got), exact_renames(want), "files");
 
-    let paths: Vec<&str> = detail.files.iter().map(|f| f.path()).collect();
+    let paths: Vec<&BStr> = detail.files.iter().map(|f| f.path()).collect();
     let mut by_path = paths.clone();
     by_path.sort();
     prop_assert_eq!(paths, by_path, "sorted by path");

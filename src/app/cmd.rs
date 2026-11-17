@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use gix::ObjectId;
+use gix::bstr::{BString, ByteSlice as _};
 use tokio::sync::oneshot;
 
 use super::doc::{Row, Section, Source};
@@ -22,6 +23,7 @@ use crate::git::ops::{self, ApplyMode, ResetMode};
 use crate::git::rebase::{self, Action, Outcome, RepoState};
 use crate::git::refs::Refs;
 use crate::ui::textarea::TextArea;
+use crate::util::fs_path;
 
 /// Part of the working directory's changes, to stage, unstage or discard.
 ///
@@ -33,11 +35,11 @@ use crate::ui::textarea::TextArea;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unit {
     Section(Section),
-    File(Section, String),
+    File(Section, BString),
     /// Files by path. Discarding a whole section turns into this when the
     /// dialog asking about it opens. That way it only discards the files
     /// the dialog names, and not ones that show up while it's open.
-    Files(Section, Vec<String>),
+    Files(Section, Vec<BString>),
     Hunk(Section, Arc<FileDiff>, usize),
     /// `(hunk, line)` indexes into the diff.
     Lines(Section, Arc<FileDiff>, Vec<(usize, usize)>),
@@ -146,9 +148,9 @@ pub enum Cmd {
     ToggleFold,
     FoldAll,
     LoadFull,
-    OpenInEditor(String),
-    TakeSide(String, bool),
-    MarkResolved(String),
+    OpenInEditor(BString),
+    TakeSide(BString, bool),
+    MarkResolved(BString),
     StartSelect,
     NextHunk(bool),
     NextFile(bool),
@@ -756,10 +758,7 @@ impl App {
                     }
                 }
                 if let Some((sec, fi)) = row.and_then(Row::file) {
-                    let path = self
-                        .section_files(sec)
-                        .get(fi)
-                        .map(|f| f.path().to_string());
+                    let path = self.section_files(sec).get(fi).map(|f| f.path().to_owned());
                     if let Some(p) = path {
                         if sec == Section::Conflicted {
                             v.push(act(
@@ -821,7 +820,7 @@ impl App {
                     v.push(act(
                         Some(Key::ch('o')),
                         "Open file in editor",
-                        Cmd::OpenInEditor(f.path().to_string()),
+                        Cmd::OpenInEditor(f.path().to_owned()),
                     ));
                 }
                 v.extend(nav);
@@ -1076,10 +1075,10 @@ impl App {
                 let other = match other {
                     Cmd::Discard(Unit::Section(sec)) => {
                         let mut seen = HashSet::new();
-                        let paths: Vec<String> = self
+                        let paths: Vec<BString> = self
                             .section_files(sec)
                             .iter()
-                            .map(|f| f.path().to_string())
+                            .map(|f| f.path().to_owned())
                             .filter(|p| seen.insert(p.clone()))
                             .collect();
                         if paths.is_empty() {
@@ -1430,7 +1429,7 @@ impl App {
             Cmd::ToggleFold => self.toggle_fold(),
             Cmd::FoldAll => self.fold_all(),
             Cmd::LoadFull => self.load_full(),
-            Cmd::OpenInEditor(p) => self.suspend = Some(Suspend::Edit(self.repo.workdir.join(p))),
+            Cmd::OpenInEditor(p) => self.suspend = Some(Suspend::Edit(self.repo.workdir.join(fs_path(&p)))),
             Cmd::TakeSide(p, ours) => self.spawn_op("Resolve", After::Nothing, move |r, _| async move {
                 ops::take_side(&r.git, &p, ours).await.map(|()| format!("Resolved {p}"))
             }),
@@ -1754,11 +1753,11 @@ impl App {
         };
         let noun = unit.noun();
         let done = format!("{past} {noun}");
-        let paths: Vec<String> = match &unit {
+        let paths: Vec<BString> = match &unit {
             Unit::Section(sec) => self
                 .section_files(*sec)
                 .iter()
-                .map(|f| f.path().to_string())
+                .map(|f| f.path().to_owned())
                 .collect(),
             Unit::File(_, path) => vec![path.clone()],
             Unit::Files(_, paths) => paths.clone(),
@@ -1767,22 +1766,21 @@ impl App {
         self.detail.anchor = None;
         self.spawn_op(label, After::Nothing, move |r, _| async move {
             let git = &r.git;
-            let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
             match (&unit, mode) {
                 (Unit::Section(Section::Staged), ApplyMode::Unstage) => {
                     ops::unstage_all(git, has_head).await?;
                 }
                 (Unit::Section(_) | Unit::File(..) | Unit::Files(..), ApplyMode::Stage) => {
-                    ops::stage_paths(git, &refs).await?;
+                    ops::stage_paths(git, &paths).await?;
                 }
                 (Unit::Section(_) | Unit::File(..) | Unit::Files(..), ApplyMode::Unstage) => {
-                    ops::unstage_paths(git, &refs, has_head).await?;
+                    ops::unstage_paths(git, &paths, has_head).await?;
                 }
                 (Unit::Section(s) | Unit::File(s, _) | Unit::Files(s, _), ApplyMode::Discard) => {
                     if *s == Section::Untracked {
-                        ops::delete_untracked(git, &refs).await?;
+                        ops::delete_untracked(git, &paths).await?;
                     } else {
-                        ops::discard_paths(git, &refs).await?;
+                        ops::discard_paths(git, &paths).await?;
                     }
                 }
                 (Unit::Hunk(_, f, h), _) => {
@@ -1809,7 +1807,7 @@ impl App {
                 if let Some((sec, fi)) = r.file()
                     && let Some(f) = self.section_files(sec).get(fi)
                 {
-                    let key = (sec, f.path().to_string());
+                    let key = (sec, f.path().to_owned());
                     if !self.detail.collapsed.remove(&key) {
                         self.detail.collapsed.insert(key);
                     }
@@ -1831,7 +1829,7 @@ impl App {
     }
 
     fn fold_all(&mut self) {
-        let keys: Vec<(Section, String)> = self
+        let keys: Vec<(Section, BString)> = self
             .detail
             .rows
             .iter()
@@ -1839,7 +1837,7 @@ impl App {
                 Row::File { sec, file } => self
                     .section_files(*sec)
                     .get(*file)
-                    .map(|f| (*sec, f.path().to_string())),
+                    .map(|f| (*sec, f.path().to_owned())),
                 _ => None,
             })
             .collect();
@@ -1881,10 +1879,10 @@ impl App {
                 );
             }
             Section::Untracked => {
-                let path = f.path().to_string();
+                let path = f.path().to_owned();
                 self.spawn_read(
                     move |r| async move {
-                        crate::git::workdir::load_full_untracked(&r.git, &path, ctx).await
+                        crate::git::workdir::load_full_untracked(&r.git, path.as_bstr(), ctx).await
                     },
                     move |app, (full, texts)| app.put_full_diff(sec, full, Some(texts)),
                 );
@@ -1948,9 +1946,13 @@ impl App {
 }
 
 /// What discarding `paths` in `sec` does, for the dialog that asks first.
-fn discard_what(sec: Section, paths: &[String]) -> String {
+fn discard_what(sec: Section, paths: &[BString]) -> String {
     const SHOWN: usize = 5;
-    let list = match paths {
+    let paths: Vec<String> = paths
+        .iter()
+        .map(|p| p.to_str_lossy().into_owned())
+        .collect();
+    let list = match &paths[..] {
         [] => String::new(),
         [p] => p.clone(),
         [rest @ .., last] if paths.len() <= SHOWN => format!("{} and {last}", rest.join(", ")),

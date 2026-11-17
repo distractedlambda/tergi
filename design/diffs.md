@@ -93,7 +93,8 @@ result if either differs.
 
 The staged and unstaged diffs come from `git diff`, and `parse_unified`
 reads its output. The parser works on bytes, because git prints file
-contents as they are.
+contents and file names as they are. A `FileDiff` keeps its paths as
+bytes too (see `running-git.md`).
 
 The parser relies on the line counts in each hunk header to know where
 a hunk ends. A file can contain a line that starts with `diff --git`, so

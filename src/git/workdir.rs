@@ -1,15 +1,18 @@
 //! Loading the working directory state: status plus the unstaged, staged
 //! and untracked diffs shown in the staging view.
 
+use std::ffi::OsString;
 use std::sync::Arc;
 
 use anyhow::Result;
 use gix::ObjectId;
+use gix::bstr::{BStr, ByteSlice as _};
 
 use super::cli::{Git, RunOpts};
 use super::commit::{FileTexts, MAX_BLOB, diff_texts, is_binary};
 use super::diff::{FileDiff, FileStatus, parse_unified};
 use super::status::{Entry, Status};
+use crate::util::fs_path;
 
 #[derive(Debug, Clone, Default)]
 pub struct Workdir {
@@ -68,8 +71,10 @@ impl Workdir {
 
         let mut conflicted_files = Vec::new();
         for e in status.conflicted() {
-            let data = tokio::fs::read(git.workdir().join(e.path())).await.ok();
-            conflicted_files.push((e.path().to_string(), data));
+            let data = tokio::fs::read(git.workdir().join(fs_path(e.path())))
+                .await
+                .ok();
+            conflicted_files.push((e.path().to_owned(), data));
         }
 
         let mut untracked_files = Vec::new();
@@ -78,7 +83,7 @@ impl Workdir {
             untracked_files.push(if i < MAX_UNTRACKED_DIFFS {
                 read_untracked(&mut modes, e.path(), MAX_BLOB).await
             } else {
-                let mut f = FileDiff::new(FileStatus::Untracked, None, Some(e.path().to_string()));
+                let mut f = FileDiff::new(FileStatus::Untracked, None, Some(e.path().to_owned()));
                 f.too_large = true;
                 Untracked { f, data: None }
             });
@@ -101,7 +106,7 @@ impl Workdir {
                 // `git diff` lists conflicted files as "unmerged" with a
                 // combined diff. We show them separately, so drop them from
                 // `unstaged`.
-                unstaged.retain(|u| u.path() != path);
+                unstaged.retain(|u| u.path() != path.as_bstr());
                 if let Some(text) = data {
                     if is_binary(&text) {
                         f.binary = true;
@@ -154,7 +159,7 @@ impl Workdir {
         for f in &wd.unstaged {
             let old = blobs.next().flatten();
             let new = match &f.new_path {
-                Some(p) if !f.binary => read_text(&git.workdir().join(p)).await,
+                Some(p) if !f.binary => read_text(&git.workdir().join(fs_path(p))).await,
                 _ => None,
             };
             wd.unstaged_texts.push(FileTexts { old, new });
@@ -163,7 +168,7 @@ impl Workdir {
     }
 
     pub fn change_count(&self) -> usize {
-        let mut paths: Vec<&str> = self.status.entries.iter().map(Entry::path).collect();
+        let mut paths: Vec<&BStr> = self.status.entries.iter().map(Entry::path).collect();
         paths.dedup();
         paths.len()
     }
@@ -319,9 +324,9 @@ struct Untracked {
 
 /// Read an untracked file. Files bigger than `size_limit` bytes are marked
 /// `too_large` and not read.
-async fn read_untracked(modes: &mut FileModes<'_>, rel: &str, size_limit: usize) -> Untracked {
-    let mut f = FileDiff::new(FileStatus::Untracked, None, Some(rel.to_string()));
-    let path = modes.git.workdir().join(rel);
+async fn read_untracked(modes: &mut FileModes<'_>, rel: &BStr, size_limit: usize) -> Untracked {
+    let mut f = FileDiff::new(FileStatus::Untracked, None, Some(rel.to_owned()));
+    let path = modes.git.workdir().join(fs_path(rel));
     let Ok(meta) = tokio::fs::symlink_metadata(&path).await else {
         return Untracked { f, data: None };
     };
@@ -366,7 +371,7 @@ fn diff_untracked(u: Untracked, context: u32, line_limit: usize) -> (FileDiff, F
 }
 
 /// Load an untracked file's diff without the size limits, for "show anyway".
-pub async fn load_full_untracked(git: &Git, path: &str, context: u32) -> (FileDiff, FileTexts) {
+pub async fn load_full_untracked(git: &Git, path: &BStr, context: u32) -> (FileDiff, FileTexts) {
     let u = read_untracked(&mut FileModes::new(git), path, usize::MAX).await;
     crate::util::blocking(move || diff_untracked(u, context, usize::MAX)).await
 }
@@ -379,12 +384,14 @@ pub async fn load_full_diff(
     context: u32,
 ) -> Result<Option<FileDiff>> {
     let u = format!("-U{context}");
-    let mut args = vec!["diff", "--no-ext-diff", "--no-color", "--no-renames", &u];
+    let mut args: Vec<OsString> = ["diff", "--no-ext-diff", "--no-color", "--no-renames", &u]
+        .iter()
+        .map(OsString::from)
+        .collect();
     if staged {
-        args.push("--cached");
+        args.push("--cached".into());
     }
-    let spec = super::ops::pathspec(file.path());
-    args.extend(["--", &spec]);
+    args.extend(["--".into(), super::ops::pathspec(file.path())]);
     let out = git.read_opts(&args, &RunOpts::default()).await?;
     let (old_path, new_path) = (file.old_path.clone(), file.new_path.clone());
     // A file that changed type shows up twice under the same path, once

@@ -3,6 +3,8 @@
 //! Every write goes through here so that hooks, signing, credential helpers and
 //! the user's config behave exactly as they do on the command line.
 
+use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -24,7 +26,7 @@ pub struct LogEntry {
 /// Extra environment and input for a single git invocation.
 #[derive(Default, Clone)]
 pub struct RunOpts {
-    pub env: Vec<(String, String)>,
+    pub env: Vec<(&'static str, OsString)>,
     pub stdin: Option<Vec<u8>>,
     /// Treat these exit codes as success too (`git diff --no-index` exits 1
     /// when there are differences).
@@ -87,11 +89,11 @@ impl Git {
     /// Run a read-only command. These are not logged, and they don't take
     /// optional locks, so `git status` won't rewrite the index and wake up our
     /// own file watcher.
-    pub async fn read<S: AsRef<str>>(&self, args: &[S]) -> Result<Output> {
+    pub async fn read<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<Output> {
         self.read_opts(args, &RunOpts::default()).await
     }
 
-    pub async fn read_opts<S: AsRef<str>>(&self, args: &[S], opts: &RunOpts) -> Result<Output> {
+    pub async fn read_opts<S: AsRef<OsStr>>(&self, args: &[S], opts: &RunOpts) -> Result<Output> {
         let mut cmd = self.base_command();
         // Nobody wants the answer once the task asking for it is gone. Commands
         // that change the repository are left to finish, so they don't stop
@@ -100,43 +102,44 @@ impl Git {
         self.exec(cmd, args, opts, false).await
     }
 
-    pub async fn read_text<S: AsRef<str>>(&self, args: &[S]) -> Result<String> {
+    pub async fn read_text<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<String> {
         Ok(self.read(args).await?.text())
     }
 
     /// The user's editor, as git would pick it. We set `GIT_EDITOR` on every
     /// command we run, so asking git with that in place would just return
     /// our own setting.
-    pub async fn editor(&self) -> Result<String> {
+    ///
+    /// The setting is a shell command, which can name a program by a path
+    /// that isn't UTF-8, so it comes back as it is.
+    pub async fn editor(&self) -> Result<OsString> {
         let mut cmd = self.base_command();
         cmd.env_remove("GIT_EDITOR");
-        Ok(self
+        let out = self
             .exec(cmd, &["var", "GIT_EDITOR"], &RunOpts::default(), false)
-            .await?
-            .text()
-            .trim()
-            .to_string())
+            .await?;
+        Ok(OsString::from_vec(out.stdout.trim_ascii().to_vec()))
     }
 
     /// Run a command that may change the repository. It is recorded in the
     /// command log whether it succeeds or not.
-    pub async fn run<S: AsRef<str>>(&self, args: &[S]) -> Result<Output> {
+    pub async fn run<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<Output> {
         self.run_opts(args, &RunOpts::default()).await
     }
 
-    pub async fn run_opts<S: AsRef<str>>(&self, args: &[S], opts: &RunOpts) -> Result<Output> {
+    pub async fn run_opts<S: AsRef<OsStr>>(&self, args: &[S], opts: &RunOpts) -> Result<Output> {
         let cmd = self.base_command();
         self.exec(cmd, args, opts, true).await
     }
 
-    async fn exec<S: AsRef<str>>(
+    async fn exec<S: AsRef<OsStr>>(
         &self,
         mut cmd: Command,
         args: &[S],
         opts: &RunOpts,
         logged: bool,
     ) -> Result<Output> {
-        let args: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
+        let args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
         cmd.args(&args);
         for (k, v) in &opts.env {
             cmd.env(k, v);
@@ -176,7 +179,7 @@ impl Git {
             } else {
                 stderr.trim().to_string()
             };
-            bail!("git {} failed:\n{}", args.first().unwrap_or(&""), msg);
+            bail!("git {} failed:\n{}", first_arg(&args), msg);
         }
         Ok(Output {
             stdout: out.stdout,
@@ -187,13 +190,13 @@ impl Git {
     /// Run a long command such as fetch or push. Progress lines from stderr
     /// are passed to `progress` as they arrive. Git separates progress updates
     /// with carriage returns, so both `\r` and `\n` end a line.
-    pub async fn run_streaming<S: AsRef<str>>(
+    pub async fn run_streaming<S: AsRef<OsStr>>(
         &self,
         args: &[S],
         opts: &RunOpts,
         mut progress: impl FnMut(&str),
     ) -> Result<Output> {
-        let args: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
+        let args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
         let mut cmd = self.base_command();
         cmd.args(&args);
         for (k, v) in &opts.env {
@@ -244,11 +247,7 @@ impl Git {
             output,
         });
         if !ok {
-            bail!(
-                "git {} failed:\n{}",
-                args.first().unwrap_or(&""),
-                stderr.trim()
-            );
+            bail!("git {} failed:\n{}", first_arg(&args), stderr.trim());
         }
         Ok(Output { stdout, stderr })
     }
@@ -277,20 +276,33 @@ fn clean_progress(s: &str) -> String {
         .join("\n")
 }
 
-/// Quote arguments for display in the command log.
-pub fn shell_join(args: &[&str]) -> String {
-    // Only a NUL byte makes this fail, and git can't be run with one.
-    shlex::try_join(args.iter().copied()).unwrap_or_else(|_| args.join(" "))
+/// The git subcommand, for error messages.
+fn first_arg(args: &[&OsStr]) -> String {
+    args.first()
+        .map(|a| a.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
-/// Quote a word for `sh`. Fails if the word holds a NUL byte, which no
-/// shell can handle.
-pub fn shell_quote(s: &str) -> Result<String> {
-    Ok(shlex::try_quote(s)?.into_owned())
+/// Quote arguments for display in the command log. Bytes that aren't
+/// UTF-8 show up as replacement characters.
+pub fn shell_join(args: &[&OsStr]) -> String {
+    let words = args.iter().map(|a| a.as_bytes());
+    // Only a NUL byte makes this fail, and git can't be run with one.
+    let joined = shlex::bytes::try_join(words.clone())
+        .unwrap_or_else(|_| words.collect::<Vec<_>>().join(&b' '));
+    String::from_utf8_lossy(&joined).into_owned()
+}
+
+/// Quote a word for `sh`. The word can be any bytes, such as a path that
+/// isn't UTF-8. Fails if it holds a NUL byte, which no shell can handle.
+pub fn shell_quote(word: &[u8]) -> Result<Vec<u8>> {
+    Ok(shlex::bytes::try_quote(word)?.into_owned())
 }
 
 #[cfg(test)]
 mod tests {
+    use gix::bstr::BStr;
+
     use super::*;
 
     /// Check that `sh` turns each quoted word back into the original. On
@@ -321,13 +333,18 @@ mod tests {
             "!^#*?[a]",
             "caf\u{e9}",
         ];
-        let script: String = words
-            .iter()
-            .map(|w| format!("printf '%s\\0' {}\n", shell_quote(w).expect("quote")))
-            .collect();
+        // Latin-1 "café" and a lone continuation byte, which aren't UTF-8.
+        let mut words: Vec<&[u8]> = words.iter().map(|w| w.as_bytes()).collect();
+        words.extend([&b"caf\xe9"[..], b"\x80x"]);
+        let mut script: Vec<u8> = Vec::new();
+        for w in &words {
+            script.extend(b"printf '%s\\0' ");
+            script.extend(shell_quote(w).expect("quote"));
+            script.push(b'\n');
+        }
         let mut expected: Vec<u8> = Vec::new();
-        for w in words {
-            expected.extend(w.as_bytes());
+        for w in &words {
+            expected.extend(*w);
             expected.push(0);
         }
         let dir = tempfile::tempdir().expect("tempdir");
@@ -335,18 +352,15 @@ mod tests {
             let Ok(out) = std::process::Command::new(shell[0])
                 .args(&shell[1..])
                 .current_dir(dir.path())
-                .args(["-c", &script])
+                .arg("-c")
+                .arg(OsStr::from_bytes(&script))
                 .output()
             else {
                 continue;
             };
-            assert_eq!(
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&expected),
-                "{shell:?}"
-            );
+            assert_eq!(BStr::new(&out.stdout), BStr::new(&expected), "{shell:?}");
         }
-        assert!(shell_quote("a\0b").is_err());
+        assert!(shell_quote(b"a\0b").is_err());
     }
 
     #[test]
