@@ -311,6 +311,9 @@ pub struct App {
     /// Something the event loop has to do outside of `handle`, such as
     /// running an editor in the terminal.
     pub suspend: Option<Suspend>,
+    /// Text for the event loop to copy to the clipboard. `handle` never
+    /// writes to the terminal itself, so the tests can run any command.
+    pub clipboard: Option<String>,
     watcher: Option<watch::Handle>,
     pub watch_degraded: bool,
     last_poll: Instant,
@@ -444,6 +447,7 @@ impl App {
             last_click: None,
             size: (80, 24),
             suspend: None,
+            clipboard: None,
             watcher: None,
             watch_degraded: false,
             last_poll: Instant::now(),
@@ -1093,10 +1097,7 @@ impl App {
     }
 
     pub fn copy_to_clipboard(&mut self, text: &str) {
-        crate::terminal::write_raw(&format!(
-            "\x1b]52;c;{}\x07",
-            crate::util::base64(text.as_bytes())
-        ));
+        self.clipboard = Some(text.to_string());
         self.set_status(format!("Copied {text}"), Level::Info);
     }
 

@@ -85,14 +85,22 @@ pub fn install_panic_hook() {
     }));
 }
 
-/// Write an escape sequence straight to the terminal, for things ratatui
-/// doesn't cover, like OSC 52 clipboard writes.
 /// Set the mouse pointer shape with OSC 22, using CSS cursor names.
 /// Terminals that don't know the sequence ignore it.
 pub fn set_pointer(shape: &str) {
     write_raw(&format!("\x1b]22;{shape}\x1b\\"));
 }
 
+/// Copy text to the clipboard with OSC 52, which works over SSH too.
+pub fn copy(text: &str) {
+    write_raw(&format!(
+        "\x1b]52;c;{}\x07",
+        crate::util::base64(text.as_bytes())
+    ));
+}
+
+/// Write an escape sequence straight to the terminal, for things ratatui
+/// doesn't cover.
 pub fn write_raw(s: &str) {
     let mut out = stdout();
     let _ = out.write_all(s.as_bytes());

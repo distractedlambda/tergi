@@ -103,6 +103,9 @@ async fn run(path: &Path) -> Result<()> {
                     None => break,
                 }
             }
+            if let Some(text) = app.clipboard.take() {
+                terminal::copy(&text);
+            }
             if app.quit {
                 break;
             }
