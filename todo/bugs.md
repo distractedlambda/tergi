@@ -21,3 +21,14 @@ The cause is in gix-diff 0.70. `Tracker::emit` matches copies by
 `change.id()`, which for a modification is the new blob. We would need
 a fix upstream, or our own copy detection. `tests/commit_props.rs`
 leaves copies out until then.
+
+## Remotes whose names contain a slash lose their branches
+
+Git allows a remote named `a/b`. Its branches live under
+`refs/remotes/a/b/`. `Refs::load` in `git/refs.rs` splits the ref name
+at the first slash, so `refs/remotes/a/b/main` turns into branch
+`b/main` of remote `a`. The sidebar lists the branches of each remote
+from `git remote`, so `a/b` shows up with no branches, and `b/main`
+doesn't show up anywhere because there is no remote `a`.
+
+To see it, run `git remote add a/b <url>` and fetch from it.
