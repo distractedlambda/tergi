@@ -548,6 +548,9 @@ impl App {
                     self.focus = Focus::Detail;
                 }
             }
+            // The click was looked up in the last frame, and the row may
+            // be gone since then.
+            Target::DocRow(i) if i >= self.detail.rows.len() => {}
             Target::DocRow(i) => {
                 self.focus = Focus::Detail;
                 let row = self.detail.rows.get(i).cloned();
@@ -670,6 +673,7 @@ impl App {
                 self.focus = Focus::History;
                 self.select_history(i);
             }
+            Some(&Target::DocRow(i)) if i >= self.detail.rows.len() => return,
             Some(&Target::DocRow(i)) => {
                 self.focus = Focus::Detail;
                 // A click inside the selected lines is about those lines.

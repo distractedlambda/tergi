@@ -5,18 +5,18 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 
 use common::Scratch;
 use common::ui::Ui;
-use tergi::app::After;
 use tergi::app::cmd::{Cmd, Overlay, SideRow, Unit};
 use tergi::app::doc::{Row, Section};
 use tergi::app::input::Target;
 use tergi::app::planner::PlanAction;
+use tergi::app::{After, AppEvent};
 use tergi::ui::draw::draw;
 use tergi::util::fs_path;
 
@@ -292,6 +292,32 @@ fn leaving_a_commit_while_it_loads_stops_loading() {
     assert!(ui.app.detail.loading);
     ui.app.select_history(0);
     ui.wait("the app to go idle", |u| u.app.idle());
+}
+
+#[test]
+fn clicks_on_detail_rows_that_are_gone_do_nothing() {
+    let s = repo_with_change();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    ui.select_commit(1);
+    let r = ui.doc_row(|r| matches!(r, Row::Line { .. }));
+    // The other commit shows a single row until it loads. Without a
+    // frame in between, the clicks still find the line from before.
+    ui.app.select_history(2);
+    assert_eq!(ui.app.detail.rows.len(), 1);
+    for button in [MouseButton::Left, MouseButton::Right] {
+        for kind in [MouseEventKind::Down(button), MouseEventKind::Up(button)] {
+            let ev = MouseEvent {
+                kind,
+                column: r.x,
+                row: r.y,
+                modifiers: KeyModifiers::NONE,
+            };
+            ui.handle(AppEvent::Input(Event::Mouse(ev)));
+        }
+        assert_eq!(ui.app.detail.cursor, 0);
+        assert!(ui.app.overlays.is_empty());
+    }
 }
 
 #[test]
