@@ -2,6 +2,20 @@
 
 Known problems that nobody has fixed yet.
 
+## A folder that comes back isn't watched on Linux
+
+When a folder in the working tree is deleted or moved away, and a folder
+with the same name appears later, changes in the new folder go unnoticed
+until the ignored folders change.
+
+To see it, run `rm -rf src && mkdir src` while tergi runs, wait a
+moment, and then write a file in `src`. tergi doesn't refresh.
+
+The cause is in `src/watch.rs`. notify removes its inotify watch on a
+folder when the folder's parent reports that it was deleted or moved
+away. `Watches::tree` still lists the folder, so `walk` thinks it's
+watched and skips it when it comes back.
+
 ## Copies are found from the wrong version of a changed file
 
 With `diff.renames = copies`, a commit diff looks for copies among the
