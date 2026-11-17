@@ -23,3 +23,15 @@ The cause is in gix-diff 0.70. `Tracker::emit` matches copies by
 `change.id()`, which for a modification is the new blob. We would need
 a fix upstream, or our own copy detection. `tests/commit_props.rs`
 leaves copies out until then.
+
+## A click on a stale detail row puts the cursor past the end
+
+Clicks are looked up in `App::hits` from the last frame. The main loop
+handles every queued event before it draws again, so a click can hit a
+row that a reload or an earlier click in the same batch has removed.
+For detail rows, `click` and `right_click` in `app/input.rs` set
+`detail.cursor` to the row's index without checking that the row still
+exists. To see it, double click a commit link in the header of a commit.
+The first click switches to the other commit, which shows a single
+"Loading…" row, and the second click puts the cursor on the link's old
+row.
