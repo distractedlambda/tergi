@@ -1,17 +1,21 @@
 //! Branches, remotes, tags and stashes.
+//!
+//! Git allows ref names and remote names that aren't UTF-8, so they are
+//! kept as bytes. They only turn into text when they are drawn.
 
 use std::collections::HashMap;
 
 use anyhow::Result;
 use gix::ObjectId;
+use gix::bstr::{BStr, BString, ByteSlice as _};
 
 use super::cli::Git;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Branch {
-    pub name: String,
+    pub name: BString,
     pub target: ObjectId,
-    pub upstream: Option<String>,
+    pub upstream: Option<BString>,
     pub ahead: u32,
     pub behind: u32,
     /// The upstream is configured but no longer exists on the remote.
@@ -21,21 +25,23 @@ pub struct Branch {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteBranch {
-    pub remote: String,
+    pub remote: BString,
     /// The branch name without the remote prefix.
-    pub name: String,
+    pub name: BString,
     pub target: ObjectId,
 }
 
 impl RemoteBranch {
-    pub fn full_name(&self) -> String {
-        format!("{}/{}", self.remote, self.name)
+    pub fn full_name(&self) -> BString {
+        [self.remote.as_slice(), b"/", self.name.as_slice()]
+            .concat()
+            .into()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tag {
-    pub name: String,
+    pub name: BString,
     /// The commit the tag points at, after peeling annotated tags.
     pub target: ObjectId,
 }
@@ -65,16 +71,16 @@ pub enum LabelKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Label {
     pub kind: LabelKind,
-    pub name: String,
+    pub name: BString,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Refs {
     pub head: Option<ObjectId>,
     /// The checked out branch, or `None` when detached or unborn.
-    pub head_branch: Option<String>,
+    pub head_branch: Option<BString>,
     pub branches: Vec<Branch>,
-    pub remotes: Vec<String>,
+    pub remotes: Vec<BString>,
     pub remote_branches: Vec<RemoteBranch>,
     pub tags: Vec<Tag>,
     pub stashes: Vec<Stash>,
@@ -83,62 +89,63 @@ pub struct Refs {
 impl Refs {
     pub async fn load(git: &Git) -> Result<Refs> {
         let mut refs = Refs::default();
-        let out = git.read_text(&[
+        let out = git.read(&[
             "for-each-ref",
             "--format=%(refname)%00%(objectname)%00%(*objectname)%00%(upstream:short)%00%(upstream:track,nobracket)%00%(HEAD)",
             "refs/heads",
             "refs/remotes",
             "refs/tags",
         ]).await?;
-        for line in out.lines() {
-            let f: Vec<&str> = line.split('\0').collect();
+        for line in out.stdout.lines() {
+            let f: Vec<&[u8]> = line.split(|&b| b == 0).collect();
             if f.len() < 6 {
                 continue;
             }
             let peeled = if f[2].is_empty() { f[1] } else { f[2] };
-            let Ok(target) = ObjectId::from_hex(peeled.as_bytes()) else {
+            let Ok(target) = ObjectId::from_hex(peeled) else {
                 continue;
             };
-            if let Some(name) = f[0].strip_prefix("refs/heads/") {
-                let (ahead, behind, gone) = parse_track(f[4]);
-                let is_head = f[5] == "*";
+            if let Some(name) = f[0].strip_prefix(b"refs/heads/") {
+                let (ahead, behind, gone) = parse_track(&f[4].to_str_lossy());
+                let is_head = f[5] == b"*";
                 if is_head {
-                    refs.head_branch = Some(name.to_string());
+                    refs.head_branch = Some(name.into());
                 }
                 refs.branches.push(Branch {
-                    name: name.to_string(),
+                    name: name.into(),
                     target,
-                    upstream: (!f[3].is_empty()).then(|| f[3].to_string()),
+                    upstream: (!f[3].is_empty()).then(|| f[3].into()),
                     ahead,
                     behind,
                     upstream_gone: gone,
                     is_head,
                 });
-            } else if let Some(rest) = f[0].strip_prefix("refs/remotes/") {
-                let Some((remote, name)) = rest.split_once('/') else {
+            } else if let Some(rest) = f[0].strip_prefix(b"refs/remotes/") {
+                let Some((remote, name)) = rest.split_once_str("/") else {
                     continue;
                 };
-                if name == "HEAD" {
+                if name == b"HEAD" {
                     continue;
                 }
                 refs.remote_branches.push(RemoteBranch {
-                    remote: remote.to_string(),
-                    name: name.to_string(),
+                    remote: remote.into(),
+                    name: name.into(),
                     target,
                 });
-            } else if let Some(name) = f[0].strip_prefix("refs/tags/") {
+            } else if let Some(name) = f[0].strip_prefix(b"refs/tags/") {
                 refs.tags.push(Tag {
-                    name: name.to_string(),
+                    name: name.into(),
                     target,
                 });
             }
         }
         refs.remotes = git
-            .read_text(&["remote"])
+            .read(&["remote"])
             .await?
+            .stdout
             .lines()
-            .map(str::to_string)
             .filter(|s| !s.is_empty())
+            .map(BString::from)
             .collect();
         refs.head = git
             .read(&["rev-parse", "--verify", "-q", "HEAD"])
@@ -197,6 +204,10 @@ impl Refs {
 
     pub fn current_branch(&self) -> Option<&Branch> {
         self.branches.iter().find(|b| b.is_head)
+    }
+
+    pub fn branch(&self, name: &BStr) -> Option<&Branch> {
+        self.branches.iter().find(|b| b.name == name)
     }
 }
 

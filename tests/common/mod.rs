@@ -80,6 +80,26 @@ impl Scratch {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
+    /// Run git with arguments that needn't be UTF-8, such as ref names, and
+    /// return stdout as bytes, panicking on failure.
+    pub fn sh_bytes(&self, args: &[&[u8]]) -> Vec<u8> {
+        let out = Command::new("git")
+            .current_dir(&self.root)
+            .env("GIT_EDITOR", "true")
+            .args(args.iter().map(|a| tergi::util::os_str(a)))
+            .output()
+            .expect("run git");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args.iter()
+                .map(|a| a.escape_ascii().to_string())
+                .collect::<Vec<_>>(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.stdout
+    }
+
     pub fn commit_all(&self, msg: &str) -> String {
         self.sh(&["add", "-A"]);
         self.sh(&["commit", "-q", "--allow-empty", "-m", msg]);

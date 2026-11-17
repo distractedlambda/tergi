@@ -362,7 +362,7 @@ pub struct SidebarState {
     pub rows: Vec<cmd::SideRow>,
     pub selected: usize,
     pub scroll: usize,
-    pub collapsed: HashSet<String>,
+    pub collapsed: HashSet<cmd::SideKey>,
 }
 
 const REFRESH_REFS: u8 = 1;
@@ -398,7 +398,7 @@ impl App {
         let mut message = TextArea::new(true);
         message.placeholder = "Commit message (Ctrl+Enter to commit)".into();
         let mut collapsed = HashSet::new();
-        collapsed.insert("tags".to_string());
+        collapsed.insert(cmd::SideKey::Header("tags".into()));
         let mut app = App {
             repo,
             tx,

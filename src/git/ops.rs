@@ -4,16 +4,25 @@
 //! someone else's repository. Git would read a name like `-f` or
 //! `--exec=cmd` as an option, so we put `--end-of-options` in front of
 //! every ref and revision we pass.
+//!
+//! Ref names needn't be UTF-8, so the functions that take one take bytes.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStringExt as _;
 
 use anyhow::{Result, bail};
 use gix::ObjectId;
+use gix::bstr::{BString, ByteSlice as _};
 
 use super::cli::{Git, RunOpts};
 use super::diff::{FileDiff, LineKind};
 use super::patch::build_patch;
+use crate::util::os_str;
+
+/// A ref name or other bytes as an argument for git.
+fn arg(name: &impl AsRef<[u8]>) -> &OsStr {
+    os_str(name.as_ref())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyMode {
@@ -143,12 +152,12 @@ pub async fn unstage_all(git: &Git, has_head: bool) -> Result<()> {
 }
 
 /// The branch that is checked out, or `None` when HEAD is detached.
-pub async fn head_branch(git: &Git) -> Option<String> {
-    let name = git
-        .read_text(&["symbolic-ref", "--quiet", "--short", "HEAD"])
+pub async fn head_branch(git: &Git) -> Option<BString> {
+    let out = git
+        .read(&["symbolic-ref", "--quiet", "--short", "HEAD"])
         .await
         .ok()?;
-    Some(name.trim().to_string())
+    Some(out.stdout.trim_ascii_end().into())
 }
 
 /// Throw away unstaged changes to tracked files.
@@ -197,65 +206,114 @@ pub async fn commit_message(git: &Git, rev: &str) -> Result<String> {
         .to_string())
 }
 
-pub async fn checkout(git: &Git, target: &str) -> Result<()> {
-    git.run(&["checkout", "--end-of-options", target]).await?;
-    Ok(())
-}
-
-/// Check out a remote branch, creating or reusing a local tracking branch.
-pub async fn checkout_remote(git: &Git, remote_branch: &str, local_exists: bool) -> Result<()> {
-    let local = remote_branch
-        .split_once('/')
-        .map_or(remote_branch, |(_, b)| b);
-    if local_exists {
-        git.run(&["checkout", "--end-of-options", local]).await?;
-    } else {
-        git.run(&["checkout", "--track", "--end-of-options", remote_branch])
-            .await?;
-    }
-    Ok(())
-}
-
-pub async fn create_branch(git: &Git, name: &str, at: &str, checkout: bool) -> Result<()> {
-    if checkout {
-        git.run(&["checkout", "-b", name, "--end-of-options", at])
-            .await?;
-    } else {
-        git.run(&["branch", "--end-of-options", name, at]).await?;
-    }
-    Ok(())
-}
-
-pub async fn rename_branch(git: &Git, old: &str, new: &str) -> Result<()> {
-    git.run(&["branch", "-m", "--end-of-options", old, new])
-        .await?;
-    Ok(())
-}
-
-pub async fn delete_branch(git: &Git, name: &str, force: bool) -> Result<()> {
+pub async fn checkout(git: &Git, target: impl AsRef<[u8]>) -> Result<()> {
     git.run(&[
-        "branch",
-        if force { "-D" } else { "-d" },
-        "--end-of-options",
-        name,
+        OsStr::new("checkout"),
+        OsStr::new("--end-of-options"),
+        arg(&target),
     ])
     .await?;
     Ok(())
 }
 
-pub async fn delete_remote_branch(git: &Git, remote: &str, name: &str) -> Result<()> {
-    git.run(&["push", "--delete", "--end-of-options", remote, name])
+/// Check out a remote branch, creating or reusing a local tracking branch.
+pub async fn checkout_remote(
+    git: &Git,
+    remote_branch: impl AsRef<[u8]>,
+    local_exists: bool,
+) -> Result<()> {
+    let full = remote_branch.as_ref();
+    if local_exists {
+        let local = full.split_once_str("/").map_or(full, |(_, b)| b);
+        checkout(git, local).await
+    } else {
+        git.run(&[
+            OsStr::new("checkout"),
+            OsStr::new("--track"),
+            OsStr::new("--end-of-options"),
+            os_str(full),
+        ])
         .await?;
+        Ok(())
+    }
+}
+
+/// Create a branch named `name`, which the user typed, at the ref or
+/// commit `at`.
+pub async fn create_branch(
+    git: &Git,
+    name: &str,
+    at: impl AsRef<[u8]>,
+    checkout: bool,
+) -> Result<()> {
+    if checkout {
+        git.run(&[
+            OsStr::new("checkout"),
+            OsStr::new("-b"),
+            OsStr::new(name),
+            OsStr::new("--end-of-options"),
+            arg(&at),
+        ])
+        .await?;
+    } else {
+        git.run(&[
+            OsStr::new("branch"),
+            OsStr::new("--end-of-options"),
+            OsStr::new(name),
+            arg(&at),
+        ])
+        .await?;
+    }
     Ok(())
 }
 
-pub async fn set_upstream(git: &Git, branch: &str, upstream: &str) -> Result<()> {
+pub async fn rename_branch(git: &Git, old: impl AsRef<[u8]>, new: &str) -> Result<()> {
     git.run(&[
-        "branch",
-        "--set-upstream-to",
-        upstream,
-        "--end-of-options",
-        branch,
+        OsStr::new("branch"),
+        OsStr::new("-m"),
+        OsStr::new("--end-of-options"),
+        arg(&old),
+        OsStr::new(new),
+    ])
+    .await?;
+    Ok(())
+}
+
+pub async fn delete_branch(git: &Git, name: impl AsRef<[u8]>, force: bool) -> Result<()> {
+    git.run(&[
+        OsStr::new("branch"),
+        OsStr::new(if force { "-D" } else { "-d" }),
+        OsStr::new("--end-of-options"),
+        arg(&name),
+    ])
+    .await?;
+    Ok(())
+}
+
+pub async fn delete_remote_branch(
+    git: &Git,
+    remote: impl AsRef<[u8]>,
+    name: impl AsRef<[u8]>,
+) -> Result<()> {
+    git.run(&[
+        OsStr::new("push"),
+        OsStr::new("--delete"),
+        OsStr::new("--end-of-options"),
+        arg(&remote),
+        arg(&name),
+    ])
+    .await?;
+    Ok(())
+}
+
+/// Make `branch` track `upstream`, which the user typed.
+pub async fn set_upstream(git: &Git, branch: impl AsRef<[u8]>, upstream: &str) -> Result<()> {
+    git.run(&[
+        OsStr::new("branch"),
+        OsStr::new("--set-upstream-to"),
+        OsStr::new(upstream),
+        OsStr::new("--end-of-options"),
+        arg(&branch),
     ])
     .await?;
     Ok(())
@@ -272,14 +330,25 @@ pub async fn create_tag(git: &Git, name: &str, at: &str, message: Option<&str>) 
     Ok(())
 }
 
-pub async fn delete_tag(git: &Git, name: &str) -> Result<()> {
-    git.run(&["tag", "-d", "--end-of-options", name]).await?;
+pub async fn delete_tag(git: &Git, name: impl AsRef<[u8]>) -> Result<()> {
+    git.run(&[
+        OsStr::new("tag"),
+        OsStr::new("-d"),
+        OsStr::new("--end-of-options"),
+        arg(&name),
+    ])
+    .await?;
     Ok(())
 }
 
-pub async fn merge(git: &Git, rev: &str) -> Result<()> {
-    git.run(&["merge", "--no-edit", "--end-of-options", rev])
-        .await?;
+pub async fn merge(git: &Git, rev: impl AsRef<[u8]>) -> Result<()> {
+    git.run(&[
+        OsStr::new("merge"),
+        OsStr::new("--no-edit"),
+        OsStr::new("--end-of-options"),
+        arg(&rev),
+    ])
+    .await?;
     Ok(())
 }
 

@@ -62,9 +62,10 @@ impl Entry {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Status {
     pub head_oid: Option<String>,
-    /// The branch name, or `None` when HEAD is detached.
-    pub branch: Option<String>,
-    pub upstream: Option<String>,
+    /// The branch name, or `None` when HEAD is detached. Like paths,
+    /// branch names needn't be UTF-8.
+    pub branch: Option<BString>,
+    pub upstream: Option<BString>,
     pub ahead: u32,
     pub behind: u32,
     pub entries: Vec<Entry>,
@@ -134,13 +135,16 @@ pub fn parse(out: &[u8]) -> Status {
             continue;
         }
         if let Some(h) = rec.strip_prefix(b"# ") {
+            if let Some(v) = h.strip_prefix(b"branch.head ") {
+                st.branch = (v != b"(detached)").then(|| v.into());
+                continue;
+            } else if let Some(v) = h.strip_prefix(b"branch.upstream ") {
+                st.upstream = Some(v.into());
+                continue;
+            }
             let h = h.to_str_lossy();
             if let Some(v) = h.strip_prefix("branch.oid ") {
                 st.head_oid = (v != "(initial)").then(|| v.to_string());
-            } else if let Some(v) = h.strip_prefix("branch.head ") {
-                st.branch = (v != "(detached)").then(|| v.to_string());
-            } else if let Some(v) = h.strip_prefix("branch.upstream ") {
-                st.upstream = Some(v.to_string());
             } else if let Some(v) = h.strip_prefix("branch.ab ") {
                 let mut it = v.split(' ');
                 st.ahead = it
@@ -214,8 +218,8 @@ mod tests {
 u UU N... 100644 100644 100644 100644 d1 d2 d3 conflict.rs\0\
 ? untracked file\0! target/\0? caf\xe9\0";
         let st = parse(text);
-        assert_eq!(st.branch.as_deref(), Some("main"));
-        assert_eq!(st.upstream.as_deref(), Some("origin/main"));
+        assert_eq!(st.branch, Some("main".into()));
+        assert_eq!(st.upstream, Some("origin/main".into()));
         assert_eq!((st.ahead, st.behind), (2, 1));
         assert_eq!(st.entries.len(), 6);
         assert_eq!(st.entries[0].path(), "src/a b.rs");
@@ -257,11 +261,13 @@ u UU N... 100644 100644 100644 100644 d1 d2 d3 conflict.rs\0\
         use std::io::Write as _;
         let mut out = Vec::new();
         let oid = st.head_oid.as_deref().unwrap_or("(initial)");
-        let head = st.branch.as_deref().unwrap_or("(detached)");
-        write!(out, "# branch.oid {oid}\0# branch.head {head}\0").expect("write");
+        let head = st.branch.as_ref().map_or(&b"(detached)"[..], |b| b);
+        write!(out, "# branch.oid {oid}\0").expect("write");
+        out.extend_from_slice(&[b"# branch.head ", head, b"\0"].concat());
         if let Some(u) = &st.upstream {
             let (a, b) = (st.ahead, st.behind);
-            write!(out, "# branch.upstream {u}\0# branch.ab +{a} -{b}\0").expect("write");
+            out.extend_from_slice(&[b"# branch.upstream ", u.as_slice(), b"\0"].concat());
+            write!(out, "# branch.ab +{a} -{b}\0").expect("write");
         }
         for e in &st.entries {
             match e {
@@ -364,12 +370,28 @@ u UU N... 100644 100644 100644 100644 d1 d2 d3 conflict.rs\0\
         ]
     }
 
+    /// Branch names can't hold spaces or control characters, but they
+    /// can hold bytes that aren't UTF-8.
+    fn branch() -> impl Strategy<Value = BString> {
+        let piece = prop::sample::select(vec![
+            &b"a"[..],
+            b"z",
+            b"/",
+            b".",
+            b"-",
+            "é".as_bytes(),
+            b"\xe9",
+            b"\xff",
+        ]);
+        prop::collection::vec(piece, 0..10)
+            .prop_map(|v| BString::from([&b"b"[..], &v.concat()].concat()))
+    }
+
     fn status() -> impl Strategy<Value = Status> {
-        let branch = "[a-z][a-z/._-]{0,10}";
         (
             prop::option::of("[0-9a-f]{40}"),
-            prop::option::of(branch),
-            prop::option::of((branch, any::<u32>(), any::<u32>())),
+            prop::option::of(branch()),
+            prop::option::of((branch(), any::<u32>(), any::<u32>())),
             prop::collection::vec(entry(), 0..8),
             prop::collection::vec(path(), 0..3),
         )

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use gix::ObjectId;
-use gix::bstr::{BString, ByteSlice as _};
+use gix::bstr::{BStr, BString, ByteSlice as _};
 use tokio::sync::oneshot;
 
 use super::doc::{Row, Section, Source};
@@ -23,7 +23,7 @@ use crate::git::ops::{self, ApplyMode, ResetMode};
 use crate::git::rebase::{self, Action, Outcome, RepoState};
 use crate::git::refs::Refs;
 use crate::ui::textarea::TextArea;
-use crate::util::fs_path;
+use crate::util::{fs_path, os_str};
 
 /// Part of the working directory's changes, to stage, unstage or discard.
 ///
@@ -112,7 +112,7 @@ pub enum Cmd {
     PullMenu,
     /// Push the branch, which was checked out when the user chose this.
     Push {
-        branch: String,
+        branch: BString,
         force: bool,
     },
     PushMenu,
@@ -125,7 +125,8 @@ pub enum Cmd {
     Move(ObjectId, bool),
     Planner(ObjectId),
     CheckoutCommit(ObjectId),
-    NewBranch(String),
+    /// Ask for the name of a new branch at this ref or commit.
+    NewBranch(BString),
     NewTag(ObjectId),
     CherryPick(ObjectId),
     Revert(ObjectId),
@@ -155,19 +156,21 @@ pub enum Cmd {
     NextHunk(bool),
     NextFile(bool),
 
-    Checkout(String),
-    CheckoutRemote(String),
-    RenameBranch(String),
-    DeleteBranch(String, bool),
-    DeleteRemoteBranch(String, String),
-    SetUpstream(String),
-    Merge(String),
-    RebaseOnto(String),
-    DeleteTag(String),
-    PushTag(String),
+    // Ref names needn't be UTF-8, so these keep them as bytes.
+    Checkout(BString),
+    CheckoutRemote(BString),
+    RenameBranch(BString),
+    DeleteBranch(BString, bool),
+    DeleteRemoteBranch(BString, BString),
+    SetUpstream(BString),
+    Merge(BString),
+    RebaseOnto(BString),
+    DeleteTag(BString),
+    PushTag(BString),
     StashApply(ObjectId, bool),
     StashDrop(ObjectId),
-    ToggleSideSection(String),
+    /// Fold or unfold a header or a remote in the sidebar.
+    ToggleSideSection(SideKey),
 
     ContinueOp,
     AbortOp,
@@ -315,14 +318,14 @@ pub struct Menu {
 
 pub enum Purpose {
     NewBranch {
-        at: String,
+        at: BString,
     },
-    RenameBranch(String),
+    RenameBranch(BString),
     NewTag(ObjectId),
     Reword(ObjectId),
     Squash(ObjectId),
     StashPush,
-    SetUpstream(String),
+    SetUpstream(BString),
     /// The message for the planner row with this commit.
     PlannerMessage(ObjectId),
     ContextLines,
@@ -370,7 +373,7 @@ pub enum SideRow {
         count: usize,
     },
     Branch(usize),
-    Remote(String),
+    Remote(BString),
     RemoteBranch(usize),
     Tag(usize),
     Stash(usize),
@@ -379,14 +382,14 @@ pub enum SideRow {
 
 /// What a sidebar row shows. Rows refer to refs by their place in the
 /// lists in `Refs`, which can change when the refs reload. This stays the
-/// same.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// same. Folded headers and remotes are kept by their key too.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SideKey {
     Header(String),
-    Branch(String),
-    Remote(String),
-    RemoteBranch(String),
-    Tag(String),
+    Branch(BString),
+    Remote(BString),
+    RemoteBranch(BString),
+    Tag(BString),
     Stash(ObjectId),
 }
 
@@ -411,7 +414,7 @@ impl SideRow {
     }
 }
 
-pub fn sidebar_rows(refs: &Refs, collapsed: &HashSet<String>) -> Vec<SideRow> {
+pub fn sidebar_rows(refs: &Refs, collapsed: &HashSet<SideKey>) -> Vec<SideRow> {
     let mut rows = Vec::new();
     let header = |rows: &mut Vec<SideRow>, key: &str, title: &str, count: usize| {
         rows.push(SideRow::Header {
@@ -419,7 +422,7 @@ pub fn sidebar_rows(refs: &Refs, collapsed: &HashSet<String>) -> Vec<SideRow> {
             title: title.into(),
             count,
         });
-        !collapsed.contains(key)
+        !collapsed.contains(&SideKey::Header(key.into()))
     };
     if header(&mut rows, "branches", "Branches", refs.branches.len()) {
         if refs.branches.is_empty() {
@@ -430,7 +433,7 @@ pub fn sidebar_rows(refs: &Refs, collapsed: &HashSet<String>) -> Vec<SideRow> {
     if header(&mut rows, "remotes", "Remotes", refs.remotes.len()) {
         for r in &refs.remotes {
             rows.push(SideRow::Remote(r.clone()));
-            if !collapsed.contains(&format!("remote:{r}")) {
+            if !collapsed.contains(&SideKey::Remote(r.clone())) {
                 rows.extend(
                     refs.remote_branches
                         .iter()
@@ -689,7 +692,7 @@ impl App {
             act(
                 Some(Key::ch('b')),
                 "New branch here…",
-                Cmd::NewBranch(id.to_string()),
+                Cmd::NewBranch(id.to_string().into()),
             ),
             act(Some(Key::ch('T')), "New tag here…", Cmd::NewTag(id)),
             act(
@@ -841,7 +844,7 @@ impl App {
                 act(
                     Some(Key::code(KeyCode::Enter)),
                     "Fold or unfold",
-                    Cmd::ToggleSideSection(key.clone()),
+                    Cmd::ToggleSideSection(SideKey::Header(key.clone())),
                 )
                 .hint(),
             ],
@@ -849,7 +852,7 @@ impl App {
                 act(
                     Some(Key::code(KeyCode::Enter)),
                     "Fold or unfold",
-                    Cmd::ToggleSideSection(format!("remote:{r}")),
+                    Cmd::ToggleSideSection(SideKey::Remote(r.clone())),
                 )
                 .hint(),
                 act(Some(Key::ch('F')), "Fetch", Cmd::Fetch),
@@ -1259,12 +1262,12 @@ impl App {
                 self.open_menu(&format!("Push {branch}"), items, Some(&Cmd::PushMenu));
             }
             Cmd::Push { branch, force } => {
-                let Some(branch) = self.refs.branches.iter().find(|b| b.name == branch).cloned() else {
+                let Some(branch) = self.refs.branch(branch.as_ref()).cloned() else {
                     self.set_status(format!("Can't push: {branch} doesn't exist any more"), Level::Error);
                     return;
                 };
                 let remote = if self.refs.remotes.iter().any(|r| r == "origin") {
-                    Some("origin".to_string())
+                    Some(BString::from("origin"))
                 } else {
                     self.refs.remotes.first().cloned()
                 };
@@ -1278,15 +1281,15 @@ impl App {
                     // Without a refspec, git pushes whatever is checked out
                     // when it runs. We leave the refspec out so that settings
                     // like pushRemote work, so check the branch instead.
-                    if ops::head_branch(&r.git).await.as_deref() != Some(branch.name.as_str()) {
+                    if ops::head_branch(&r.git).await.as_ref() != Some(&branch.name) {
                         return Err(anyhow::anyhow!("{} isn't checked out any more, so nothing was pushed.", branch.name));
                     }
-                    let mut args = vec!["push".to_string(), "--progress".to_string()];
+                    let mut args = vec![os_str(b"push"), os_str(b"--progress")];
                     if force {
-                        args.push("--force-with-lease".into());
+                        args.push(os_str(b"--force-with-lease"));
                     }
                     if !has_upstream {
-                        args.extend(["-u".into(), "--end-of-options".into(), remote, branch.name.clone()]);
+                        args.extend([os_str(b"-u"), os_str(b"--end-of-options"), os_str(&remote), os_str(&branch.name)]);
                     }
                     r.git
                         .run_streaming(&args, &crate::git::cli::RunOpts { env, ..Default::default() }, |l| {
@@ -1346,7 +1349,7 @@ impl App {
                 });
             }
             Cmd::NewBranch(at) => {
-                self.open_input("New branch", &format!("Created at {} and checked out", short_name(&at)), false, "", Purpose::NewBranch { at });
+                self.open_input("New branch", &format!("Created at {} and checked out", short_name(at.as_ref())), false, "", Purpose::NewBranch { at });
             }
             Cmd::NewTag(id) => self.open_input("New tag", &format!("At {}", short(&id)), false, "", Purpose::NewTag(id)),
             Cmd::CherryPick(id) => {
@@ -1455,13 +1458,16 @@ impl App {
                 ops::checkout(&r.git, &b).await.map(|()| format!("Switched to {b}"))
             }),
             Cmd::CheckoutRemote(full) => {
-                let local = full.split_once('/').map_or(full.as_str(), |(_, b)| b).to_string();
-                let exists = self.refs.branches.iter().any(|b| b.name == local);
+                let local = BString::from(full.split_once_str("/").map_or(full.as_bytes(), |(_, b)| b));
+                let exists = self.refs.branch(local.as_ref()).is_some();
                 self.spawn_op("Checkout", After::Nothing, move |r, _| async move {
                     ops::checkout_remote(&r.git, &full, exists).await.map(|()| format!("Switched to {local}"))
                 });
             }
-            Cmd::RenameBranch(b) => self.open_input("Rename branch", &format!("New name for {b}"), false, &b.clone(), Purpose::RenameBranch(b)),
+            Cmd::RenameBranch(b) => {
+                let initial = b.to_str_lossy().into_owned();
+                self.open_input("Rename branch", &format!("New name for {b}"), false, &initial, Purpose::RenameBranch(b));
+            }
             Cmd::DeleteBranch(b, force) => self.spawn_op("Delete branch", After::Nothing, move |r, _| async move {
                 match ops::delete_branch(&r.git, &b, force).await {
                     Ok(()) => Ok(format!("Deleted {b}")),
@@ -1475,12 +1481,12 @@ impl App {
                 let env = self.repo.remote_env();
                 self.spawn_op("Delete remote branch", After::Nothing, move |r, _| async move {
                     r.git
-                        .run_opts(&["push", "--delete", "--end-of-options", &remote, &name], &crate::git::cli::RunOpts { env, ..Default::default() }).await
+                        .run_opts(&[os_str(b"push"), os_str(b"--delete"), os_str(b"--end-of-options"), os_str(&remote), os_str(&name)], &crate::git::cli::RunOpts { env, ..Default::default() }).await
                         .map(|_| format!("Deleted {name} on {remote}"))
                 });
             }
             Cmd::SetUpstream(b) => {
-                let guess = format!("{}/{b}", self.refs.remotes.first().map_or("origin", String::as_str));
+                let guess = format!("{}/{b}", self.refs.remotes.first().map_or("origin".into(), |r| r.to_str_lossy()));
                 self.open_input("Set upstream", &format!("Remote branch for {b} to track"), false, &guess, Purpose::SetUpstream(b));
             }
             Cmd::Merge(b) => self.spawn_op("Merge", After::Nothing, move |r, _| async move { ops::merge(&r.git, &b).await.map(|()| format!("Merged {b}")) }),
@@ -1490,8 +1496,9 @@ impl App {
                 let remote = self.refs.remotes.first().cloned().unwrap_or_else(|| "origin".into());
                 let env = self.repo.remote_env();
                 self.spawn_op("Push tag", After::Nothing, move |r, p| async move {
+                    let refspec = [b"refs/tags/", t.as_bytes()].concat();
                     r.git
-                        .run_streaming(&["push", "--progress", "--end-of-options", &remote, &format!("refs/tags/{t}")], &crate::git::cli::RunOpts { env, ..Default::default() }, |l| p(l.to_string())).await
+                        .run_streaming(&[os_str(b"push"), os_str(b"--progress"), os_str(b"--end-of-options"), os_str(&remote), os_str(&refspec)], &crate::git::cli::RunOpts { env, ..Default::default() }, |l| p(l.to_string())).await
                         .map(|_| format!("Pushed {t}"))
                 });
             }
@@ -1973,10 +1980,10 @@ pub fn short(id: &ObjectId) -> String {
     id.to_hex_with_len(7).to_string()
 }
 
-fn short_name(s: &str) -> String {
-    if s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()) {
-        s[..7].to_string()
+fn short_name(s: &BStr) -> String {
+    if s.len() == 40 && s.iter().all(u8::is_ascii_hexdigit) {
+        s[..7].to_str_lossy().into_owned()
     } else {
-        s.to_string()
+        s.to_str_lossy().into_owned()
     }
 }

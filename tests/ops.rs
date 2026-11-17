@@ -7,8 +7,12 @@ use std::os::unix::ffi::OsStrExt as _;
 
 use common::Scratch;
 use gix::ObjectId;
+use gix::bstr::BString;
 use tergi::git::commit;
 use tergi::git::ops::{self, ApplyMode, apply_lines};
+use tergi::git::rebase::{self, RepoState};
+use tergi::git::refs::Refs;
+use tergi::git::status::Status;
 use tergi::git::workdir::Workdir;
 
 #[tokio::test]
@@ -291,4 +295,82 @@ async fn editor_setting_keeps_its_bytes() {
         .expect("run git");
     assert!(status.success());
     assert_eq!(s.git.editor().await.expect("editor"), editor);
+}
+
+/// Git allows ref names that aren't UTF-8. Here "caf\xe9" and "caf\xff"
+/// look the same once they are text, so mixing them up would act on the
+/// wrong branch.
+#[tokio::test]
+async fn ref_names_that_are_not_utf8() {
+    let s = Scratch::new();
+    s.write("f.txt", "a\n");
+    s.commit_all("one");
+    s.sh_bytes(&[b"branch", b"caf\xe9"]);
+    s.sh_bytes(&[b"branch", b"caf\xff"]);
+    s.sh_bytes(&[b"tag", b"t\xe9"]);
+    s.sh_bytes(&[b"remote", b"add", b"r\xe9", b"/nowhere"]);
+    s.sh_bytes(&[b"update-ref", b"refs/remotes/r\xe9/caf\xe9", b"HEAD"]);
+
+    let refs = Refs::load(&s.git).await.expect("refs");
+    let names = |v: Vec<&BString>| v.into_iter().cloned().collect::<Vec<_>>();
+    assert_eq!(
+        names(refs.branches.iter().map(|b| &b.name).collect()),
+        [&b"caf\xe9"[..], b"caf\xff", b"main"]
+    );
+    assert_eq!(
+        names(refs.tags.iter().map(|t| &t.name).collect()),
+        [b"t\xe9"]
+    );
+    assert_eq!(refs.remotes, [b"r\xe9"]);
+    assert_eq!(refs.remote_branches[0].full_name(), b"r\xe9/caf\xe9");
+    assert_eq!(refs.labels().values().flatten().count(), 5);
+
+    let head_ref = || s.sh_bytes(&[b"symbolic-ref", b"HEAD"]);
+    ops::checkout(&s.git, &refs.branches[1].name)
+        .await
+        .expect("checkout");
+    assert_eq!(head_ref(), b"refs/heads/caf\xff\n");
+    assert_eq!(
+        ops::head_branch(&s.git).await,
+        Some(BString::from(&b"caf\xff"[..]))
+    );
+    let status = Status::load(&s.git).await.expect("status");
+    assert_eq!(status.branch, Some(BString::from(&b"caf\xff"[..])));
+
+    ops::delete_branch(&s.git, &refs.branches[0].name, false)
+        .await
+        .expect("delete");
+    ops::rename_branch(&s.git, &refs.branches[1].name, "renamed")
+        .await
+        .expect("rename");
+    ops::delete_tag(&s.git, &refs.tags[0].name)
+        .await
+        .expect("delete tag");
+    assert_eq!(
+        s.sh(&[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/tags"
+        ]),
+        "refs/heads/main\nrefs/heads/renamed\n"
+    );
+    ops::checkout_remote(&s.git, refs.remote_branches[0].full_name(), false)
+        .await
+        .expect("checkout remote");
+    assert_eq!(head_ref(), b"refs/heads/caf\xe9\n");
+}
+
+#[test]
+fn rebase_of_a_branch_whose_name_is_not_utf8() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let d = dir.path().join("rebase-merge");
+    std::fs::create_dir(&d).expect("mkdir");
+    std::fs::write(d.join("head-name"), b"refs/heads/caf\xe9\n").expect("write");
+    match rebase::state_in(dir.path()) {
+        RepoState::Rebase { head_name, .. } => {
+            assert_eq!(head_name, Some(BString::from(&b"caf\xe9"[..])));
+        }
+        other => panic!("not a rebase: {other:?}"),
+    }
 }

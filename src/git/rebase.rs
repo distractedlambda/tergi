@@ -5,15 +5,16 @@
 //! reword and squash are applied with `exec git commit --amend -F <file>`
 //! lines, so git never needs to open an editor.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStringExt as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use gix::ObjectId;
+use gix::bstr::BString;
 
 use super::cli::{Git, RunOpts, shell_quote};
-use crate::util::{fs_path, path_bytes};
+use crate::util::{fs_path, os_str, path_bytes};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -363,10 +364,15 @@ pub async fn abort_rebase(git: &Git) -> Result<()> {
 }
 
 /// Rebase the current branch onto another commit.
-pub async fn rebase_onto(git: &Git, upstream: &str) -> Result<Outcome> {
+pub async fn rebase_onto(git: &Git, upstream: impl AsRef<[u8]>) -> Result<Outcome> {
     ensure_idle(git).await?;
     let r = git
-        .run(&["rebase", "--autostash", "--end-of-options", upstream])
+        .run(&[
+            OsStr::new("rebase"),
+            OsStr::new("--autostash"),
+            OsStr::new("--end-of-options"),
+            os_str(upstream.as_ref()),
+        ])
         .await
         .map(|_| ());
     finish(git, r).await
@@ -486,7 +492,8 @@ pub async fn move_commit(git: &Git, exe: &Path, id: ObjectId, newer: bool) -> Re
 pub enum RepoState {
     Clean,
     Rebase {
-        head_name: Option<String>,
+        /// The branch being rebased. Its name needn't be UTF-8.
+        head_name: Option<BString>,
         step: Option<u32>,
         total: Option<u32>,
         /// The commit the rebase stopped at, for `edit` steps and conflicts.
@@ -519,8 +526,10 @@ pub fn state_in(git_dir: &Path) -> RepoState {
                 (read(&d.join("next")), read(&d.join("last")))
             };
             return RepoState::Rebase {
-                head_name: read(&d.join("head-name"))
-                    .map(|h| h.strip_prefix("refs/heads/").unwrap_or(&h).to_string()),
+                head_name: std::fs::read(d.join("head-name")).ok().map(|h| {
+                    let h = h.trim_ascii();
+                    h.strip_prefix(b"refs/heads/").unwrap_or(h).into()
+                }),
                 step: step.and_then(|s| s.parse().ok()),
                 total: total.and_then(|s| s.parse().ok()),
                 stopped: read(&d.join("stopped-sha")),

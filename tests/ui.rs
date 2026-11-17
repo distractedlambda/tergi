@@ -1028,6 +1028,62 @@ fn sidebar_selection_follows_its_branch_through_a_reload() {
     assert_eq!(Some(ui.app.sidebar.selected), row_of(&ui, "d"));
 }
 
+/// "caf\xe9" and "caf\xff" both show up as "caf\u{fffd}", so the sidebar
+/// has to keep the bytes to act on the right branch or remote.
+#[test]
+fn branches_and_remotes_whose_names_are_not_utf8() {
+    let s = repo_with_change();
+    s.sh_bytes(&[b"branch", b"caf\xe9"]);
+    s.sh_bytes(&[b"branch", b"caf\xff"]);
+    for remote in [&b"r\xe9"[..], b"r\xff"] {
+        s.sh_bytes(&[b"remote", b"add", remote, b"/nowhere"]);
+        let r = [b"refs/remotes/", remote, b"/main"].concat();
+        s.sh_bytes(&[b"update-ref", &r, b"HEAD"]);
+    }
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    assert!(ui.screen().contains("caf\u{fffd}"), "{}", ui.screen());
+
+    let row_of = |u: &Ui, f: &dyn Fn(&SideRow) -> bool| {
+        u.app
+            .sidebar
+            .rows
+            .iter()
+            .position(f)
+            .expect("a row in the sidebar")
+    };
+    let row = row_of(
+        &ui,
+        &|r| matches!(r, SideRow::Branch(i) if ui.app.refs.branches[*i].name == b"caf\xff".as_slice()),
+    );
+    ui.click(
+        MouseButton::Left,
+        ui.find_hit(|t| *t == Target::SidebarRow(row)),
+    );
+    ui.key(KeyCode::Char(' '));
+    ui.settle();
+    assert_eq!(
+        s.sh_bytes(&[b"symbolic-ref", b"HEAD"]),
+        b"refs/heads/caf\xff\n"
+    );
+
+    let remote_rows = |u: &Ui| {
+        u.app
+            .sidebar
+            .rows
+            .iter()
+            .filter(|r| matches!(r, SideRow::RemoteBranch(_)))
+            .count()
+    };
+    assert_eq!(remote_rows(&ui), 2);
+    let row = row_of(&ui, &|r| *r == SideRow::Remote(b"r\xe9".into()));
+    ui.click(
+        MouseButton::Left,
+        ui.find_hit(|t| *t == Target::SidebarRow(row)),
+    );
+    assert_eq!(remote_rows(&ui), 1);
+}
+
 #[test]
 fn force_push_only_pushes_the_branch_it_asked_about() {
     let remote = tempfile::tempdir().expect("tempdir");

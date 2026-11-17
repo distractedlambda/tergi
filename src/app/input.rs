@@ -7,7 +7,7 @@ use crossterm::event::{
 };
 use ratatui::layout::Rect;
 
-use super::cmd::{ActionDef, Cmd, Overlay, SideRow};
+use super::cmd::{ActionDef, Cmd, Overlay, SideKey, SideRow};
 use super::doc::{Row, Source};
 use super::planner::PlanAction;
 use super::{App, Drag, Focus, Splitter};
@@ -191,9 +191,11 @@ impl App {
             }
             (Focus::Sidebar, KeyCode::Enter) => {
                 match self.sidebar.rows.get(self.sidebar.selected).cloned() {
-                    Some(SideRow::Header { key, .. }) => self.run_cmd(Cmd::ToggleSideSection(key)),
+                    Some(SideRow::Header { key, .. }) => {
+                        self.run_cmd(Cmd::ToggleSideSection(SideKey::Header(key)));
+                    }
                     Some(SideRow::Remote(r)) => {
-                        self.run_cmd(Cmd::ToggleSideSection(format!("remote:{r}")));
+                        self.run_cmd(Cmd::ToggleSideSection(SideKey::Remote(r)));
                     }
                     _ => self.focus = Focus::History,
                 }
@@ -532,9 +534,9 @@ impl App {
                     }
                 } else if let Some(SideRow::Header { key, .. }) = self.sidebar.rows.get(i).cloned()
                 {
-                    self.run_cmd(Cmd::ToggleSideSection(key));
+                    self.run_cmd(Cmd::ToggleSideSection(SideKey::Header(key)));
                 } else if let Some(SideRow::Remote(r)) = self.sidebar.rows.get(i).cloned() {
-                    self.run_cmd(Cmd::ToggleSideSection(format!("remote:{r}")));
+                    self.run_cmd(Cmd::ToggleSideSection(SideKey::Remote(r)));
                 }
             }
             Target::HistoryRow(i) => {

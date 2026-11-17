@@ -4,13 +4,14 @@
 //! in the app, since mouse handling needs it. Then everything is drawn from
 //! a shared reference, recording clickable areas in a hit list as we go.
 
+use gix::bstr::ByteSlice as _;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, BorderType, Clear, Widget};
 
-use crate::app::cmd::{ActionDef, Cmd, Overlay, SideRow, Unit};
+use crate::app::cmd::{ActionDef, Cmd, Overlay, SideKey, SideRow, Unit};
 use crate::app::doc::{Row, Section, Source};
 use crate::app::input::{Target, palette_filter};
 use crate::app::planner::PlanAction;
@@ -481,7 +482,11 @@ fn draw_sidebar(app: &App, buf: &mut Buffer, hits: &mut Hits) {
         let w = a.width.saturating_sub(1);
         match row {
             SideRow::Header { key, title, count } => {
-                let arrow = if app.sidebar.collapsed.contains(key) {
+                let arrow = if app
+                    .sidebar
+                    .collapsed
+                    .contains(&SideKey::Header(key.clone()))
+                {
                     '▸'
                 } else {
                     '▾'
@@ -527,7 +532,10 @@ fn draw_sidebar(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                     buf,
                     a.x + 4,
                     y,
-                    &truncate(&br.name, usize::from(w.saturating_sub(4 + tw))),
+                    &truncate(
+                        &br.name.to_str_lossy(),
+                        usize::from(w.saturating_sub(4 + tw)),
+                    ),
                     w.saturating_sub(4 + tw),
                     style,
                 );
@@ -541,7 +549,11 @@ fn draw_sidebar(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 );
             }
             SideRow::Remote(name) => {
-                let arrow = if app.sidebar.collapsed.contains(&format!("remote:{name}")) {
+                let arrow = if app
+                    .sidebar
+                    .collapsed
+                    .contains(&SideKey::Remote(name.clone()))
+                {
                     '▸'
                 } else {
                     '▾'
@@ -561,7 +573,7 @@ fn draw_sidebar(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                     buf,
                     a.x + 6,
                     y,
-                    &truncate(&rb.name, usize::from(w.saturating_sub(6))),
+                    &truncate(&rb.name.to_str_lossy(), usize::from(w.saturating_sub(6))),
                     w.saturating_sub(6),
                     st,
                 );
@@ -572,7 +584,10 @@ fn draw_sidebar(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                     buf,
                     a.x + 4,
                     y,
-                    &truncate(&refs.tags[*i].name, usize::from(w.saturating_sub(4))),
+                    &truncate(
+                        &refs.tags[*i].name.to_str_lossy(),
+                        usize::from(w.saturating_sub(4)),
+                    ),
                     w.saturating_sub(4),
                     st,
                 );
@@ -705,7 +720,7 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                     LabelKind::Remote => t.badge_remote,
                     LabelKind::Tag => t.badge_tag,
                 };
-                let name = truncate(&l.name, 24);
+                let name = truncate(&l.name.to_str_lossy(), 24);
                 let mut s = Style::default().bg(lbg).fg(t.badge_fg);
                 if l.kind == LabelKind::Head {
                     s = s.add_modifier(Modifier::BOLD);

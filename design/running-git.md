@@ -84,10 +84,24 @@ values are `OsStr`s, which on Unix hold any bytes. `util::fs_path` and
 Nothing is lost on the way, so a command always gets the exact name git
 gave us.
 
+Ref names work the same way. Git allows a branch named `caf\xe9`
+("café" in Latin-1), and remote names come from the config, which can
+hold any bytes too. `Refs::load` reads `git for-each-ref` as bytes, so
+the names in `Refs`, the history's labels and the commands that carry a
+ref name are all `BString`s. Functions in `git/ops.rs` that take a ref
+name take bytes and pass them on as `OsStr` arguments. The branch in
+`Status` and the branch of a rebase in progress are bytes as well.
+
 Names only turn into text when they are shown. Bytes that aren't UTF-8
 then show up as replacement characters. Two different names can look
 the same on screen this way, so the app never uses the text to find a
-file again. It keeps the bytes.
+file or a ref again. It keeps the bytes. For the same reason, the
+sidebar remembers which remotes are folded by their names as bytes.
+
+Names the user types, such as a new branch or an upstream, are text,
+because that's what the input box holds. Renaming a branch fills in the
+old name as text, so a name that isn't UTF-8 shows up there with
+replacement characters, and the user has to type the new name over it.
 
 The same goes for the places where a path ends up in an environment
 variable or a shell command: the askpass helper and its socket, the
@@ -190,6 +204,11 @@ works. The app suspends while it runs (see `background-work.md`).
   prompt that aren't UTF-8.
 - `editor_setting_keeps_its_bytes` in `tests/ops.rs` checks that an
   editor setting that isn't UTF-8 comes back as it is.
+- `ref_names_that_are_not_utf8` in `tests/ops.rs` loads branches, tags
+  and remotes whose names aren't UTF-8, and checks out, renames and
+  deletes them. `branches_and_remotes_whose_names_are_not_utf8` in
+  `tests/ui.rs` does the same from the sidebar, with two branches and
+  two remotes that look the same on screen.
 
 ## Known gaps
 
