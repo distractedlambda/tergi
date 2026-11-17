@@ -521,8 +521,10 @@ impl App {
                         }
                         Some(SideRow::RemoteBranch(b)) => {
                             if let Some(rb) = self.refs.remote_branches.get(b) {
-                                let full = rb.full_name();
-                                self.run_cmd(Cmd::CheckoutRemote(full));
+                                self.run_cmd(Cmd::CheckoutRemote(
+                                    rb.remote.clone(),
+                                    rb.name.clone(),
+                                ));
                             }
                         }
                         Some(SideRow::Stash(s)) => {

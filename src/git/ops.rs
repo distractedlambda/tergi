@@ -12,7 +12,7 @@ use std::os::unix::ffi::OsStringExt as _;
 
 use anyhow::{Result, bail};
 use gix::ObjectId;
-use gix::bstr::{BString, ByteSlice as _};
+use gix::bstr::BString;
 
 use super::cli::{Git, RunOpts};
 use super::diff::{DiffLine, FileDiff, LineKind};
@@ -220,22 +220,30 @@ pub async fn checkout(git: &Git, target: impl AsRef<[u8]>) -> Result<()> {
     Ok(())
 }
 
-/// Check out a remote branch, creating or reusing a local tracking branch.
+/// Check out branch `name` of `remote`, creating or reusing a local
+/// tracking branch with the same name.
+///
+/// We name the remote branch by its full ref. A remote can have a slash
+/// in its name, and a short name like `a/b/main` could also be a local
+/// branch.
 pub async fn checkout_remote(
     git: &Git,
-    remote_branch: impl AsRef<[u8]>,
+    remote: impl AsRef<[u8]>,
+    name: impl AsRef<[u8]>,
     local_exists: bool,
 ) -> Result<()> {
-    let full = remote_branch.as_ref();
+    let name = name.as_ref();
     if local_exists {
-        let local = full.split_once_str("/").map_or(full, |(_, b)| b);
-        checkout(git, local).await
+        checkout(git, name).await
     } else {
+        let full = [b"refs/remotes/", remote.as_ref(), b"/", name].concat();
         git.run(&[
             OsStr::new("checkout"),
             OsStr::new("--track"),
+            OsStr::new("-b"),
+            os_str(name),
             OsStr::new("--end-of-options"),
-            os_str(full),
+            os_str(&full),
         ])
         .await?;
         Ok(())

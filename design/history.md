@@ -19,6 +19,15 @@ and which branch is checked out. Then it lists the remotes and the
 stashes and resolves HEAD. A remote's `HEAD` ref is left out, because it
 only repeats one of the remote's branches.
 
+Remote names can hold slashes, so `refs/remotes/a/b/main` can be branch
+`main` of remote `a/b` or branch `b/main` of remote `a`. `split_remote`
+picks the longest remote whose name is a folder of the ref. That assumes
+each remote keeps its branches in a folder with its own name, which is
+what `git remote add` sets up. A ref that isn't under any remote, for
+example one left over from a removed remote, goes under its first folder.
+That folder gets added to the remotes, so that the ref still shows up in
+the sidebar.
+
 From the refs the app makes two things:
 
 - `labels`, the names drawn next to each commit in the history and in

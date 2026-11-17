@@ -355,10 +355,50 @@ async fn ref_names_that_are_not_utf8() {
         ]),
         "refs/heads/main\nrefs/heads/renamed\n"
     );
-    ops::checkout_remote(&s.git, refs.remote_branches[0].full_name(), false)
+    let rb = &refs.remote_branches[0];
+    ops::checkout_remote(&s.git, &rb.remote, &rb.name, false)
         .await
         .expect("checkout remote");
     assert_eq!(head_ref(), b"refs/heads/caf\xe9\n");
+}
+
+/// Remote `a/b` keeps its branches under `refs/remotes/a/b/`. A local
+/// branch `a/b/main` has the same short name as its branch `main`. The
+/// ref `refs/remotes/a/c/main` belongs to no remote, so it goes under `a`.
+#[tokio::test]
+async fn remote_names_with_a_slash() {
+    let s = Scratch::new();
+    s.write("f.txt", "a\n");
+    s.commit_all("one");
+    s.sh(&["branch", "a/b/main"]);
+    s.write("f.txt", "b\n");
+    let two = s.commit_all("two");
+    s.sh(&["remote", "add", "a/b", "/nowhere"]);
+    s.sh(&["update-ref", "refs/remotes/a/b/main", "HEAD"]);
+    s.sh(&["update-ref", "refs/remotes/a/c/main", "HEAD~"]);
+
+    let refs = Refs::load(&s.git).await.expect("refs");
+    let names: Vec<(BString, BString)> = refs
+        .remote_branches
+        .iter()
+        .map(|rb| (rb.remote.clone(), rb.name.clone()))
+        .collect();
+    assert_eq!(
+        names,
+        [("a/b".into(), "main".into()), ("a".into(), "c/main".into())]
+    );
+
+    s.sh(&["checkout", "-q", "--detach"]);
+    s.sh(&["branch", "-D", "main"]);
+    ops::checkout_remote(&s.git, "a/b", "main", false)
+        .await
+        .expect("checkout remote");
+    assert_eq!(s.sh(&["symbolic-ref", "HEAD"]), "refs/heads/main\n");
+    assert_eq!(
+        s.sh(&["rev-parse", "--symbolic-full-name", "main@{upstream}"]),
+        "refs/remotes/a/b/main\n"
+    );
+    assert_eq!(s.sh(&["rev-parse", "main"]).trim(), two);
 }
 
 #[test]

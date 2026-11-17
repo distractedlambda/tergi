@@ -96,6 +96,15 @@ impl Refs {
             "refs/remotes",
             "refs/tags",
         ]).await?;
+        refs.remotes = git
+            .read(&["remote"])
+            .await?
+            .stdout
+            .lines()
+            .filter(|s| !s.is_empty())
+            .map(BString::from)
+            .collect();
+        let mut remote_refs = Vec::new();
         for line in out.stdout.lines() {
             let f: Vec<&[u8]> = line.split(|&b| b == 0).collect();
             if f.len() < 6 {
@@ -121,17 +130,7 @@ impl Refs {
                     is_head,
                 });
             } else if let Some(rest) = f[0].strip_prefix(b"refs/remotes/") {
-                let Some((remote, name)) = rest.split_once_str("/") else {
-                    continue;
-                };
-                if name == b"HEAD" {
-                    continue;
-                }
-                refs.remote_branches.push(RemoteBranch {
-                    remote: remote.into(),
-                    name: name.into(),
-                    target,
-                });
+                remote_refs.push((rest, target));
             } else if let Some(name) = f[0].strip_prefix(b"refs/tags/") {
                 refs.tags.push(Tag {
                     name: name.into(),
@@ -139,14 +138,24 @@ impl Refs {
                 });
             }
         }
-        refs.remotes = git
-            .read(&["remote"])
-            .await?
-            .stdout
-            .lines()
-            .filter(|s| !s.is_empty())
-            .map(BString::from)
-            .collect();
+        for (rest, target) in remote_refs {
+            let Some((remote, name)) = split_remote(&refs.remotes, rest) else {
+                continue;
+            };
+            if name == b"HEAD" {
+                continue;
+            }
+            // A ref can be left over from a remote that is gone, or written
+            // by hand. It still gets a place in the sidebar.
+            if !refs.remotes.iter().any(|r| r == remote) {
+                refs.remotes.push(remote.into());
+            }
+            refs.remote_branches.push(RemoteBranch {
+                remote: remote.into(),
+                name: name.into(),
+                target,
+            });
+        }
         refs.head = git
             .read(&["rev-parse", "--verify", "-q", "HEAD"])
             .await
@@ -211,6 +220,28 @@ impl Refs {
     }
 }
 
+/// Split a ref name below `refs/remotes/` into the remote and the branch.
+///
+/// Remote names can hold slashes, so `a/b/main` can be branch `main` of
+/// remote `a/b` or branch `b/main` of remote `a`. Git maps each remote to
+/// a folder through its fetch refspec, and by default the folder has the
+/// remote's name. So we pick the longest configured remote that is a
+/// folder of the ref. A ref that isn't under any remote we know goes under
+/// its first folder.
+fn split_remote<'a>(remotes: &[BString], rest: &'a [u8]) -> Option<(&'a [u8], &'a [u8])> {
+    let known = remotes
+        .iter()
+        .filter(|r| {
+            rest.len() > r.len() + 1 && rest.starts_with(r.as_slice()) && rest[r.len()] == b'/'
+        })
+        .map(|r| r.len())
+        .max();
+    match known {
+        Some(n) => Some((&rest[..n], &rest[n + 1..])),
+        None => rest.split_once_str("/"),
+    }
+}
+
 fn parse_track(s: &str) -> (u32, u32, bool) {
     if s == "gone" {
         return (0, 0, true);
@@ -248,6 +279,20 @@ async fn load_stashes(git: &Git) -> Result<Vec<Stash>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_names_with_slashes() {
+        let remotes: Vec<BString> = vec!["a".into(), "a/b".into(), "origin".into()];
+        let split = |rest: &'static str| {
+            split_remote(&remotes, rest.as_bytes()).map(|(r, n)| (r.as_bstr(), n.as_bstr()))
+        };
+        assert_eq!(split("a/b/main"), Some(("a/b".into(), "main".into())));
+        assert_eq!(split("a/main"), Some(("a".into(), "main".into())));
+        assert_eq!(split("a/c/main"), Some(("a".into(), "c/main".into())));
+        assert_eq!(split("origin/x/y"), Some(("origin".into(), "x/y".into())));
+        assert_eq!(split("gone/x/y"), Some(("gone".into(), "x/y".into())));
+        assert_eq!(split("lonely"), None);
+    }
 
     #[test]
     fn track() {

@@ -158,7 +158,7 @@ pub enum Cmd {
 
     // Ref names needn't be UTF-8, so these keep them as bytes.
     Checkout(BString),
-    CheckoutRemote(BString),
+    CheckoutRemote(BString, BString),
     RenameBranch(BString),
     DeleteBranch(BString, bool),
     DeleteRemoteBranch(BString, BString),
@@ -918,7 +918,7 @@ impl App {
                     act(
                         Some(Key::ch(' ')),
                         "Check out",
-                        Cmd::CheckoutRemote(full.clone()),
+                        Cmd::CheckoutRemote(rb.remote.clone(), rb.name.clone()),
                     )
                     .hint(),
                     act(
@@ -1457,11 +1457,10 @@ impl App {
             Cmd::Checkout(b) => self.spawn_op("Checkout", After::Nothing, move |r, _| async move {
                 ops::checkout(&r.git, &b).await.map(|()| format!("Switched to {b}"))
             }),
-            Cmd::CheckoutRemote(full) => {
-                let local = BString::from(full.split_once_str("/").map_or(full.as_bytes(), |(_, b)| b));
-                let exists = self.refs.branch(local.as_ref()).is_some();
+            Cmd::CheckoutRemote(remote, name) => {
+                let exists = self.refs.branch(name.as_ref()).is_some();
                 self.spawn_op("Checkout", After::Nothing, move |r, _| async move {
-                    ops::checkout_remote(&r.git, &full, exists).await.map(|()| format!("Switched to {local}"))
+                    ops::checkout_remote(&r.git, &remote, &name, exists).await.map(|()| format!("Switched to {name}"))
                 });
             }
             Cmd::RenameBranch(b) => {
