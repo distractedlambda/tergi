@@ -198,6 +198,15 @@ With `context_lines = 0`, the diffs have no context lines at all. Then
 unless we pass `--unidiff-zero`. Without context, git places each hunk by
 the start in its header, so that start has to be exact.
 
+If the user sets `diff.interHunkContext`, git joins hunks that are that
+close together, even with `-U0`. A joined hunk has context lines in the
+middle but none at its ends. `git apply` then wants the hunk to sit at
+the end of the file, because a hunk with context only lacks it there.
+So `apply_lines` passes `--unidiff-zero` whenever every hunk starts and
+ends with a changed line, rather than only when there is no context at
+all. With more context, only a hunk that covers the whole file looks
+like that.
+
 There is one more wrinkle there. For an empty range, a hunk header
 usually gives the line before it. But `git apply` guesses where a hunk
 goes from the start of the side it applies towards, and takes that

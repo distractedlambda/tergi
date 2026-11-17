@@ -15,7 +15,7 @@ use gix::ObjectId;
 use gix::bstr::{BString, ByteSlice as _};
 
 use super::cli::{Git, RunOpts};
-use super::diff::{FileDiff, LineKind};
+use super::diff::{DiffLine, FileDiff, LineKind};
 use super::patch::build_patch;
 use crate::util::os_str;
 
@@ -46,15 +46,19 @@ pub async fn apply_lines(
         bail!("No changed lines are selected.");
     };
     let mut args = vec!["apply", "--recount", "--whitespace=nowarn"];
-    // Without context lines, `git apply` can't check where a hunk belongs,
-    // so it refuses the patch unless we say that this is expected. A diff
-    // has no context lines at all when `context_lines` is 0.
-    let has_context = file
+    // Without context lines around a hunk, `git apply` can't check where
+    // it belongs, so it refuses the patch unless we say that this is
+    // expected. That happens when `context_lines` is 0. Such a hunk can
+    // still have context lines in the middle, because git joins hunks that
+    // are close together when the user sets `diff.interHunkContext`. With
+    // more context, only a hunk that covers the whole file starts and ends
+    // with a change.
+    let changed = |l: Option<&DiffLine>| l.is_some_and(|l| l.kind != LineKind::Context);
+    let zero_context = file
         .hunks
         .iter()
-        .flat_map(|h| &h.lines)
-        .any(|l| l.kind == LineKind::Context);
-    if !has_context {
+        .all(|h| changed(h.lines.first()) && changed(h.lines.last()));
+    if zero_context {
         args.push("--unidiff-zero");
     }
     match mode {
