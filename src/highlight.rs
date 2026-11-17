@@ -280,3 +280,162 @@ fn highlight_job(
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::LazyLock;
+
+    use proptest::prelude::*;
+    use two_face::theme::EmbeddedLazyThemeSet;
+
+    use super::*;
+    use crate::git::commit::diff_texts;
+
+    static LOADED: LazyLock<(SyntaxSet, EmbeddedLazyThemeSet)> =
+        LazyLock::new(|| (two_face::syntax::extra_newlines(), two_face::theme::extra()));
+
+    // JavaScript is left out until the hang in todo/bugs.md is fixed.
+    const PATHS: &[&str] = &[
+        "a.rs", "a.py", "a.c", "a.md", "a.html", "a.sh", "a.json", "a.toml", "Makefile",
+    ];
+
+    fn syntax(path: &str) -> &'static SyntaxReference {
+        find_syntax(&LOADED.0, path, "").expect("a syntax for each test path")
+    }
+
+    fn theme() -> &'static Theme {
+        LOADED.1.get(EmbeddedThemeName::Base16OceanDark)
+    }
+
+    /// A line made of pieces that start or end strings and comments in some
+    /// syntax, along with tabs, wide characters and a stray carriage return.
+    fn line() -> impl Strategy<Value = String> {
+        let piece = prop::sample::select(vec![
+            "x", "fn", " ", "\t", "\"", "'", "`", "```", "\"\"\"", "//", "/*", "*/", "#", "<!--",
+            "-->", "<a>", "{", "}", "(", ")", "\\", "$x", "=", ";", "0x1F", "r#\"", "- ", "中",
+            "👍", "e\u{301}", "\r",
+        ]);
+        prop::collection::vec(piece, 0..8).prop_map(|p| p.concat())
+    }
+
+    /// Lines picked from a small pool, so that two texts share some, each
+    /// ending in LF or CRLF, and maybe without a final newline.
+    fn text(pool: Vec<String>) -> impl Strategy<Value = String> {
+        let n = pool.len();
+        (
+            prop::collection::vec((0..n, any::<bool>()), 0..20),
+            any::<bool>(),
+        )
+            .prop_map(move |(lines, eol)| {
+                let mut s = String::new();
+                for (i, &(k, crlf)) in lines.iter().enumerate() {
+                    s.push_str(&pool[k]);
+                    if i + 1 < lines.len() || eol {
+                        s.push_str(if crlf { "\r\n" } else { "\n" });
+                    }
+                }
+                s
+            })
+    }
+
+    fn texts() -> impl Strategy<Value = (String, String)> {
+        prop::collection::vec(line(), 1..6).prop_flat_map(|pool| (text(pool.clone()), text(pool)))
+    }
+
+    /// The spans of a line must follow each other from its start, without
+    /// gaps, to the end of the newline that the highlighter adds or keeps.
+    /// `body` is the line without its `\n`. Every span must start and end
+    /// on a character boundary.
+    fn check_spans(body: &str, spans: &LineSpans) -> Result<(), TestCaseError> {
+        prop_assert!(!spans.is_empty(), "no spans for {body:?}");
+        let mut pos = 0;
+        for &(s, e, _) in spans {
+            prop_assert_eq!(s, pos, "gap or overlap in {:?}: {:?}", body, spans);
+            prop_assert!(s < e, "empty span in {body:?}: {spans:?}");
+            prop_assert!(
+                body.is_char_boundary((e as usize).min(body.len())),
+                "span ends inside a character of {body:?}: {spans:?}"
+            );
+            pos = e;
+        }
+        prop_assert_eq!(pos as usize, body.len() + 1, "{:?}: {:?}", body, spans);
+        Ok(())
+    }
+
+    fn job(path: &str, hunks: &[Hunk], old: Option<&str>, new: Option<&str>) -> Job {
+        Job {
+            key: Key {
+                generation: 0,
+                section: 0,
+                file: 0,
+            },
+            path: path.to_string(),
+            hunks: hunks.to_vec(),
+            old: old.map(Arc::from),
+            new: new.map(Arc::from),
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn lines_are_covered(
+            path in prop::sample::select(PATHS),
+            (text, _) in texts(),
+        ) {
+            let lines: Vec<&str> = text.split_inclusive('\n').collect();
+            let out = highlight_lines(&LOADED.0, syntax(path), theme(), lines.iter().copied());
+            prop_assert_eq!(out.len(), lines.len());
+            for (l, spans) in lines.iter().zip(&out) {
+                check_spans(l.strip_suffix('\n').unwrap_or(l), spans)?;
+            }
+        }
+
+        #[test]
+        fn every_hunk_line_is_covered(
+            path in prop::sample::select(PATHS),
+            (old, new) in texts(),
+            context in 0u32..4,
+        ) {
+            let hunks = diff_texts(old.as_bytes(), new.as_bytes(), context);
+            let (ss, syntax, theme) = (&LOADED.0, syntax(path), theme());
+            let run = |o: bool, n: bool| {
+                let j = job(path, &hunks, o.then_some(&*old), n.then_some(&*new));
+                highlight_job(ss, syntax, theme, &j)
+            };
+            let full = run(true, true);
+            let parts = run(false, false);
+            for (has_old, has_new) in [(true, true), (true, false), (false, true), (false, false)] {
+                let hl = run(has_old, has_new);
+                prop_assert_eq!(hl.lines.len(), hunks.len());
+                for (h, (hunk, spans)) in hunks.iter().zip(&hl.lines).enumerate() {
+                    prop_assert_eq!(spans.len(), hunk.lines.len());
+                    for (i, (line, spans)) in hunk.lines.iter().zip(spans).enumerate() {
+                        check_spans(&line.text, spans)?;
+                        // A line with the full text of its side gets the colors
+                        // that it gets when both sides have it, and one without
+                        // gets the colors that it gets when neither side has it.
+                        // Context lines use the new side when they can.
+                        let side = match line.kind {
+                            LineKind::Del => Some(has_old),
+                            LineKind::Add => Some(has_new),
+                            LineKind::Context if has_new || !has_old => Some(has_new),
+                            LineKind::Context => None,
+                        };
+                        match side {
+                            Some(true) => prop_assert_eq!(spans, &full.lines[h][i]),
+                            Some(false) => prop_assert_eq!(spans, &parts.lines[h][i]),
+                            None => {}
+                        }
+                    }
+                }
+            }
+            // A hunk that starts at the top of both files highlights the same
+            // lines from the top on its own, so it gets the same colors.
+            for (h, hunk) in hunks.iter().enumerate() {
+                if hunk.old_start <= 1 && hunk.new_start <= 1 {
+                    prop_assert_eq!(&full.lines[h], &parts.lines[h]);
+                }
+            }
+        }
+    }
+}

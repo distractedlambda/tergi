@@ -18,19 +18,14 @@ steps, along with the single commit operations
 (`tests/refs_props.rs`), random sessions in the UI
 (`tests/ui_props.rs`), the file watcher (`tests/watch_props.rs`), the
 rows of the detail pane (`app/doc.rs`), stash actions by id
-(`tests/stash_props.rs`), and taking a side in each kind of conflict
-(`tests/conflict_props.rs`).
+(`tests/stash_props.rs`), taking a side in each kind of conflict
+(`tests/conflict_props.rs`), and syntax highlighting
+(`highlight.rs`). That last test leaves JavaScript out until the hang
+in `todo/bugs.md` is fixed.
 The tests that use the real git run each case with random git settings
 from `tests/common/settings.rs`.
 
 ## Smaller ones
-
-**Highlighting.** Feed `highlight_lines` and `highlight_job` random
-text with CRLF line ends, no final newline, tabs and wide characters,
-in a few syntaxes. Check that each line's spans follow each other
-without gaps, cover the whole line, and start and end on character
-boundaries. Check that there's one entry for each line that the hunks
-refer to.
 
 **Too large files.** Load a working directory with a random small line
 limit. For each file marked `too_large`, `load_full_diff` or
