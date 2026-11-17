@@ -13,33 +13,10 @@ through the planner (`tests/rebase_props.rs`), odd file names with the
 real git (`tests/path_props.rs`), commit diffs against `git diff-tree`
 (`tests/commit_props.rs`), the history walk against `git rev-list`
 (`tests/log_props.rs`), refs, the sidebar and labels against git
-(`tests/refs_props.rs`), and the rows of the detail pane (`app/doc.rs`).
+(`tests/refs_props.rs`), random sessions in the UI
+(`tests/ui_props.rs`), and the rows of the detail pane (`app/doc.rs`).
 The tests that use the real git run each case with random git settings
 from `tests/common/settings.rs`.
-
-## Random sessions in the UI
-
-`app/cmd.rs`, `app/input.rs` and `ui/draw.rs` are the biggest files,
-and only example tests in `tests/ui.rs` cover them. Use the `Ui` helper
-there to send random keys, clicks on random entries in `App::hits`,
-right clicks, drags, scrolls and pastes, and to resize the terminal.
-Between steps, sometimes edit files in the scratch repository or run a
-git command behind tergi's back, and sometimes wait for the work in the
-background to finish.
-
-Leave out commands that reach the network or open an external program,
-such as push, fetch and the editor. Destructive commands are fine,
-because the repository is a scratch one.
-
-After each step, check that nothing panicked, that drawing works at
-the current size, and that the state hangs together. The history
-selection is a commit that's in the list, or nothing. The detail cursor
-and line selection are inside the document. The sidebar selection is
-one of its rows. Only the top dialog gets clicks. Every enabled action
-in the palette can run without a panic.
-
-This needs no model, so it's cheap. It mostly finds panics and cases
-where a reload leaves something pointing at a row that's gone.
 
 ## Rebases that stop
 

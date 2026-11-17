@@ -141,6 +141,10 @@ it changes.
 - Dragging over diff lines selects them. Dragging past the top or bottom
   edge scrolls.
 - Dragging a divider resizes the panes. Dragging a planner row moves it.
+- Clicks are looked up in the hits of the last frame. The main loop
+  handles every queued event before it draws again, so a click can
+  name a row that an earlier event in the same batch removed. Clicks
+  on detail rows that are gone do nothing.
 - Clicking outside a menu, the palette or the command log closes it.
   Clicking outside a dialog that asks something, such as a confirmation
   or a text box, does nothing. Then the question isn't lost by
@@ -158,7 +162,9 @@ panic hook, so a crash doesn't leave the terminal in raw mode.
 Paste arrives as one event and goes into whichever text box has focus.
 Focus events make the app refresh, since the user often changed
 something in another window. Copying a commit hash uses OSC 52, so it
-works over SSH too.
+works over SSH too. `App::handle` never writes to the terminal itself.
+It leaves the text in `App::clipboard`, and the main loop writes it
+out.
 
 ## Tests
 
@@ -174,6 +180,14 @@ above:
   `palette_commands_change_and_save_settings`.
 - `draws_at_any_size`, which draws the main screens and dialogs at
   many small sizes to catch layout code that panics.
+- `clicks_on_detail_rows_that_are_gone_do_nothing`.
+
+`tests/ui_props.rs` runs random sessions. It sends random keys, clicks
+and right clicks on random entries in `App::hits`, drags, scrolls,
+pastes and resizes, and runs random commands from the palette. It
+checks that only the top dialog's targets are left in `App::hits` while
+a dialog is open, and that menus and the palette select an item that
+exists.
 
 ## Known gaps
 

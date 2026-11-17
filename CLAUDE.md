@@ -152,10 +152,15 @@ in detail. Read it before changing the watcher.
 - Unit tests live next to the code. Some use inline `insta` snapshots.
 - Integration tests in `tests/` build scratch repositories with
   `common::Scratch`.
-- `tests/ui.rs` drives the whole `App` against a ratatui `TestBackend`.
-  It sends real key and mouse events, and finds click targets through
-  `App::hits`. Its `wait` helper handles events until a condition holds,
-  with a timeout.
+- `tests/ui.rs` drives the whole `App` against a ratatui `TestBackend`
+  with the `Ui` helper from `tests/common/ui.rs`. It sends real key and
+  mouse events, and finds click targets through `App::hits`. The
+  helper's `wait` handles events until a condition holds, with a
+  timeout.
+- `tests/ui_props.rs` runs random sessions in the UI: keys, clicks,
+  drags, resizes, palette commands, file edits and git commands behind
+  the app's back. It has no model. It checks that nothing panics and
+  that selections and cursors point at rows that exist.
 - Some tests need git 2.45 or newer for reftable repositories. With an
   older git they skip themselves.
 - Property tests use `proptest`. The most important one is

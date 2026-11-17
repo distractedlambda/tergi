@@ -162,6 +162,14 @@ a 15 second timeout. On a timeout it prints the screen.
   selection rules above.
 - `reload_runs_one_copy_and_one_more_after_it` in `src/app/mod.rs` tests
   `Reload` on its own.
+- `leaving_a_commit_while_it_loads_stops_loading` checks that the app
+  goes idle when the commit it was loading is no longer shown.
+  `App::idle` says whether an operation, a load or a history walk is
+  still running.
+- `tests/ui_props.rs` runs random sessions, with git commands and file
+  changes behind the app's back between the steps. After each step it
+  checks that the selections still point at rows that exist. Its `Wait`
+  step handles events until `App::idle` holds.
 
 ## Known gaps
 
