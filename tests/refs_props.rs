@@ -62,6 +62,9 @@ const TAGS: &[&[u8]] = &[b"v1", b"v1.0", b"release/2", b"caf\xe9", b"deep/er/tag
 const STASHES: &[(&[u8], &str)] = &[
     (b"wip", "On stashing: wip"),
     ("naïve ✓".as_bytes(), "On stashing: naïve ✓"),
+    // Unlike the one above, this one fits in Latin-1, so git can convert
+    // it to that if the user's log encoding asks for it.
+    ("café".as_bytes(), "On stashing: café"),
     (b"bad \xff byte", "On stashing: bad \u{fffd} byte"),
 ];
 

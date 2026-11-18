@@ -78,6 +78,9 @@ impl Git {
             // specific editor override this.
             .env("GIT_EDITOR", "true")
             .args(["-c", "color.ui=false", "-c", "core.quotepath=false"])
+            // We read commit messages and stash names as UTF-8, and git
+            // would otherwise convert them to the user's log encoding.
+            .args(["-c", "i18n.logOutputEncoding=UTF-8"])
             .stdin(Stdio::null());
         // With this set, `foo` would also match `Foo`, and no pathspec
         // magic can turn that off for one path. The other settings of this

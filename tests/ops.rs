@@ -29,6 +29,19 @@ async fn message_lines_starting_with_hash() {
     );
 }
 
+/// tergi reads messages as UTF-8, so they have to come out that way
+/// whatever the user set. Otherwise rewording would put replacement
+/// characters into the message.
+#[tokio::test]
+async fn messages_with_another_log_encoding() {
+    let s = Scratch::new();
+    s.write("f.txt", "a\n");
+    s.commit_all("café");
+    s.sh(&["config", "i18n.logOutputEncoding", "ISO-8859-1"]);
+    let msg = ops::commit_message(&s.git, "HEAD").await.expect("message");
+    assert_eq!(msg, "café");
+}
+
 #[tokio::test]
 async fn paths_that_look_like_patterns() {
     let s = Scratch::new();

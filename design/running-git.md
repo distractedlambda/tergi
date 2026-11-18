@@ -36,6 +36,9 @@ written. That means the history walk and commit diffs.
   sets `GIT_SEQUENCE_EDITOR` instead (see `rewriting-history.md`).
 - `-c color.ui=false -c core.quotepath=false`, so output has no color
   codes and paths with unusual characters aren't escaped.
+- `-c i18n.logOutputEncoding=UTF-8`, so commit messages and stash
+  names come out as UTF-8 whatever encoding the user asks git to print
+  them in.
 
 It also removes `GIT_ICASE_PATHSPECS` from the environment. With it,
 a path like `foo` would also match `Foo`, and git has no way to turn
