@@ -22,12 +22,17 @@ use tergi::util::fs_path;
 
 fn repo_with_change() -> Scratch {
     let s = Scratch::new();
+    write_change(&s);
+    s
+}
+
+/// Two commits, and a change on top of them.
+fn write_change(s: &Scratch) {
     s.write("notes.txt", "one\ntwo\nthree\n");
     s.commit_all("Add notes");
     s.write("notes.txt", "one\ntwo\nthree\nfour\n");
     s.commit_all("Add a fourth note");
     s.write("notes.txt", "one\n2\nthree\nfour\n");
-    s
 }
 
 #[test]
@@ -69,6 +74,10 @@ fn clicking_stage_stages_the_file() {
 /// tell them apart by their bytes.
 #[test]
 fn stages_and_discards_files_whose_names_are_not_utf8() {
+    if !common::non_utf8_file_names() {
+        eprintln!("skipped: this file system rejects names that aren't UTF-8");
+        return;
+    }
     let s = Scratch::in_folder(b"caf\xe9");
     let put = |name: &[u8], text: &str| {
         std::fs::write(s.path().join(fs_path(name)), text).expect("write");
@@ -860,7 +869,11 @@ fn sidebar_selection_follows_its_branch_through_a_reload() {
 /// has to keep the bytes to act on the right branch or remote.
 #[test]
 fn branches_and_remotes_whose_names_are_not_utf8() {
-    let s = repo_with_change();
+    let s = Scratch::new();
+    if !s.allow_non_utf8_refs() {
+        return;
+    }
+    write_change(&s);
     s.sh_bytes(&[b"branch", b"caf\xe9"]);
     s.sh_bytes(&[b"branch", b"caf\xff"]);
     for remote in [&b"r\xe9"[..], b"r\xff"] {

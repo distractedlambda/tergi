@@ -7,6 +7,7 @@ pub mod ui;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use tergi::git::cli::Git;
 
@@ -59,6 +60,31 @@ impl Scratch {
 
     pub fn path(&self) -> &Path {
         &self.root
+    }
+
+    /// Make sure the repository can hold ref names that aren't UTF-8.
+    /// Git keeps most refs as files named after the ref, so on a file
+    /// system that rejects such file names we move the repository to the
+    /// reftable format, which keeps all refs inside a few files. Returns
+    /// false if this git is too old to do that. Call it before making
+    /// any commits.
+    pub fn allow_non_utf8_refs(&self) -> bool {
+        if non_utf8_file_names() {
+            return true;
+        }
+        let out = Command::new("git")
+            .current_dir(&self.root)
+            .args(["refs", "migrate", "--ref-format=reftable"])
+            .output()
+            .expect("run git");
+        if !out.status.success() {
+            eprintln!(
+                "skipped: this file system rejects names that aren't UTF-8, \
+                 and this git can't move the repository to reftable: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        out.status.success()
     }
 
     pub fn file(&self, rel: &str) -> PathBuf {
@@ -131,4 +157,14 @@ impl Scratch {
             .map(str::to_string)
             .collect()
     }
+}
+
+/// Whether the file system that holds temporary directories accepts file
+/// names that aren't UTF-8. APFS on macOS doesn't.
+pub fn non_utf8_file_names() -> bool {
+    static OK: OnceLock<bool> = OnceLock::new();
+    *OK.get_or_init(|| {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join(tergi::util::fs_path(b"caf\xe9")), "").is_ok()
+    })
 }

@@ -480,6 +480,9 @@ enum Entry {
 fn check(case: &Case) -> Result<(), TestCaseError> {
     let m = model(case);
     let s = Scratch::with(&case.settings);
+    if !s.allow_non_utf8_refs() {
+        return Ok(());
+    }
     let ids = build(&s, case, &m);
     let commit = |k: usize| id(&ids[k]);
 

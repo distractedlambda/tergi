@@ -88,6 +88,10 @@ async fn refuses_plans_git_cannot_finish() {
 /// is in a folder named "café" in Latin-1, and tergi runs from another one.
 #[tokio::test]
 async fn reword_where_paths_are_not_utf8() {
+    if !common::non_utf8_file_names() {
+        eprintln!("skipped: this file system rejects names that aren't UTF-8");
+        return;
+    }
     let s = Scratch::in_folder(b"caf\xe9");
     let mut ids = Vec::new();
     for name in ["one", "two", "three"] {

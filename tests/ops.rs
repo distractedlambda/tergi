@@ -303,6 +303,9 @@ async fn editor_setting_keeps_its_bytes() {
 #[tokio::test]
 async fn ref_names_that_are_not_utf8() {
     let s = Scratch::new();
+    if !s.allow_non_utf8_refs() {
+        return;
+    }
     s.write("f.txt", "a\n");
     s.commit_all("one");
     s.sh_bytes(&[b"branch", b"caf\xe9"]);

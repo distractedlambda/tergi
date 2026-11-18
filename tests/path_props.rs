@@ -106,8 +106,10 @@ struct Case {
 /// One component of a path, which can't contain a slash. Git and Unix
 /// store names as bytes, so some pieces aren't UTF-8: "caf\xe9" is "café"
 /// in Latin-1, and the others are bytes that can't start a character.
+/// File systems such as APFS reject those names, so there we leave them
+/// out.
 fn component() -> impl Strategy<Value = BString> {
-    let piece = prop::sample::select(vec![
+    let pieces: Vec<&[u8]> = vec![
         &b"a"[..],
         b"b",
         b"x",
@@ -134,8 +136,12 @@ fn component() -> impl Strategy<Value = BString> {
         b"caf\xe9",
         b"\xff",
         b"\x80",
-    ]);
-    prop::collection::vec(piece, 1..4)
+    ];
+    let pieces = pieces
+        .into_iter()
+        .filter(|p| p.is_utf8() || common::non_utf8_file_names())
+        .collect::<Vec<_>>();
+    prop::collection::vec(prop::sample::select(pieces), 1..4)
         .prop_map(|pieces| BString::from(pieces.concat()))
         .prop_filter("reserved name", |c| {
             !matches!(c.as_slice(), b"." | b".." | b".git")
