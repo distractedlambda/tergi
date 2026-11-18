@@ -2,6 +2,20 @@
 
 Known problems that nobody has fixed yet.
 
+## Tests leave askpass sockets in the temporary folder
+
+`App::new` starts the askpass server, which makes a socket named
+`tergi-askpass-<pid>-<n>.sock` in `std::env::temp_dir()`. Only `main`
+removes it, through `askpass::cleanup`, after the event loop ends.
+Dropping an `App` leaves the file behind. The UI tests make an `App`
+for each test and each property case, so one run of `cargo test`
+leaves hundreds of stale sockets in `/tmp`. The same thing happens when
+tergi itself exits early with an error or panics, since both builds
+abort on panic.
+
+Removing the socket when the `App`, or the askpass server, is dropped
+would fix the tests.
+
 ## Highlighting JavaScript can hang forever
 
 A JavaScript line with a value, a space and a block comment makes
