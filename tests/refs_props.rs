@@ -396,8 +396,14 @@ fn build(s: &Scratch, case: &Case, m: &Model) -> Vec<String> {
         }
     }
 
+    // Write what `git remote add` would. Newer git refuses to add `a` next
+    // to `a/b`, but repositories set up by hand or with an older git can
+    // still have both.
     for r in &m.remotes {
-        s.sh_bytes(&[b"remote", b"add", r, b"/nowhere"]);
+        let key = |k: &[u8]| cat(&[b"remote.", r, b".", k]);
+        let fetch = cat(&[b"+refs/heads/*:refs/remotes/", r, b"/*"]);
+        s.sh_bytes(&[b"config", &key(b"url"), b"/nowhere"]);
+        s.sh_bytes(&[b"config", &key(b"fetch"), &fetch]);
     }
     for rb in &m.remote_branches {
         let name = cat(&[b"refs/remotes/", &rb.remote, b"/", &rb.name]);
