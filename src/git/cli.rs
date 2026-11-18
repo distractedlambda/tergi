@@ -83,6 +83,15 @@ impl Git {
         // magic can turn that off for one path. The other settings of this
         // kind work together with `ops::pathspec`.
         cmd.env_remove("GIT_ICASE_PATHSPECS");
+        // ssh asks for passphrases, passwords and new host keys on
+        // /dev/tty, which tergi owns. With this, ssh runs an askpass
+        // program instead, even with a terminal. The default one always
+        // fails, so ssh gives up rather than asking. An askpass program
+        // the user set up shows its own window, so we keep theirs.
+        cmd.env("SSH_ASKPASS_REQUIRE", "force");
+        if std::env::var_os("SSH_ASKPASS").is_none() {
+            cmd.env("SSH_ASKPASS", "false");
+        }
         cmd
     }
 

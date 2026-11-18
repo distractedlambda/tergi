@@ -748,53 +748,6 @@ fn resolves_a_conflict_and_continues_the_merge() {
 }
 
 #[test]
-fn answers_a_password_prompt() {
-    let s = repo_with_change();
-    let mut ui = Ui::open(&s);
-    ui.wait_loaded(2);
-    let ask = |ui: &Ui| {
-        let env = ui.app.repo.remote_env();
-        assert!(!env.is_empty(), "the askpass socket should be up");
-        std::process::Command::new(env!("CARGO_BIN_EXE_tergi"))
-            .arg("Password for 'https://example.com': ")
-            .envs(env)
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("run askpass")
-    };
-
-    let child = ask(&ui);
-    ui.wait("the prompt", |u| {
-        matches!(u.app.overlays.last(), Some(Overlay::Input(_)))
-    });
-    let screen = ui.screen();
-    assert!(
-        screen.contains("Password for 'https://example.com':"),
-        "{screen}"
-    );
-    ui.type_text("s3cret pass");
-    let screen = ui.screen();
-    assert!(
-        !screen.contains("s3cret"),
-        "the password should be hidden\n{screen}"
-    );
-    ui.key(KeyCode::Enter);
-    let out = child.wait_with_output().expect("askpass output");
-    assert!(out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "s3cret pass\n");
-
-    // Cancelling makes the helper fail, so git gives up.
-    let child = ask(&ui);
-    ui.wait("the prompt", |u| {
-        matches!(u.app.overlays.last(), Some(Overlay::Input(_)))
-    });
-    ui.key(KeyCode::Esc);
-    let out = child.wait_with_output().expect("askpass output");
-    assert!(!out.status.success());
-    assert!(out.stdout.is_empty());
-}
-
-#[test]
 #[should_panic(expected = "the operation blew up")]
 fn a_panic_in_the_background_reaches_the_caller() {
     let s = repo_with_change();

@@ -6,7 +6,6 @@ pub mod input;
 pub mod planner;
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,7 +17,6 @@ use gix::bstr::ByteSlice as _;
 use ratatui::layout::Rect;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
 use crate::config::Config;
@@ -47,11 +45,8 @@ pub struct Repo {
     pub workdir: PathBuf,
     pub git_dir: PathBuf,
     pub common_dir: PathBuf,
-    /// Our own executable, which git calls back into as an editor or to ask
-    /// for passwords.
+    /// Our own executable, which git calls back into as a sequence editor.
     pub exe: PathBuf,
-    /// The address of the askpass server, as `askpass::SOCKET_ENV` holds it.
-    pub askpass_socket: Option<OsString>,
 }
 
 impl Repo {
@@ -83,22 +78,7 @@ impl Repo {
             git_dir,
             common_dir,
             exe: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("tergi")),
-            askpass_socket: None,
         })
-    }
-
-    /// Environment for commands that may need to ask for credentials. The
-    /// paths in it are passed as they are, even if they aren't UTF-8.
-    pub fn remote_env(&self) -> Vec<(&'static str, OsString)> {
-        let Some(sock) = &self.askpass_socket else {
-            return Vec::new();
-        };
-        vec![
-            ("GIT_ASKPASS", self.exe.clone().into()),
-            ("SSH_ASKPASS", self.exe.clone().into()),
-            ("SSH_ASKPASS_REQUIRE", "force".into()),
-            (crate::askpass::SOCKET_ENV, sock.clone()),
-        ]
     }
 }
 
@@ -116,7 +96,6 @@ pub enum AppEvent {
     /// The config file changed. This holds the new config, or why the
     /// change can't be used.
     ConfigChanged(Result<Config, String>),
-    AskPass(String, oneshot::Sender<Option<String>>),
     /// A read started by `App::spawn_read` finished. This applies its
     /// result.
     ReadDone(Box<dyn FnOnce(&mut App) + Send>),
@@ -376,17 +355,10 @@ pub const REFRESH_ALL: u8 = REFRESH_REFS | REFRESH_WORKDIR;
 impl App {
     /// Must be called from inside a Tokio runtime, which is where the App's
     /// background tasks will run.
-    pub fn new(mut repo: Repo, cfg: Config, config_error: Option<String>) -> App {
+    pub fn new(repo: Repo, cfg: Config, config_error: Option<String>) -> App {
         let rt = Handle::current();
         let mut tasks = JoinSet::new();
         let (tx, rx) = unbounded_channel();
-        let tx_ask = tx.clone();
-        if let Some((address, serve)) = crate::askpass::start_server(move |prompt, reply| {
-            let _ = tx_ask.send(AppEvent::AskPass(prompt, reply));
-        }) {
-            repo.askpass_socket = Some(address);
-            tasks.spawn_on(serve, &rt);
-        }
         // The config checked the name when it loaded.
         let theme = Theme::named(&cfg.theme).unwrap_or_default();
         let detail = Detail::default();
@@ -738,20 +710,6 @@ impl App {
                     format!("Ignored the change to the config file: {first}"),
                     Level::Warn,
                 );
-            }
-            AppEvent::AskPass(prompt, reply) => {
-                let lower = prompt.to_lowercase();
-                let secret = lower.contains("password")
-                    || lower.contains("passphrase")
-                    || lower.contains("token");
-                let mut text = TextArea::new(false);
-                text.masked = secret;
-                self.overlays.push(cmd::Overlay::Input(cmd::InputBox {
-                    title: "Git needs your input".into(),
-                    hint: prompt,
-                    text,
-                    purpose: cmd::Purpose::AskPass(reply),
-                }));
             }
             AppEvent::Tick => {
                 if let Some((_, level, t)) = &self.status {

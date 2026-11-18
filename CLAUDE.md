@@ -96,18 +96,15 @@ diff that its hunks and lines came from.
 
 ### tergi calls itself
 
-`main` checks two special modes before parsing arguments, because git
-runs the tergi executable back.
+`main` checks for a special mode before parsing arguments, because git
+runs the tergi executable back. History rewriting runs `git rebase -i`
+with `GIT_SEQUENCE_EDITOR` set to `tergi __seq-editor <todo>`, which
+swaps in a todo list that tergi wrote. Rewords and squashes use
+`exec git commit --amend -F <file>` lines, so git never opens an editor
+(`git/rebase.rs`).
 
-- **Askpass.** For remote operations, `Repo::remote_env` points
-  `GIT_ASKPASS` and `SSH_ASKPASS` at tergi. The child connects to a Unix
-  socket owned by the running app, which shows a prompt dialog
-  (`askpass.rs`).
-- **Sequence editor.** History rewriting runs `git rebase -i` with
-  `GIT_SEQUENCE_EDITOR` set to `tergi __seq-editor <todo>`, which swaps in
-  a todo list that tergi wrote. Rewords and squashes use
-  `exec git commit --amend -F <file>` lines, so git never opens an editor
-  (`git/rebase.rs`).
+tergi never answers prompts from git or ssh. `Git::base_command` makes
+them fail instead of asking on the terminal (`design/running-git.md`).
 
 Integration tests set `repo.exe` to `CARGO_BIN_EXE_tergi`, because the
 current executable there is the test runner.

@@ -369,7 +369,7 @@ impl App {
                 }
                 Outcome::Cancel => {
                     if let Some(Overlay::Input(b)) = self.overlays.pop() {
-                        self.cancel_input(b);
+                        self.cancel_input(&b);
                     }
                 }
                 _ => {}
@@ -582,7 +582,7 @@ impl App {
             }
             Target::Button(Cmd::CloseOverlay) => {
                 if let Some(Overlay::Input(b)) = self.overlays.pop() {
-                    self.cancel_input(b);
+                    self.cancel_input(&b);
                 }
             }
             Target::Button(Cmd::SubmitInput) => {

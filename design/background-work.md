@@ -176,5 +176,5 @@ a 15 second timeout. On a timeout it prints the screen.
 - `rebase::state_in` reads the git directory while handling an event.
   These are a few small files, but on a slow network file system it
   could be noticeable.
-- Only one operation can run at a time. A fetch that waits for a
-  password blocks staging until it finishes.
+- Only one operation can run at a time. A slow fetch blocks staging
+  until it finishes.

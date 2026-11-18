@@ -2,12 +2,11 @@
 
 tergi reads the history and commit diffs with gitoxide, and does
 everything else by running the `git` executable. This document explains
-how tergi runs git, how fetch, pull and push work, and how git asks the
-user for a password through tergi's own UI.
+how tergi runs git, how fetch, pull and push work, and why git and ssh
+never ask the user anything.
 
-The wrapper is `Git` in `src/git/cli.rs`. The password prompts are in
-`src/askpass.rs`, and the remote commands are in `run_cmd` in
-`src/app/cmd.rs`.
+The wrapper is `Git` in `src/git/cli.rs`. The remote commands are in
+`run_cmd` in `src/app/cmd.rs`.
 
 ## Why the CLI
 
@@ -29,6 +28,8 @@ written. That means the history walk and commit diffs.
   input for it.
 - `GIT_TERMINAL_PROMPT=0` stops git from asking for credentials on the
   terminal, which tergi owns.
+- `SSH_ASKPASS_REQUIRE=force` and `SSH_ASKPASS=false` do the same for
+  ssh. See "No prompts" below.
 - `GIT_PAGER` and `PAGER` are `cat`, so nothing waits for a pager.
 - `GIT_EDITOR=true`, so git never opens an editor on our terminal. A
   command that needs a message gets one through `-F`. History rewriting
@@ -104,11 +105,10 @@ old name as text, so a name that isn't UTF-8 shows up there with
 replacement characters, and the user has to type the new name over it.
 
 The same goes for the places where a path ends up in an environment
-variable or a shell command: the askpass helper and its socket, the
-sequence editor and the message files of a rebase, and the user's
-editor. `shell_quote` quotes bytes. `main` reads its arguments and
-`TERGI_ASKPASS_SOCK` with `args_os` and `var_os`, because `args` and
-`var` panic or fail on values that aren't UTF-8.
+variable or a shell command: the sequence editor and the message files
+of a rebase, and the user's editor. `shell_quote` quotes bytes. `main`
+reads its arguments with `args_os`, because `args` panics on values
+that aren't UTF-8.
 
 The command log shows commands as text, so a name that isn't UTF-8
 shows up there with replacement characters.
@@ -150,59 +150,29 @@ A branch without an upstream gets `-u --end-of-options <remote>
 <branch>`, where the remote is `origin` if there is one, or else the
 first remote.
 
-## Password prompts
+## No prompts
 
-When git or ssh needs a password, a token or a passphrase, it can run a
-helper program instead of asking on the terminal. tergi is its own
-helper.
+git and ssh sometimes want to ask the user something: an HTTPS
+username or password, a key's passphrase, or whether to trust a host
+key they haven't seen. By default they ask on the terminal. tergi has
+the terminal in raw mode on the alternate screen, so a prompt there
+would scramble the display, and tergi would read the keys meant for it.
 
-At startup, `App::new` calls `askpass::start_server`. It binds a Unix
-socket and returns a future that answers connections one at a time. The
-socket's name holds the process id, a counter and a random number.
-Remote commands get the environment from `Repo::remote_env`:
+tergi doesn't answer these questions. It makes git and ssh fail
+instead, and the error dialog shows what they wanted. Users keep
+credentials in a credential helper and keys in ssh-agent, which need no
+prompt.
 
-- `GIT_ASKPASS` and `SSH_ASKPASS` point at the tergi executable.
-- `SSH_ASKPASS_REQUIRE=force` makes ssh use the helper even though it
-  has a terminal.
-- `TERGI_ASKPASS_SOCK` holds the socket address.
+- `GIT_TERMINAL_PROMPT=0` makes git fail when no credential helper
+  has an answer.
+- ssh opens `/dev/tty` itself, even though its stdin is closed.
+  `SSH_ASKPASS_REQUIRE=force` makes it run the `SSH_ASKPASS` program
+  for every question instead. tergi sets that to `false`, which always
+  fails, so ssh gives up. If the user has set `SSH_ASKPASS` already,
+  tergi keeps it, because that program shows its own window.
 
-When git runs the helper, `main` sees `TERGI_ASKPASS_SOCK` before it
-parses any arguments, and calls `askpass::client_main` with the prompt.
-The helper connects to the socket and sends the prompt as one line. The
-server passes the prompt and a oneshot channel to the app as
-`AppEvent::AskPass`, and the app opens an input dialog. The text is
-masked if the prompt mentions a password, a passphrase or a token.
-
-The answer goes back over the socket as `1` followed by the text, or `0`
-if the user cancelled. The helper prints the text and exits with
-success, or exits with failure on a cancel, so git gives up.
-
-### Where the socket lives
-
-A socket file in the temporary directory stays there if tergi is
-killed, or if an `App` is dropped without `main` cleaning up after it,
-as in the tests. Removing it when something is dropped isn't reliable,
-since dropping isn't guaranteed to happen. It would also do blocking IO
-in a destructor. So the socket is set up so that a leftover can't pile
-up.
-
-On Linux the socket has an abstract name instead of a path. Abstract
-names aren't files, and the kernel frees one as soon as the listening
-socket closes, however the process ends. `TERGI_ASKPASS_SOCK` holds the
-name with an `@` in front, which `askpass::connect` recognizes. File
-permissions don't apply to abstract names, so any user on the machine
-could connect and show a fake prompt, or read the answer. The server
-checks each connection's user id with `peer_cred` and drops the ones
-that aren't ours. The random part of the name stops other users from
-taking the name before we do.
-
-macOS has no abstract names, so there the socket is a file in the
-temporary directory, which belongs to the user. `main` removes it when
-tergi exits normally. When a server starts, it also removes the files
-that other servers left behind, in a background thread. A file is stale
-if connecting to it fails with "connection refused". A live server
-accepts that connection, sees that it closes without a prompt, and
-ignores it.
+Every command gets these, not only the remote ones. SSH commit signing
+runs `ssh-keygen`, which asks for a passphrase the same way ssh does.
 
 ## The user's editor
 
@@ -214,10 +184,6 @@ works. The app suspends while it runs (see `background-work.md`).
 
 ## Tests
 
-- `answers_a_password_prompt` in `tests/ui.rs` runs the real helper
-  against the running app. It checks that the prompt shows up, that the
-  answer is hidden on screen and reaches the helper, and that cancelling
-  makes the helper fail.
 - `force_push_only_pushes_the_branch_it_asked_about` in `tests/ui.rs`
   checks that a force push confirmed for one branch doesn't push another
   one that was checked out in the meantime.
@@ -225,13 +191,9 @@ works. The app suspends while it runs (see `background-work.md`).
   for shell quoting. The quoting test runs the quoted words through `sh`
   and `bash --posix` and checks that they come back unchanged. Some of
   the words aren't UTF-8.
-- `tests/askpass.rs` runs the real helper with a socket path and a
-  prompt that aren't UTF-8. On Linux, when the tests run as root, it
-  also runs the helper as another user and checks that the server
-  ignores it.
-- The unit tests in `src/askpass.rs` check that the abstract socket goes
-  away with its server, that only stale socket files are removed, and
-  that a connection without a prompt doesn't show one.
+- `ssh_never_asks_on_the_terminal` in `tests/ops.rs` fetches through
+  a fake ssh command and checks that ssh would run the askpass program,
+  and that the program fails.
 - `editor_setting_keeps_its_bytes` in `tests/ops.rs` checks that an
   editor setting that isn't UTF-8 comes back as it is.
 - The property tests that use the real git, such as
@@ -253,7 +215,9 @@ works. The app suspends while it runs (see `background-work.md`).
 - GPG and SSH signing only work if the agent can ask for the passphrase
   without the terminal, for example with a graphical pinentry. A
   terminal pinentry can't draw while tergi owns the screen.
-- On macOS, if tergi is killed, its askpass socket file stays in the
-  temporary directory until tergi runs again.
+- `SSH_ASKPASS_REQUIRE` needs OpenSSH 8.4 or newer. An older ssh
+  ignores it and asks on the terminal when no display is set.
+- Credential helpers that ask on the terminal themselves, rather than
+  through git, can still draw over tergi.
 - Only one remote operation can run at a time, like every other
   operation.

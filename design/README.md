@@ -8,7 +8,7 @@ with the known gaps.
 - [background-work.md](background-work.md): the event loop, background
   tasks, and how state survives reloads. Start here.
 - [running-git.md](running-git.md): how tergi runs git, fetch, pull and
-  push, and password prompts.
+  push, and why git never prompts.
 - [history.md](history.md): reading the refs, walking the history, and
   laying out the commit graph.
 - [diffs.md](diffs.md): commit and working directory diffs, the rows of

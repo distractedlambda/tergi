@@ -123,8 +123,15 @@ Alt+A to abort.
 ## Remotes and passwords
 
 Fetch, pull and push run the `git` command, so your credential helpers,
-SSH config and hooks all work as usual. When git or ssh asks for a
-password or passphrase, tergi shows the prompt in a dialog.
+SSH config and hooks all work as usual. tergi never asks for passwords
+or passphrases itself. Store HTTPS credentials in a credential helper,
+and load SSH keys into ssh-agent. If git or ssh needs to ask for
+something, the operation fails and the error says what it wanted. The
+same happens when ssh meets a host it doesn't know yet. Connect to it
+once with `ssh` in a terminal to add its key to `known_hosts`.
+
+If you have set `SSH_ASKPASS` to a graphical program, ssh uses it for
+its questions.
 
 GPG and SSH signing work if your agent can ask for the passphrase
 without the terminal, for example with a graphical pinentry. A

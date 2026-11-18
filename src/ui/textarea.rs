@@ -31,7 +31,6 @@ pub struct TextArea {
     scroll_row: usize,
     scroll_col: usize,
     pub multiline: bool,
-    pub masked: bool,
     pub placeholder: String,
 }
 
@@ -305,16 +304,9 @@ impl TextArea {
     }
 
     /// Where each grapheme of a line is drawn, as its byte offset, its
-    /// column and its width. Masked text shows one dot for every grapheme.
+    /// column and its width.
     fn layout(&self, line: &str) -> Vec<(usize, usize, usize)> {
-        if self.masked {
-            line.grapheme_indices(true)
-                .enumerate()
-                .map(|(k, (i, _))| (i, k, 1))
-                .collect()
-        } else {
-            cells(line, TAB).map(|c| (c.byte, c.col, c.width)).collect()
-        }
+        cells(line, TAB).map(|c| (c.byte, c.col, c.width)).collect()
     }
 
     /// Move the cursor to a click at `(x, y)` relative to the widget.
@@ -382,12 +374,7 @@ impl TextArea {
         }
         for (i, line) in self.lines.iter().skip(self.scroll_row).take(h).enumerate() {
             let y = area.y + i as u16;
-            let shown = if self.masked {
-                "•".repeat(line.graphemes(true).count())
-            } else {
-                line.clone()
-            };
-            text::draw(buf, area.x, y, &shown, self.scroll_col, w, TAB, |_| {
+            text::draw(buf, area.x, y, line, self.scroll_col, w, TAB, |_| {
                 Style::default()
             });
         }
@@ -438,15 +425,6 @@ mod tests {
     }
 
     #[test]
-    fn click_in_masked_text() {
-        // Every grapheme is shown as one dot, whatever its real width.
-        let mut t = TextArea::with_text(false, "\t日e\u{301}x");
-        t.masked = true;
-        t.click(3, 0);
-        assert_eq!(&t.text()[t.col..], "x");
-    }
-
-    #[test]
     fn cursor_moves_by_grapheme() {
         let mut t = TextArea::with_text(false, "ae\u{301}👍🏽");
         t.handle_key(key(KeyCode::Left));
@@ -476,8 +454,6 @@ mod tests {
             drawn(&mut t),
             ["e\u{301}", "x", "�", "日", "", " ", " ", " "]
         );
-        t.masked = true;
-        assert_eq!(drawn(&mut t), ["•", "•", "•", "•", "•", " ", " ", " "]);
     }
 
     /// A simpler text area for comparison: the text is one string, with
@@ -664,12 +640,10 @@ mod tests {
         #[test]
         fn edits_like_a_flat_string(
             multiline in any::<bool>(),
-            masked in any::<bool>(),
             ops in prop::collection::vec(op(), 0..60),
             (w, h) in (1u16..12, 1u16..5),
         ) {
             let mut t = TextArea::new(multiline);
-            t.masked = masked;
             let mut m = Model { text: String::new(), cur: 0, multiline };
             let area = Rect::new(2, 1, w, h);
             let mut buf = Buffer::empty(Rect::new(0, 0, 20, 8));
@@ -702,8 +676,7 @@ mod tests {
                 prop_assert_eq!(t.row, m.row_col().0, "after clicking at the cursor");
                 let line = &t.lines[t.row];
                 let between = &line[before.min(t.col)..before.max(t.col)];
-                let invisible = if masked { between.is_empty() } else { width(between, TAB) == 0 };
-                prop_assert!(invisible, "clicking moved the cursor over {:?}", between);
+                prop_assert!(width(between, TAB) == 0, "clicking moved the cursor over {:?}", between);
                 m.cur = m.line_start(m.cur) + t.col;
             }
         }

@@ -414,3 +414,31 @@ fn rebase_of_a_branch_whose_name_is_not_utf8() {
         other => panic!("not a rebase: {other:?}"),
     }
 }
+
+/// ssh would ask on the terminal, which tergi owns. It has to run the
+/// askpass program instead, and that has to fail so ssh gives up. The
+/// fake ssh here does what ssh does with `SSH_ASKPASS_REQUIRE=force`.
+#[tokio::test]
+async fn ssh_never_asks_on_the_terminal() {
+    if std::env::var_os("SSH_ASKPASS").is_some() {
+        // tergi keeps the user's own askpass program.
+        return;
+    }
+    let s = Scratch::new();
+    s.sh(&["remote", "add", "origin", "ssh://example.invalid/repo"]);
+    s.sh(&[
+        "config",
+        "core.sshCommand",
+        "fake() { \
+           if [ \"$SSH_ASKPASS_REQUIRE\" != force ]; then echo 'would use the terminal' >&2; \
+           elif \"$SSH_ASKPASS\" 'Passphrase:' </dev/null; then echo 'askpass answered' >&2; \
+           else echo 'askpass refused' >&2; \
+           fi; \
+           exit 255; \
+         }; fake",
+    ]);
+    let Err(err) = s.git.run(&["fetch", "origin"]).await else {
+        panic!("the fetch should fail");
+    };
+    assert!(format!("{err:#}").contains("askpass refused"), "{err:#}");
+}

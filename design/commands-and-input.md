@@ -83,7 +83,7 @@ Only the top one gets keys and clicks. The kinds are:
   menus, help and the theme picker.
 - `Confirm`: a yes or no question.
 - `Input`: a text box with a `Purpose` that says what to do with the
-  text, such as naming a branch or answering a password prompt.
+  text, such as naming a branch.
 - `Palette`: the command palette.
 - `Log`: the command log.
 - `Message`: an error or other long message.
@@ -94,10 +94,9 @@ A menu can preview its items. The theme menu sets `preview` to
 menu without choosing runs `RevertTheme`, which puts the saved theme
 back.
 
-An input box always ends with `submit_input` or `cancel_input`. The
-password prompt needs this most, because git waits for an answer. Its
-`Purpose::AskPass` holds the channel back to the waiting helper, and
-cancelling sends `None` so the helper exits.
+An input box always ends with `submit_input` or `cancel_input`.
+Cancelling the message for a reword or squash in the planner turns the
+row back into a pick.
 
 ## Drawing and hit testing
 

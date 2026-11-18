@@ -3,7 +3,6 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod app;
-pub mod askpass;
 pub mod config;
 pub mod git;
 pub mod highlight;

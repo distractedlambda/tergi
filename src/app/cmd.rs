@@ -10,7 +10,6 @@ use std::sync::Arc;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use gix::ObjectId;
 use gix::bstr::{BStr, BString, ByteSlice as _};
-use tokio::sync::oneshot;
 
 use super::doc::{Row, Section, Source};
 use super::input::Target;
@@ -330,7 +329,6 @@ pub enum Purpose {
     PlannerMessage(ObjectId),
     ContextLines,
     TabWidth,
-    AskPass(oneshot::Sender<Option<String>>),
 }
 
 pub struct InputBox {
@@ -1213,12 +1211,11 @@ impl App {
             Cmd::Confirmed(_) | Cmd::CloseOverlay | Cmd::SubmitInput => {}
 
             Cmd::Fetch => {
-                let env = self.repo.remote_env();
                 self.spawn_op("Fetch", After::Nothing, move |r, progress| async move {
                     r.git
                         .run_streaming(
                             &["fetch", "--all", "--prune", "--progress"],
-                            &crate::git::cli::RunOpts { env, ..Default::default() },
+                            &crate::git::cli::RunOpts::default(),
                             |l| progress(l.to_string()),
                         ).await
                         .map(|_| "Fetched".to_string())
@@ -1234,7 +1231,6 @@ impl App {
                 self.open_menu("Pull", items, Some(&Cmd::PullMenu));
             }
             Cmd::Pull(mode) => {
-                let env = self.repo.remote_env();
                 self.spawn_op("Pull", After::Nothing, move |r, progress| async move {
                     let mut args = vec!["pull", "--progress"];
                     match mode {
@@ -1244,7 +1240,7 @@ impl App {
                         PullMode::Merge => args.extend(["--no-rebase", "--no-edit"]),
                     }
                     r.git
-                        .run_streaming(&args, &crate::git::cli::RunOpts { env, ..Default::default() }, |l| {
+                        .run_streaming(&args, &crate::git::cli::RunOpts::default(), |l| {
                             progress(l.to_string());
                         }).await
                         .map(|_| "Pulled".to_string())
@@ -1276,7 +1272,6 @@ impl App {
                     self.set_status("Can't push: this repository has no remotes", Level::Error);
                     return;
                 };
-                let env = self.repo.remote_env();
                 self.spawn_op("Push", After::Nothing, move |r, progress| async move {
                     // Without a refspec, git pushes whatever is checked out
                     // when it runs. We leave the refspec out so that settings
@@ -1292,7 +1287,7 @@ impl App {
                         args.extend([os_str(b"-u"), os_str(b"--end-of-options"), os_str(&remote), os_str(&branch.name)]);
                     }
                     r.git
-                        .run_streaming(&args, &crate::git::cli::RunOpts { env, ..Default::default() }, |l| {
+                        .run_streaming(&args, &crate::git::cli::RunOpts::default(), |l| {
                             progress(l.to_string());
                         }).await
                         .map(|_| "Pushed".to_string())
@@ -1477,10 +1472,9 @@ impl App {
                 }
             }),
             Cmd::DeleteRemoteBranch(remote, name) => {
-                let env = self.repo.remote_env();
                 self.spawn_op("Delete remote branch", After::Nothing, move |r, _| async move {
                     r.git
-                        .run_opts(&[os_str(b"push"), os_str(b"--delete"), os_str(b"--end-of-options"), os_str(&remote), os_str(&name)], &crate::git::cli::RunOpts { env, ..Default::default() }).await
+                        .run(&[os_str(b"push"), os_str(b"--delete"), os_str(b"--end-of-options"), os_str(&remote), os_str(&name)]).await
                         .map(|_| format!("Deleted {name} on {remote}"))
                 });
             }
@@ -1493,11 +1487,10 @@ impl App {
             Cmd::DeleteTag(t) => self.spawn_op("Delete tag", After::Nothing, move |r, _| async move { ops::delete_tag(&r.git, &t).await.map(|()| format!("Deleted tag {t}")) }),
             Cmd::PushTag(t) => {
                 let remote = self.refs.remotes.first().cloned().unwrap_or_else(|| "origin".into());
-                let env = self.repo.remote_env();
                 self.spawn_op("Push tag", After::Nothing, move |r, p| async move {
                     let refspec = [b"refs/tags/", t.as_bytes()].concat();
                     r.git
-                        .run_streaming(&[os_str(b"push"), os_str(b"--progress"), os_str(b"--end-of-options"), os_str(&remote), os_str(&refspec)], &crate::git::cli::RunOpts { env, ..Default::default() }, |l| p(l.to_string())).await
+                        .run_streaming(&[os_str(b"push"), os_str(b"--progress"), os_str(b"--end-of-options"), os_str(&remote), os_str(&refspec)], &crate::git::cli::RunOpts::default(), |l| p(l.to_string())).await
                         .map(|_| format!("Pushed {t}"))
                 });
             }
@@ -1653,12 +1646,9 @@ impl App {
         let exe = self.repo.exe.clone();
         let name = text.trim().to_string();
         match b.purpose {
-            Purpose::AskPass(reply) => {
-                let _ = reply.send(Some(text));
-            }
             _ if name.is_empty() && !matches!(b.purpose, Purpose::StashPush) => {
                 self.set_status("Nothing entered", Level::Warn);
-                self.cancel_input(b);
+                self.cancel_input(&b);
             }
             Purpose::NewBranch { at } => {
                 self.spawn_op("New branch", After::Nothing, move |r, _| async move {
@@ -1733,21 +1723,14 @@ impl App {
         }
     }
 
-    pub fn cancel_input(&mut self, b: InputBox) {
-        match b.purpose {
-            Purpose::AskPass(reply) => {
-                let _ = reply.send(None);
-            }
-            Purpose::PlannerMessage(id) => {
-                // Without a message, reword and squash make no sense.
-                if let Some(p) = &mut self.planner
-                    && let Some(r) = p.rows.iter_mut().find(|r| r.id == id)
-                    && r.message.is_none()
-                {
-                    r.action = PlanAction::Pick;
-                }
-            }
-            _ => {}
+    pub fn cancel_input(&mut self, b: &InputBox) {
+        // Without a message, reword and squash make no sense.
+        if let Purpose::PlannerMessage(id) = b.purpose
+            && let Some(p) = &mut self.planner
+            && let Some(r) = p.rows.iter_mut().find(|r| r.id == id)
+            && r.message.is_none()
+        {
+            r.action = PlanAction::Pick;
         }
     }
 
