@@ -28,10 +28,7 @@ fn main() -> ExitCode {
     // Modes used when git calls back into tergi.
     if let Some(sock) = std::env::var_os(tergi::askpass::SOCKET_ENV) {
         let prompt = args.get(1).map(|p| p.to_string_lossy());
-        return tergi::askpass::client_main(
-            Path::new(&sock),
-            prompt.as_deref().unwrap_or("Password:"),
-        );
+        return tergi::askpass::client_main(&sock, prompt.as_deref().unwrap_or("Password:"));
     }
     if args.get(1).is_some_and(|a| a == "__seq-editor") && args.len() >= 4 {
         return match tergi::git::rebase::seq_editor_main(Path::new(&args[2]), Path::new(&args[3])) {

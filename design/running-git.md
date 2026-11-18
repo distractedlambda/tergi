@@ -157,14 +157,14 @@ helper program instead of asking on the terminal. tergi is its own
 helper.
 
 At startup, `App::new` calls `askpass::start_server`. It binds a Unix
-socket in the temporary directory, with the process id and a counter in
-its name, and returns a future that answers connections one at a time.
+socket and returns a future that answers connections one at a time. The
+socket's name holds the process id, a counter and a random number.
 Remote commands get the environment from `Repo::remote_env`:
 
 - `GIT_ASKPASS` and `SSH_ASKPASS` point at the tergi executable.
 - `SSH_ASKPASS_REQUIRE=force` makes ssh use the helper even though it
   has a terminal.
-- `TERGI_ASKPASS_SOCK` holds the socket path.
+- `TERGI_ASKPASS_SOCK` holds the socket address.
 
 When git runs the helper, `main` sees `TERGI_ASKPASS_SOCK` before it
 parses any arguments, and calls `askpass::client_main` with the prompt.
@@ -177,7 +177,32 @@ The answer goes back over the socket as `1` followed by the text, or `0`
 if the user cancelled. The helper prints the text and exits with
 success, or exits with failure on a cancel, so git gives up.
 
-The socket file is removed when tergi exits normally.
+### Where the socket lives
+
+A socket file in the temporary directory stays there if tergi is
+killed, or if an `App` is dropped without `main` cleaning up after it,
+as in the tests. Removing it when something is dropped isn't reliable,
+since dropping isn't guaranteed to happen. It would also do blocking IO
+in a destructor. So the socket is set up so that a leftover can't pile
+up.
+
+On Linux the socket has an abstract name instead of a path. Abstract
+names aren't files, and the kernel frees one as soon as the listening
+socket closes, however the process ends. `TERGI_ASKPASS_SOCK` holds the
+name with an `@` in front, which `askpass::connect` recognizes. File
+permissions don't apply to abstract names, so any user on the machine
+could connect and show a fake prompt, or read the answer. The server
+checks each connection's user id with `peer_cred` and drops the ones
+that aren't ours. The random part of the name stops other users from
+taking the name before we do.
+
+macOS has no abstract names, so there the socket is a file in the
+temporary directory, which belongs to the user. `main` removes it when
+tergi exits normally. When a server starts, it also removes the files
+that other servers left behind, in a background thread. A file is stale
+if connecting to it fails with "connection refused". A live server
+accepts that connection, sees that it closes without a prompt, and
+ignores it.
 
 ## The user's editor
 
@@ -201,7 +226,12 @@ works. The app suspends while it runs (see `background-work.md`).
   and `bash --posix` and checks that they come back unchanged. Some of
   the words aren't UTF-8.
 - `tests/askpass.rs` runs the real helper with a socket path and a
-  prompt that aren't UTF-8.
+  prompt that aren't UTF-8. On Linux, when the tests run as root, it
+  also runs the helper as another user and checks that the server
+  ignores it.
+- The unit tests in `src/askpass.rs` check that the abstract socket goes
+  away with its server, that only stale socket files are removed, and
+  that a connection without a prompt doesn't show one.
 - `editor_setting_keeps_its_bytes` in `tests/ops.rs` checks that an
   editor setting that isn't UTF-8 comes back as it is.
 - The property tests that use the real git, such as
@@ -223,7 +253,7 @@ works. The app suspends while it runs (see `background-work.md`).
 - GPG and SSH signing only work if the agent can ask for the passphrase
   without the terminal, for example with a graphical pinentry. A
   terminal pinentry can't draw while tergi owns the screen.
-- If tergi is killed, the askpass socket file is left in the temporary
-  directory.
+- On macOS, if tergi is killed, its askpass socket file stays in the
+  temporary directory until tergi runs again.
 - Only one remote operation can run at a time, like every other
   operation.

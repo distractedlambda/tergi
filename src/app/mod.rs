@@ -50,7 +50,8 @@ pub struct Repo {
     /// Our own executable, which git calls back into as an editor or to ask
     /// for passwords.
     pub exe: PathBuf,
-    pub askpass_socket: Option<PathBuf>,
+    /// The address of the askpass server, as `askpass::SOCKET_ENV` holds it.
+    pub askpass_socket: Option<OsString>,
 }
 
 impl Repo {
@@ -96,7 +97,7 @@ impl Repo {
             ("GIT_ASKPASS", self.exe.clone().into()),
             ("SSH_ASKPASS", self.exe.clone().into()),
             ("SSH_ASKPASS_REQUIRE", "force".into()),
-            (crate::askpass::SOCKET_ENV, sock.clone().into()),
+            (crate::askpass::SOCKET_ENV, sock.clone()),
         ]
     }
 }
@@ -380,10 +381,10 @@ impl App {
         let mut tasks = JoinSet::new();
         let (tx, rx) = unbounded_channel();
         let tx_ask = tx.clone();
-        if let Some((path, serve)) = crate::askpass::start_server(move |prompt, reply| {
+        if let Some((address, serve)) = crate::askpass::start_server(move |prompt, reply| {
             let _ = tx_ask.send(AppEvent::AskPass(prompt, reply));
         }) {
-            repo.askpass_socket = Some(path);
+            repo.askpass_socket = Some(address);
             tasks.spawn_on(serve, &rt);
         }
         // The config checked the name when it loaded.

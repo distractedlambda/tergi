@@ -45,3 +45,51 @@ fn forwards_prompts_through_paths_that_are_not_utf8() {
         "Passphrase for /home/\u{fffd}/.ssh/id: \n"
     );
 }
+
+/// On Linux the socket has an abstract name, which any user can connect
+/// to, so the server has to turn away other users. This needs root to run
+/// the helper as someone else, and `setpriv` to do it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn ignores_prompts_from_other_users() {
+    let root = Command::new("id")
+        .arg("-u")
+        .output()
+        .is_ok_and(|o| o.stdout == b"0\n");
+    let setpriv = Command::new("setpriv").arg("--help").output().is_ok();
+    if !root || !setpriv {
+        eprintln!("skipping: needs root and setpriv");
+        return;
+    }
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, serve) = tergi::askpass::start_server(move |prompt, reply| {
+        let _ = tx.send(prompt);
+        let _ = reply.send(Some("hunter2".to_string()));
+    })
+    .expect("start the server");
+    let server = tokio::spawn(serve);
+    let ask = |user: &[&str]| {
+        let mut cmd = Command::new("setpriv");
+        cmd.args(user)
+            .arg(env!("CARGO_BIN_EXE_tergi"))
+            .arg("Password:")
+            .env(tergi::askpass::SOCKET_ENV, &address);
+        tokio::task::spawn_blocking(move || cmd.output().expect("run the helper"))
+    };
+
+    let out = ask(&["--reuid=65534", "--regid=65534", "--clear-groups"])
+        .await
+        .expect("helper");
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty());
+    let out = ask(&[]).await.expect("helper");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, b"hunter2\n");
+    assert_eq!(rx.recv().await.as_deref(), Some("Password:"));
+    assert!(rx.try_recv().is_err());
+    server.abort();
+}
