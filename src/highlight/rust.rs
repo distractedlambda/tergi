@@ -49,13 +49,54 @@ enum Token {
     // Outside strings and comments, Rust only allows characters beyond
     // ASCII in identifiers, so we take them all as identifier characters.
     // Then a keyword at the end of a longer name isn't colored.
-    #[regex(r"[a-zA-Z_[^\x00-\x7F]][a-zA-Z0-9_[^\x00-\x7F]]*", word)]
+    #[regex(r"[a-zA-Z_[^\x00-\x7F]][a-zA-Z0-9_[^\x00-\x7F]]*")]
     // A raw identifier such as `r#type` is never a keyword.
     #[regex(r"r#[a-zA-Z_[^\x00-\x7F]][a-zA-Z0-9_[^\x00-\x7F]]*")]
     Ident,
 
-    // `word` turns identifiers into these.
+    // The strict keywords, except reserved ones that nobody uses yet. Logos
+    // prefers the longest match, so a name that starts with a keyword is
+    // still an identifier.
+    #[token("Self")]
+    #[token("as")]
+    #[token("async")]
+    #[token("await")]
+    #[token("break")]
+    #[token("const")]
+    #[token("continue")]
+    #[token("crate")]
+    #[token("dyn")]
+    #[token("else")]
+    #[token("enum")]
+    #[token("extern")]
+    #[token("fn")]
+    #[token("for")]
+    #[token("if")]
+    #[token("impl")]
+    #[token("in")]
+    #[token("let")]
+    #[token("loop")]
+    #[token("match")]
+    #[token("mod")]
+    #[token("move")]
+    #[token("mut")]
+    #[token("pub")]
+    #[token("ref")]
+    #[token("return")]
+    #[token("self")]
+    #[token("static")]
+    #[token("struct")]
+    #[token("super")]
+    #[token("trait")]
+    #[token("type")]
+    #[token("unsafe")]
+    #[token("use")]
+    #[token("where")]
+    #[token("while")]
     Keyword,
+
+    #[token("true")]
+    #[token("false")]
     Bool,
 }
 
@@ -108,22 +149,6 @@ fn raw_string(lex: &mut Lexer<Token>) {
     let rest = lex.remainder();
     lex.bump(rest.find(&close).map_or(rest.len(), |i| i + close.len()));
 }
-
-fn word(lex: &mut Lexer<Token>) -> Token {
-    match lex.slice() {
-        "true" | "false" => Token::Bool,
-        w if KEYWORDS.contains(&w) => Token::Keyword,
-        _ => Token::Ident,
-    }
-}
-
-/// The strict keywords, except reserved ones that nobody uses yet.
-const KEYWORDS: &[&str] = &[
-    "Self", "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
-    "extern", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
-    "ref", "return", "self", "static", "struct", "super", "trait", "type", "unsafe", "use",
-    "where", "while",
-];
 
 /// The pieces of a string literal. Anything else in one, such as a
 /// backslash before a character that can't be escaped, is plain string.
