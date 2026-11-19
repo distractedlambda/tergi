@@ -9,6 +9,7 @@
 //! the diff shows. When we only have the diff, we lex each hunk's old and
 //! new side on its own.
 
+mod racket;
 mod rust;
 
 use std::ops::Range;
@@ -62,6 +63,7 @@ impl Tokens {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
+    Racket,
     Rust,
 }
 
@@ -70,6 +72,7 @@ impl Language {
     pub fn for_path(path: &str) -> Option<Language> {
         let name = path.rsplit('/').next().unwrap_or(path);
         match name.rsplit_once('.')?.1 {
+            "rkt" | "rktl" | "rktd" => Some(Language::Racket),
             "rs" => Some(Language::Rust),
             _ => None,
         }
@@ -78,6 +81,7 @@ impl Language {
     pub fn lex(self, text: &str) -> Tokens {
         let mut out = Tokens::default();
         match self {
+            Language::Racket => racket::lex(text, &mut out),
             Language::Rust => rust::lex(text, &mut out),
         }
         out
@@ -269,7 +273,7 @@ mod tests {
     use super::*;
     use crate::git::commit::diff_texts;
 
-    const PATHS: &[&str] = &["a.rs"];
+    const PATHS: &[&str] = &["a.rkt", "a.rs"];
 
     /// A line made of pieces that start or end strings and comments in some
     /// language, along with tabs, wide characters and a stray carriage
@@ -278,7 +282,8 @@ mod tests {
         let piece = prop::sample::select(vec![
             "x", "fn", " ", "\t", "\"", "'", "`", "```", "\"\"\"", "//", "/*", "*/", "#", "<!--",
             "-->", "<a>", "{", "}", "(", ")", "\\", "$x", "=", ";", "0x1F", "r#\"", "\"#", "- ",
-            "b'", "'a'", "中", "👍", "e\u{301}", "\r",
+            "b'", "'a'", "中", "👍", "e\u{301}", "\r", "#|", "|#", "#;", ";", "|", "#\\", "#<<",
+            "1/2", "#:",
         ]);
         prop::collection::vec(piece, 0..8).prop_map(|p| p.concat())
     }
@@ -342,6 +347,7 @@ mod tests {
     #[test]
     fn finds_languages_by_extension() {
         assert_eq!(Language::for_path("src/main.rs"), Some(Language::Rust));
+        assert_eq!(Language::for_path("info.rkt"), Some(Language::Racket));
         assert_eq!(Language::for_path("a.b/c"), None);
         assert_eq!(Language::for_path("rs"), None);
     }

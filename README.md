@@ -175,8 +175,8 @@ symlink, tergi writes to the file the link points to.
 ## Themes
 
 Each theme uses the colors that a popular color scheme publishes, and
-syntax colors that follow the scheme's own. For now, only Rust files
-get syntax colors. To try them out, press Ctrl+P and
+syntax colors that follow the scheme's own. For now, only Rust and
+Racket files get syntax colors. To try them out, press Ctrl+P and
 run "Choose theme…". The theme changes as you move through the list.
 Press Enter to keep one and save it to the config file, or Esc to go
 back.

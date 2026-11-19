@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4824110eeed29e5256afffa2c851f679c5fef994104a2f0c8ab064e4f9220f44 # shrinks to path = "a.rkt", (old, new) = ("#;\r\n#;\n#;\r\n#;", "#;\n"), context = 0

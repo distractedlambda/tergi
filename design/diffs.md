@@ -189,8 +189,8 @@ Highlighting a large file takes too long to do while drawing. So it runs
 in the background, in a worker that `Highlighter::new` returns.
 
 Each language has its own lexer, written with Logos and kept in
-`src/highlight/`, one file per language. So far there is only Rust, in
-`rust.rs`. A lexer turns text into `Tokens`: byte ranges, each with a
+`src/highlight/`, one file per language: `rust.rs` for Rust and
+`racket.rs` for Racket. A lexer turns text into `Tokens`: byte ranges, each with a
 `Kind` such as `Comment`, `Keyword` or `Escape`. Plain text, such as
 most identifiers, has no token. The theme maps kinds to colors when the
 line is drawn, so switching themes doesn't need to lex anything again.
@@ -201,6 +201,20 @@ Identifiers are plain unless they're keywords. Only the `#[` that starts
 an attribute is colored, because finding where an attribute ends would
 take a parser. Escapes inside strings and characters are found with a
 second, smaller lexer.
+
+The Racket lexer follows Racket's reader with the default readtable. It
+was written from the reader's source in `racket/src/expander/read`
+rather than the reference manual, which leaves out some details. For
+example, a `;` comment only ends at a linefeed. Symbols are plain, even
+`define` and `lambda`, because only the expander knows what they mean.
+Keywords such as `#:when` get the keyword color. A `#;` comment covers
+the datum after it, so the lexer counts parentheses to find where that
+datum ends.
+
+Whether an atom such as `1/2`, `+i` or `1e5x` is a number or a symbol
+depends on Racket's long number syntax. `is_number` in `racket.rs`
+follows `string->number` from the reader's `number.rkt`, with about one
+state for each function there, but it only checks the syntax.
 
 The worker only highlights files that appear on screen.
 `request_visible_highlights` runs while drawing and asks for every file
@@ -277,6 +291,14 @@ Selected lines get the selection background instead.
 - `src/highlight/rust.rs` has examples for each kind of Rust token,
   such as nested comments, raw strings, escapes, and characters next to
   lifetimes.
+- `src/highlight/racket.rs` has examples for each kind of Racket token,
+  such as `#;` comments, here strings, characters, and atoms that are
+  numbers and atoms that aren't. The dev image has no Racket, so nothing
+  runs the real reader automatically. When the lexer was written, we
+  checked `is_number` against Racket's reader on about 240,000 random
+  atoms. We also checked the whole lexer against `read-syntax` on about
+  120,000 random texts that Racket reads without an error, and they
+  agreed on all of them.
 - `src/highlight/mod.rs` has property tests that lexers never panic and
   give tokens in order on character boundaries, and that every hunk line
   gets the same colors with or without the full text, where it should.
@@ -284,7 +306,10 @@ Selected lines get the selection background instead.
 ## Known gaps
 
 - A merge commit is diffed against its first parent only.
-- Only Rust files are highlighted.
+- Only Rust and Racket files are highlighted.
+- A Racket file is lexed with the default reader whatever its `#lang`
+  says. Languages with a reader of their own, such as
+  `#lang scribble/manual` or `#lang at-exp racket`, get wrong colors.
 - Word marks pair removed and added lines in order. When lines were
   inserted between edited ones, a line can be paired with the wrong
   partner, and then gets no marks or odd ones.
