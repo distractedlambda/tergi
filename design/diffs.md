@@ -191,7 +191,8 @@ in the background, in a worker that `Highlighter::new` returns.
 Each language has its own lexer, written with Logos and kept in
 `src/highlight/`, one file per language: `c.rs` for C and C++,
 `rust.rs` for Rust, `racket.rs` for Racket and Scribble,
-`shrubbery.rs` for Rhombus, and `toml.rs` for TOML. A lexer turns text into `Tokens`: byte
+`shrubbery.rs` for Rhombus, `toml.rs` for TOML, and `markdown.rs` for
+Markdown. A lexer turns text into `Tokens`: byte
 ranges, each with a `Kind` such as `Comment`, `Keyword` or `Escape`. Plain text, such as
 most identifiers, has no token. The theme maps kinds to colors when the
 line is drawn, so switching themes doesn't need to lex anything again.
@@ -387,6 +388,54 @@ lexer reads `1979-05-27 07:32:00` as one token. Anything else that
 isn't a space or a bracket is one plain word, so that `xtrue` isn't
 partly colored.
 
+### Markdown
+
+`markdown.rs` follows CommonMark 0.31.2, along with the tables and task
+lists of GitHub Flavored Markdown. Files ending in `.md`, `.markdown`,
+`.mdown`, `.mkd`, `.mkdn` and `.mdwn` are Markdown.
+
+Blocks are read a line at a time, the way `incorporateLine` in
+commonmark.js, the reference parser, reads them. That includes its
+column counting, where a tab stops every four columns and a container
+can use up part of one. Headings, both the `#` kind and the underline
+of a setext heading, get the keyword color. Code spans and code blocks
+get the string color. The markers of block quotes and list items,
+thematic breaks, fences, task markers and the pipes of tables get the
+punctuation color. A fenced code block whose info string names a
+language we have a lexer for, such as `rust` or `toml`, is lexed in
+that language once the block ends. Its info string gets the attribute
+color, and so do link destinations. HTML gets colors of its own, with
+tag names as keywords, attribute names as attributes, values as
+strings and comments as comments. Emphasis is plain, since colors
+can't show it.
+
+Markdown mostly lets a line's colors depend only on the lines before
+it, but a few things don't:
+
+- The text of a setext heading only becomes a heading at its
+  underline, and a table's header row only becomes one at the
+  delimiter row after it. So only the underline and the delimiter row
+  get colors.
+- Code spans, links, raw HTML and link reference definitions can go
+  on over several lines of a paragraph, and whether a backtick starts
+  a code span depends on whether a closing one comes later. So each
+  line of a paragraph is lexed as if the paragraph ended with it. A
+  code span that covers several lines only gets its color on the line
+  where it ends, and the same goes for links and tags.
+
+Lexing each line of a paragraph from the start would take time that
+grows with the square of the paragraph's length. So the paragraph
+remembers the last line where nothing was left open, such as a
+backtick without its closing one or a `[` without its `]`, and lexes
+from there. When something stays open, it still lexes at most the last
+64 lines.
+
+Whether `[text][label]` is a link depends on whether the document
+defines `label`, maybe further down. We can't look there, so we take
+every label as defined. The one exception is a link like `[foo]` that
+is only a label. Text in brackets is often not a link at all, so that
+stays plain.
+
 The worker only highlights files that appear on screen.
 `request_visible_highlights` runs while drawing and asks for every file
 with a row on screen that hasn't been asked for yet. Each job carries the
@@ -508,6 +557,19 @@ Selected lines get the selection background instead.
   parses them with `toml_edit`, which already reads the config file,
   and checks that each value has the color of its type and that each
   key is plain, or a string if it's quoted.
+- `src/highlight/markdown.rs` has examples for each kind of Markdown
+  block and inline construct. Its property test builds random documents
+  from nested block quotes, lists, tables, code blocks, HTML and text
+  full of code spans, links and tags. It parses them with
+  `pulldown-cmark` and checks that code spans and code blocks have the
+  string color, headings the keyword color, rules and task markers the
+  punctuation color, and that text is plain. It skips the lines that a
+  code span, link or tag goes on from. They agreed on about 1.2 million
+  documents while we wrote the lexer. The generator defines every link
+  label that its pieces can make, and it ends each table with a blank
+  line. After a table, pulldown-cmark reads an indented line as code if
+  it has a pipe, and as a row if it doesn't. We always read it as a
+  row.
 - `src/highlight/mod.rs` has property tests that lexers never panic and
   give tokens in order on character boundaries, and that every hunk line
   gets the same colors with or without the full text, where it should.
@@ -515,8 +577,14 @@ Selected lines get the selection background instead.
 ## Known gaps
 
 - A merge commit is diffed against its first parent only.
-- Only C, C++, Rust, Racket, Rhombus, Scribble and TOML files are
-  highlighted.
+- Only C, C++, Rust, Racket, Rhombus, Scribble, TOML and Markdown
+  files are highlighted.
+- In Markdown, the text of a setext heading and a table's header row
+  are colored as paragraph text, and a code span, link or tag that
+  goes on over several lines only gets its color on its last line.
+- A Markdown reference link whose label isn't defined, such as
+  `[a][b]`, still gets the colors of a link. Named entities such as
+  `&foo;` get the escape color whether or not HTML defines them.
 - A hunk from the middle of a multi-line TOML array that we don't have
   the full text for reads its values as keys. Strings keep their
   color, but numbers, `true` and `false` are plain. A

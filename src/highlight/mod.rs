@@ -10,6 +10,7 @@
 //! new side on its own.
 
 mod c;
+mod markdown;
 mod racket;
 mod rust;
 mod shrubbery;
@@ -81,6 +82,7 @@ impl Tokens {
 pub enum Language {
     C,
     Cpp,
+    Markdown,
     Racket,
     Rhombus,
     Rust,
@@ -105,6 +107,7 @@ impl Language {
             | "ipp" | "tpp" | "inl" | "cppm" | "ixx" | "ccm" | "cxxm" | "c++m" => {
                 Some(Language::Cpp)
             }
+            "md" | "markdown" | "mdown" | "mkd" | "mkdn" | "mdwn" => Some(Language::Markdown),
             "rkt" | "rktl" | "rktd" => Some(Language::Racket),
             "rhm" => Some(Language::Rhombus),
             "rs" => Some(Language::Rust),
@@ -118,6 +121,7 @@ impl Language {
         let mut out = Tokens::default();
         match self {
             Language::C | Language::Cpp => c::lex(text, self, &mut out),
+            Language::Markdown => markdown::lex(text, &mut out),
             Language::Racket | Language::Rhombus | Language::Scribble => {
                 racket::lex(text, self, &mut out);
             }
@@ -314,7 +318,7 @@ mod tests {
     use crate::git::commit::diff_texts;
 
     const PATHS: &[&str] = &[
-        "a.c", "a.cpp", "a.rkt", "a.rhm", "a.rs", "a.scrbl", "a.toml",
+        "a.c", "a.cpp", "a.md", "a.rkt", "a.rhm", "a.rs", "a.scrbl", "a.toml",
     ];
 
     /// A line made of pieces that start or end strings, comments and
@@ -341,6 +345,40 @@ mod tests {
         pieces.extend([
             "[[", "]]", "'''", "\"\"\"\"", "a.b", "1979", "-05-27", "T", "07:32", "Z", "+inf",
             "true =", "\\e",
+        ]);
+        // Pieces of Markdown, such as containers, fences, links and HTML.
+        pieces.extend([
+            "> ",
+            "- ",
+            "* ",
+            "1. ",
+            "2) ",
+            "    ",
+            "   ",
+            "~~~",
+            "---",
+            "===",
+            "***",
+            "# ",
+            "|",
+            "|-|",
+            "| --- |",
+            "[a]",
+            "(b)",
+            "](",
+            "[a]: ",
+            "![",
+            "<div>",
+            "</div>",
+            "<pre>",
+            "<a href=\"x\">",
+            "<http://x>",
+            "&amp;",
+            "[ ] ",
+            "```rust",
+            "```md",
+            "<?",
+            "?>",
         ]);
         // Lines that choose how the rest of a Racket file is read.
         pieces.extend([

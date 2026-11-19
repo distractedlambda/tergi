@@ -36,6 +36,7 @@ path = "tests/main.rs"
 [dev-dependencies]
 insta = "1"
 proptest = "1"
+pulldown-cmark = { version = "0.13", default-features = false }
 tempfile = "3"
 
 [lints.rust]
