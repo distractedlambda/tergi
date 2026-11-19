@@ -284,6 +284,10 @@ pub struct App {
     pub areas: Areas,
     pub hits: Vec<(Rect, input::Target)>,
     pub mouse: (u16, u16),
+    /// Whether the input event being handled came from the mouse. Menus
+    /// that the keyboard opens go in the middle of the screen instead of
+    /// next to the pointer.
+    pub by_mouse: bool,
     pub drag: Option<Drag>,
     last_click: Option<(Instant, u16, u16)>,
     pub size: (u16, u16),
@@ -415,6 +419,7 @@ impl App {
             areas: Areas::default(),
             hits: Vec::new(),
             mouse: (0, 0),
+            by_mouse: false,
             drag: None,
             last_click: None,
             size: (80, 24),

@@ -173,6 +173,41 @@ fn clicks_behind_a_dialog_are_ignored() {
 }
 
 #[test]
+fn menus_from_the_keyboard_open_in_the_middle() {
+    let s = repo_with_change();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    let push = ui.find_hit(|t| matches!(t, Target::Button(Cmd::PushMenu)));
+    let anchor = |u: &Ui| match u.app.overlays.last() {
+        Some(Overlay::Menu(m)) => m.anchor,
+        _ => panic!("no menu is open"),
+    };
+
+    // Clicking the button opens the menu right below it.
+    ui.click(MouseButton::Left, push);
+    assert_eq!(anchor(&ui), Some((push.x, push.y + 1)));
+    ui.key(KeyCode::Esc);
+
+    // The key opens it in the middle, wherever the mouse is.
+    ui.key(KeyCode::Char('P'));
+    assert_eq!(anchor(&ui), None);
+    ui.key(KeyCode::Esc);
+
+    // So does choosing it from the help menu with its key.
+    ui.mouse(MouseEventKind::Moved, 3, 3);
+    ui.key(KeyCode::Char('?'));
+    assert_eq!(anchor(&ui), None);
+    ui.key(KeyCode::Char('P'));
+    assert_eq!(ui.app.overlays.len(), 1);
+    assert_eq!(anchor(&ui), None);
+    ui.key(KeyCode::Esc);
+
+    // And the context menu key.
+    ui.key(KeyCode::Char('.'));
+    assert_eq!(anchor(&ui), None);
+}
+
+#[test]
 fn first_load_starts_at_the_top() {
     // An empty repository, so the detail pane has only a few rows.
     let s = Scratch::new();

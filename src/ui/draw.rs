@@ -1591,13 +1591,18 @@ fn draw_overlays(app: &mut App, buf: &mut Buffer, area: Rect, hits: &mut Hits) -
                     .min(area.width.saturating_sub(2));
                 let max_h = area.height.saturating_sub(2);
                 let h = (m.items.len() as u16 + 2).min(max_h);
-                let x = m.anchor.0.min(area.right().saturating_sub(w + 1));
-                let y = if m.anchor.1 + h > area.bottom() {
-                    area.bottom().saturating_sub(h + 1)
-                } else {
-                    m.anchor.1
+                let r = match m.anchor {
+                    None => centered(area, w, h),
+                    Some((x, y)) => {
+                        let x = x.min(area.right().saturating_sub(w + 1));
+                        let y = if y + h > area.bottom() {
+                            area.bottom().saturating_sub(h + 1)
+                        } else {
+                            y
+                        };
+                        Rect::new(x, y, w, h)
+                    }
                 };
-                let r = Rect::new(x, y, w, h);
                 frame(buf, r, t, m.title.as_deref());
                 if top {
                     hits.push((r, Target::Overlay));

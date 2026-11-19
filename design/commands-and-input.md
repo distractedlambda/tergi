@@ -41,8 +41,8 @@ That one list is used in five places:
 - **Keys.** `handle_key` looks the key up in the focused pane's list,
   then in the global list, and runs the first enabled match.
 - **The right-click menu.** `open_context_menu` shows the pane's actions
-  that have `menu` set. The `.` key opens the same menu near the
-  selected row.
+  that have `menu` set. The `.` key opens the same menu in the middle
+  of the screen.
 - **The hint bar.** `draw_bottom` shows the actions with `hint` set, as
   many as fit, and each one can be clicked.
 - **The help menu.** `?` shows `all_actions`, which is the pane's list
@@ -87,6 +87,11 @@ Only the top one gets keys and clicks. The kinds are:
 - `Palette`: the command palette.
 - `Log`: the command log.
 - `Message`: an error or other long message.
+
+A menu that the mouse opens appears at the pointer, or below the button
+that opened it. A menu that the keyboard opens appears in the middle of
+the screen, like the dialogs do. `App::by_mouse` says whether the input
+being handled came from the mouse.
 
 A menu can preview its items. The theme menu sets `preview` to
 `Cmd::RevertTheme`. Moving through the items runs each one's

@@ -307,7 +307,9 @@ pub struct Menu {
     pub title: Option<String>,
     pub items: Vec<ActionDef>,
     pub selected: usize,
-    pub anchor: (u16, u16),
+    /// Where the menu's top left corner goes. Menus opened from the
+    /// keyboard have none and sit in the middle of the screen.
+    pub anchor: Option<(u16, u16)>,
     pub scroll: usize,
     /// When set, moving the selection runs the preview of the selected
     /// item's command (`Cmd::preview`) right away, and closing the menu
@@ -1116,12 +1118,11 @@ impl App {
             }
             Cmd::Help => {
                 let items: Vec<ActionDef> = self.all_actions();
-                let (w, h) = self.size;
                 self.overlays.push(Overlay::Menu(Menu {
                     title: Some("Keyboard shortcuts".into()),
                     items,
                     selected: 0,
-                    anchor: (w / 2, h / 4),
+                    anchor: None,
                     scroll: 0,
                     preview: None,
                 }));
@@ -1148,12 +1149,11 @@ impl App {
                 let current = self.theme.id;
                 let items: Vec<ActionDef> = crate::theme::Theme::list().map(|(id, name)| act(None, name, Cmd::SetTheme(id))).collect();
                 let selected = items.iter().position(|a| a.cmd == Cmd::SetTheme(current)).unwrap_or(0);
-                let (w, h) = self.size;
                 self.overlays.push(Overlay::Menu(Menu {
                     title: Some("Theme".into()),
                     items,
                     selected,
-                    anchor: (w.saturating_sub(24) / 2, h / 4),
+                    anchor: None,
                     scroll: 0,
                     preview: Some(Cmd::RevertTheme),
                 }));
@@ -1562,16 +1562,18 @@ impl App {
         });
     }
 
-    /// Open a menu below the button for `from` if it's on screen, and at the
-    /// mouse pointer otherwise.
+    /// Open a menu. When the mouse opened it, it goes below the button for
+    /// `from` if that's on screen, and at the mouse pointer otherwise.
     fn open_menu(&mut self, title: &str, items: Vec<ActionDef>, from: Option<&Cmd>) {
-        let button = from.and_then(|cmd| {
-            self.hits.iter().find_map(|(r, t)| match t {
-                Target::Button(c) if c == cmd => Some((r.x, r.y + 1)),
-                _ => None,
-            })
+        let anchor = self.by_mouse.then(|| {
+            let button = from.and_then(|cmd| {
+                self.hits.iter().find_map(|(r, t)| match t {
+                    Target::Button(c) if c == cmd => Some((r.x, r.y + 1)),
+                    _ => None,
+                })
+            });
+            button.unwrap_or(self.mouse)
         });
-        let anchor = button.unwrap_or(self.mouse);
         self.overlays.push(Overlay::Menu(Menu {
             title: Some(title.to_string()),
             items,
@@ -1582,8 +1584,8 @@ impl App {
         }));
     }
 
-    /// Open the right-click menu for the focused pane, at `at` or near the
-    /// selected row.
+    /// Open the right-click menu for the focused pane, at `at` or in the
+    /// middle of the screen.
     pub fn open_context_menu(&mut self, at: Option<(u16, u16)>) {
         let items: Vec<ActionDef> = self
             .actions(self.context())
@@ -1593,33 +1595,11 @@ impl App {
         if items.is_empty() {
             return;
         }
-        let anchor = at.unwrap_or_else(|| {
-            let a = match self.focus {
-                Focus::Sidebar => (
-                    self.areas.sidebar,
-                    self.sidebar.selected.saturating_sub(self.sidebar.scroll),
-                ),
-                Focus::History => (
-                    self.areas.history,
-                    self.history
-                        .current_row()
-                        .saturating_sub(self.history.scroll),
-                ),
-                _ => (
-                    self.areas.doc,
-                    self.detail.cursor.saturating_sub(self.detail.scroll),
-                ),
-            };
-            (
-                a.0.x + 4,
-                a.0.y + (a.1 as u16).min(a.0.height.saturating_sub(1)) + 1,
-            )
-        });
         self.overlays.push(Overlay::Menu(Menu {
             title: None,
             items,
             selected: 0,
-            anchor,
+            anchor: at,
             scroll: 0,
             preview: None,
         }));

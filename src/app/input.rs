@@ -35,6 +35,7 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 impl App {
     pub fn handle_input(&mut self, ev: Event) {
+        self.by_mouse = matches!(ev, Event::Mouse(_));
         match ev {
             Event::Key(k) if k.kind != KeyEventKind::Release => self.handle_key(k),
             Event::Mouse(m) => self.handle_mouse(m),
@@ -709,7 +710,7 @@ impl App {
             title: None,
             items,
             selected: 0,
-            anchor: (x, y),
+            anchor: Some((x, y)),
             scroll: 0,
             preview: None,
         }));
