@@ -9,7 +9,7 @@
 //! list and says where the rebase should stop, what `state_in` should
 //! report there, and which commits should come out.
 
-mod common;
+use crate::common;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};

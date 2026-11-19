@@ -14,7 +14,7 @@
 //! that `Workdir` lists the right files with diffs that turn one version
 //! into the other.
 
-mod common;
+use crate::common;
 
 use std::collections::HashSet;
 use std::io::Write;

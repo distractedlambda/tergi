@@ -1,6 +1,6 @@
 //! Operations on scratch repositories that have gone wrong before.
 
-mod common;
+use crate::common;
 
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;

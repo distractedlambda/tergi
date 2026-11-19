@@ -14,7 +14,7 @@
 //! `git rev-list --all`. Each reachable commit must come out once, after
 //! all of its children, with the right parents, author, date and summary.
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 use std::io::Write;

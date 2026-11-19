@@ -13,7 +13,7 @@
 //! ref once, in the right group and under the right remote, and that the
 //! history labels sit on the right commits.
 
-mod common;
+use crate::common;
 
 use std::collections::{HashMap, HashSet};
 

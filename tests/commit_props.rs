@@ -19,7 +19,7 @@
 //! Copies are left out. Gix finds them in a different way from git, which
 //! `todo/bugs.md` describes.
 
-mod common;
+use crate::common;
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;

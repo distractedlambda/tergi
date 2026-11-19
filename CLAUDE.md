@@ -26,9 +26,9 @@ tests need. Run these commands inside it:
 ```sh
 cargo build
 cargo test
-cargo test --test ui                       # one integration test file
-cargo test --test staging some_test_name   # one test
-cargo test --lib git::patch                # unit tests in one module
+cargo test --test integration ui::                        # one test file
+cargo test --test integration staging::some_test_name     # one test
+cargo test --lib git::patch                                # unit tests in one module
 cargo clippy --all-targets
 cargo fmt
 ```
@@ -150,7 +150,9 @@ in detail. Read it before changing the watcher.
 
 - Unit tests live next to the code. Some use inline `insta` snapshots.
 - Integration tests in `tests/` build scratch repositories with
-  `common::Scratch`.
+  `common::Scratch`. Each file there is a module of `tests/main.rs`, so
+  they all build into one binary and run at the same time. Cargo only
+  finds a new file once you add it to the list in `tests/main.rs`.
 - `tests/ui.rs` drives the whole `App` against a ratatui `TestBackend`
   with the `Ui` helper from `tests/common/ui.rs`. It sends real key and
   mouse events, and finds click targets through `App::hits`. The

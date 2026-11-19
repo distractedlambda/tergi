@@ -1,7 +1,7 @@
 //! Drive the whole app against scratch repositories, drawing into a test
 //! backend and sending it the same mouse and key events a terminal would.
 
-mod common;
+use crate::common;
 
 use std::time::{Duration, Instant};
 

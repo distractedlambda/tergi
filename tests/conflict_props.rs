@@ -13,7 +13,7 @@
 //! theirs, in both the index and the working tree. If the side has no
 //! entry, it deleted the file, and taking it should delete the file too.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;

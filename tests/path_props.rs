@@ -16,7 +16,7 @@
 //! - staging or unstaging one line, or all lines, of each file,
 //! - the paths, modes and ids that `commit::load` gives for a commit.
 
-mod common;
+use crate::common;
 
 use std::collections::{BTreeMap, HashSet};
 use std::io::Write;

@@ -24,7 +24,7 @@
 //! Waiting for the watcher takes time, so this runs few cases, and runs
 //! them in several tests at once.
 
-mod common;
+use crate::common;
 
 use std::collections::HashSet;
 use std::io::Write as _;

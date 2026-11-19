@@ -5,6 +5,9 @@ edition = "2024"
 description = "A terminal git client inspired by Sublime Merge"
 license = "MIT"
 readme = "README.md"
+# The integration tests are modules of tests/main.rs, so they build into
+# one binary.
+autotests = false
 
 [dependencies]
 anyhow = "1"
@@ -25,6 +28,10 @@ tokio-stream = "0.1"
 unicode-segmentation = "1"
 unicode-width = "0.2"
 toml_edit = { version = "0.25", default-features = false, features = ["parse", "display"] }
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"
 
 [dev-dependencies]
 insta = "1"

@@ -9,7 +9,7 @@
 //! which stash git used. After each step the test checks the stash list
 //! against a model, both from git and from `Refs::load`.
 
-mod common;
+use crate::common;
 
 use common::Scratch;
 use common::settings::{Settings, settings};

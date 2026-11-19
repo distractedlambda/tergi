@@ -6,7 +6,7 @@
 //! plan with the real `git rebase`. A small model works out which commits
 //! should come out, with which messages and files.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;

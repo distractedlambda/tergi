@@ -17,7 +17,7 @@
 //! and the app leaves the clipboard and the editor to the main loop, so
 //! every command can run.
 
-mod common;
+use crate::common;
 
 use std::time::{Duration, Instant};
 
