@@ -237,10 +237,10 @@ fn config(cases: u32) -> ProptestConfig {
     config
 }
 
-proptest! {
-    #![proptest_config(config(128))]
+common::split_proptest! {
+    config = config(128);
+    parts = [part_1 part_2 part_3 part_4];
 
-    #[test]
     fn stash_steps_find_the_right_stash(case in case()) {
         check(&case)?;
     }

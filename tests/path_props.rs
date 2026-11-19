@@ -794,10 +794,10 @@ fn config(cases: u32) -> ProptestConfig {
     config
 }
 
-proptest! {
-    #![proptest_config(config(100))]
+common::split_proptest! {
+    config = config(100);
+    parts = [part_1 part_2 part_3 part_4];
 
-    #[test]
     fn odd_file_names(case in case()) {
         check(&case)?;
     }

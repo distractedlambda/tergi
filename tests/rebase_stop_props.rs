@@ -838,8 +838,10 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
     Ok(())
 }
 
-proptest! {
-    #[test]
+common::split_proptest! {
+    config = ProptestConfig::default();
+    parts = [part_1 part_2 part_3 part_4 part_5 part_6 part_7 part_8];
+
     fn rebases_that_stop(case in case()) {
         check(&case)?;
     }

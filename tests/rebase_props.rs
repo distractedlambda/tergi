@@ -360,8 +360,10 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
     Ok(())
 }
 
-proptest! {
-    #[test]
+common::split_proptest! {
+    config = ProptestConfig::default();
+    parts = [part_1 part_2 part_3 part_4];
+
     fn running_a_plan(case in case()) {
         check(&case)?;
     }

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
+use proptest::prelude::ProptestConfig;
 use tergi::git::cli::Git;
 
 use settings::Settings;
@@ -168,3 +169,46 @@ pub fn non_utf8_file_names() -> bool {
         std::fs::write(dir.path().join(tergi::util::fs_path(b"caf\xe9")), "").is_ok()
     })
 }
+
+/// Give each of `parts` tests its share of the cases in `config`.
+pub fn split(mut config: ProptestConfig, parts: u32) -> ProptestConfig {
+    config.cases = config.cases.div_ceil(parts);
+    config
+}
+
+/// Define a property test as several tests that share its cases.
+///
+/// The test harness runs separate tests at the same time, but a property
+/// test runs its cases one after another. A long one would keep one core
+/// busy after the rest of the suite has finished. Splitting its cases over
+/// several tests lets them run at once. Each part picks its own random
+/// cases, and all of them replay the file's saved failures.
+///
+/// `config` gives the number of cases for all the parts together, so
+/// `PROPTEST_CASES` still sets the total. The parts go in a module named
+/// after the test, so a filter with that name runs all of them.
+macro_rules! split_proptest {
+    (
+        config = $config:expr;
+        parts = [$($part:ident)+];
+        $(#[$meta:meta])*
+        fn $name:ident($case:ident in $strategy:expr) $body:block
+    ) => {
+        $(#[$meta])*
+        mod $name {
+            use super::*;
+
+            const PARTS: u32 = [$(stringify!($part)),+].len() as u32;
+
+            ::proptest::proptest! {
+                #![proptest_config(crate::common::split($config, PARTS))]
+                $(
+                    #[test]
+                    fn $part($case in $strategy) $body
+                )+
+            }
+        }
+    };
+}
+
+pub(crate) use split_proptest;

@@ -352,10 +352,10 @@ fn config(cases: u32) -> ProptestConfig {
     config
 }
 
-proptest! {
-    #![proptest_config(config(200))]
+common::split_proptest! {
+    config = config(200);
+    parts = [part_1 part_2 part_3 part_4];
 
-    #[test]
     fn applying_selected_lines(case in case()) {
         check(&case)?;
     }
@@ -836,10 +836,10 @@ fn check_steps(case: &Steps) -> Result<(), TestCaseError> {
     Ok(())
 }
 
-proptest! {
-    #![proptest_config(config(100))]
+common::split_proptest! {
+    config = config(100);
+    parts = [part_1 part_2 part_3 part_4];
 
-    #[test]
     fn staging_in_steps(case in steps()) {
         check_steps(&case)?;
     }

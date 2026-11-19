@@ -173,6 +173,9 @@ in detail. Read it before changing the watcher.
   harder after changing the code they cover. When one fails, proptest
   saves the case under `proptest-regressions/` (or next to the file in
   `tests/`) and runs it first from then on. Check those files in.
+- Property tests in `tests/` use `common::split_proptest!`, which splits
+  their cases over several tests so that they run at the same time.
+  `PROPTEST_CASES` still sets the total.
 - The property tests that use the real git give each case a random set
   of git settings from `tests/common/settings.rs`, such as
   `diff.mnemonicPrefix` or `commit.cleanup`, because tergi runs git

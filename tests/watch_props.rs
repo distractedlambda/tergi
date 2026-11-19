@@ -714,20 +714,13 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
     probe(&repo, &rx, quiet)
 }
 
-/// The cases are split over this many tests, which run at the same time.
-/// Most of each case is spent waiting for the watcher to go quiet, so they
-/// barely compete for the processor.
-const SPLIT: u32 = 4;
-
-/// Run `cases` cases in all, unless `PROPTEST_CASES` asks for some other
-/// number, split evenly over the tests. `ProptestConfig::with_cases` would
-/// ignore the variable.
+/// Run `cases` cases, unless `PROPTEST_CASES` asks for some other number.
+/// `ProptestConfig::with_cases` would ignore the variable.
 fn config(cases: u32) -> ProptestConfig {
     let mut config = ProptestConfig::default();
     if std::env::var_os("PROPTEST_CASES").is_none() {
         config.cases = cases;
     }
-    config.cases = config.cases.div_ceil(SPLIT);
     // Each case takes seconds, so shrinking a failure for long would take
     // hours.
     if std::env::var_os("PROPTEST_MAX_SHRINK_ITERS").is_none() {
@@ -736,26 +729,13 @@ fn config(cases: u32) -> ProptestConfig {
     config
 }
 
-proptest! {
-    #![proptest_config(config(16))]
+// Most of each case is spent waiting for the watcher to go quiet, so the
+// parts barely compete for the processor.
+common::split_proptest! {
+    config = config(16);
+    parts = [part_1 part_2 part_3 part_4 part_5 part_6 part_7 part_8];
 
-    #[test]
-    fn the_watcher_reports_every_change_1(case in case()) {
-        check(&case)?;
-    }
-
-    #[test]
-    fn the_watcher_reports_every_change_2(case in case()) {
-        check(&case)?;
-    }
-
-    #[test]
-    fn the_watcher_reports_every_change_3(case in case()) {
-        check(&case)?;
-    }
-
-    #[test]
-    fn the_watcher_reports_every_change_4(case in case()) {
+    fn the_watcher_reports_every_change(case in case()) {
         check(&case)?;
     }
 }

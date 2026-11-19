@@ -783,10 +783,10 @@ fn config(cases: u32) -> ProptestConfig {
     config
 }
 
-proptest! {
-    #![proptest_config(config(256))]
+common::split_proptest! {
+    config = config(256);
+    parts = [part_1 part_2 part_3 part_4];
 
-    #[test]
     fn refs_match_git(case in case()) {
         check(&case)?;
     }

@@ -693,25 +693,13 @@ fn config(cases: u32) -> ProptestConfig {
     config
 }
 
-// A session spends most of its time waiting for git, so one test would
-// leave most cores idle. The test harness runs separate tests in
-// parallel, so the cases are split over several of them. Each one picks
-// its own random cases. `PROPTEST_CASES` sets the number for each test.
-macro_rules! random_sessions {
-    ($($name:ident)*) => {
-        proptest! {
-            #![proptest_config(config(8))]
-            $(
-                #[test]
-                fn $name(case in case()) {
-                    check(&case)?;
-                }
-            )*
-        }
-    };
-}
+// A session spends most of its time waiting for git, so the parts barely
+// compete for the processor.
+common::split_proptest! {
+    config = config(64);
+    parts = [part_1 part_2 part_3 part_4 part_5 part_6 part_7 part_8];
 
-random_sessions!(
-    random_sessions_1 random_sessions_2 random_sessions_3 random_sessions_4
-    random_sessions_5 random_sessions_6 random_sessions_7 random_sessions_8
-);
+    fn random_sessions(case in case()) {
+        check(&case)?;
+    }
+}
