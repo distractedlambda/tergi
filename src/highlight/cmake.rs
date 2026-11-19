@@ -407,33 +407,48 @@ fn escape(c: u8) -> bool {
     matches!(c, b't' | b'n' | b'r') || !c.is_ascii_alphanumeric()
 }
 
+/// If `rest`, which follows a `$`, starts with the `{`, `ENV{` or `CACHE{`
+/// of a variable reference, its length.
+fn reference_open(rest: &[u8]) -> Option<usize> {
+    ["{", "ENV{", "CACHE{"]
+        .iter()
+        .find(|p| rest.starts_with(p.as_bytes()))
+        .map(|p| p.len())
+}
+
 /// If a variable reference such as `${NAME}` starts at `i` and ends on
 /// the same line, where it ends.
 ///
-/// A name can hold letters, digits, `_/.+-`, escapes and other
-/// references. CMake also allows a line break inside a quoted argument,
-/// and a `$` that doesn't start anything, but neither is worth the
-/// trouble of following.
+/// A name can hold letters, digits, `_/.+-`, escapes, other references,
+/// and a `$` that doesn't start anything. CMake also allows a line break
+/// inside a quoted argument, but we don't follow it onto the next line.
 fn reference(b: &[u8], i: usize) -> Option<usize> {
-    let rest = &b[i + 1..];
-    let mut j = i
-        + 1
-        + ["{", "ENV{", "CACHE{"]
-            .iter()
-            .find(|p| rest.starts_with(p.as_bytes()))?
-            .len();
+    let mut j = i + 1 + reference_open(&b[i + 1..])?;
+    let name_char = |c: u8| c.is_ascii_alphanumeric() || b"_/.+-".contains(&c);
     loop {
         match *b.get(j)? {
             b'}' => return Some(j + 1),
-            b'$' => j = reference(b, j)?,
-            b'\\' => {
-                let c = *b.get(j + 1)?;
-                if c == b'\n' || !escape(c) {
+            b'$' if reference_open(&b[j + 1..]).is_some() => j = reference(b, j)?,
+            b'$' => {
+                // CMake doesn't support other kinds of references, such
+                // as `$FOO{x}`, and gives up when it sees one.
+                let n = spans(&b[j + 1..], name_char);
+                if n > 0 && b.get(j + 1 + n) == Some(&b'{') {
                     return None;
                 }
-                j += 1 + utf8_len(c).min(b.len() - j - 1);
+                j += 1;
             }
-            c if c.is_ascii_alphanumeric() || b"_/.+-".contains(&c) => j += 1,
+            b'\\' => {
+                // CMake escapes only the first byte of the character
+                // after the backslash, and the rest of a character that
+                // isn't ASCII doesn't belong in a name.
+                let c = *b.get(j + 1)?;
+                if c == b'\n' || !c.is_ascii() || !escape(c) {
+                    return None;
+                }
+                j += 2;
+            }
+            c if name_char(c) => j += 1,
             _ => return None,
         }
     }
@@ -674,6 +689,19 @@ endif()
                 ("${a}", Attribute),
                 ("\"", String),
                 (")", Punctuation),
+            ]
+        );
+        // A `$` that starts nothing is allowed in a name, but one that
+        // looks like another kind of reference isn't. Only the first byte
+        // after a backslash is escaped, and the rest of `é` can't be in a
+        // name. Outside a name, the escape is fine.
+        assert_eq!(
+            tokens("x($ENV{a$b} ${a$b{c}} ${a\\é})"),
+            [
+                ("(", Punctuation),
+                ("$ENV{a$b}", Attribute),
+                ("\\é", Escape),
+                (")", Punctuation)
             ]
         );
         // A reference has to end on its line.
