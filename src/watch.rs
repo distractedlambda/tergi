@@ -576,12 +576,23 @@ mod tests {
         Some(watch_repo(dir))
     }
 
+    /// Shorter than the app's delays, so the tests spend less time waiting.
+    /// What the watcher reports doesn't depend on them.
+    const DELAYS: Delays = Delays {
+        quiet: Duration::from_millis(20),
+        max: Duration::from_millis(100),
+    };
+
+    /// Long enough after the last report that the watcher has reported
+    /// everything it's going to.
+    const SETTLED: Duration = Duration::from_millis(300);
+
     /// Watch an existing scratch repository, and tell the watcher what git
     /// ignores, as the app does at startup.
     fn watch_repo(dir: tempfile::TempDir) -> Watched {
         let (tx, rx) = channel();
         let git_dir = dir.path().join(".git");
-        let (handle, run) = start(dir.path(), &git_dir, &git_dir, move |e| {
+        let (handle, run) = start_with(dir.path(), &git_dir, &git_dir, DELAYS, move |e| {
             if let Event::Changed(flags) = e {
                 let _ = tx.send(flags);
             }
@@ -619,16 +630,18 @@ mod tests {
             .success()
     }
 
-    /// Wait until the watcher has been quiet for a second.
+    /// Wait until the watcher has been quiet for a while.
     fn settle(rx: &Receiver<u8>) {
-        while rx.recv_timeout(Duration::from_secs(1)).is_ok() {}
+        while rx.recv_timeout(SETTLED).is_ok() {}
     }
 
     /// Write a file and say what the watcher reports for it, if anything.
+    /// A report comes at most `DELAYS.max` after the change, so this waits
+    /// several times that before it decides that none is coming.
     fn write(rx: &Receiver<u8>, path: &Path) -> Option<u8> {
         settle(rx);
         std::fs::write(path, "x").unwrap();
-        rx.recv_timeout(Duration::from_secs(2)).ok()
+        rx.recv_timeout(Duration::from_millis(500)).ok()
     }
 
     #[cfg(target_os = "linux")]
