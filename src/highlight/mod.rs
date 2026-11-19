@@ -10,6 +10,7 @@
 //! new side on its own.
 
 mod c;
+mod cmake;
 mod gitignore;
 mod markdown;
 mod racket;
@@ -82,6 +83,7 @@ impl Tokens {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
     C,
+    Cmake,
     Cpp,
     Gitignore,
     Markdown,
@@ -100,8 +102,14 @@ impl Language {
         if matches!(name, "Cargo.lock" | "Pipfile" | "poetry.lock" | "uv.lock") {
             return Some(Language::Toml);
         }
+        // configure_file templates such as `FooConfig.cmake.in` are
+        // mostly CMake too.
+        if name == "CMakeLists.txt" || name.ends_with(".cmake.in") {
+            return Some(Language::Cmake);
+        }
         match name.rsplit_once('.')?.1 {
             "c" => Some(Language::C),
+            "cmake" => Some(Language::Cmake),
             // Headers ending in `.h` can be C or C++. We read them as C++,
             // as Sublime Text does, so that `class` and `template` get
             // colors. In a C header, a name such as `new` then does too.
@@ -125,6 +133,7 @@ impl Language {
         let mut out = Tokens::default();
         match self {
             Language::C | Language::Cpp => c::lex(text, self, &mut out),
+            Language::Cmake => cmake::lex(text, &mut out),
             Language::Gitignore => gitignore::lex(text, &mut out),
             Language::Markdown => markdown::lex(text, &mut out),
             Language::Racket | Language::Rhombus | Language::Scribble => {
@@ -324,6 +333,7 @@ mod tests {
 
     const PATHS: &[&str] = &[
         "a.c",
+        "CMakeLists.txt",
         "a.cpp",
         ".gitignore",
         "a.md",
@@ -392,6 +402,12 @@ mod tests {
             "```md",
             "<?",
             "?>",
+        ]);
+        // Pieces of CMake, such as brackets, variable references and
+        // generator expressions.
+        pieces.extend([
+            "if(", "endif()", "AND", "#[[", "]]", "[=[", "]=]", "${", "$ENV{", "$<", ">", "\\;",
+            "$(x)", "a\"b c\"",
         ]);
         // Pieces of gitignore patterns.
         pieces.extend(["!", "**/", "?", "[!a-]", "[[:alpha:]]", "\\#"]);
@@ -477,6 +493,15 @@ mod tests {
         assert_eq!(
             Language::for_path("t/Rust.gitignore"),
             Some(Language::Gitignore)
+        );
+        assert_eq!(
+            Language::for_path("x/CMakeLists.txt"),
+            Some(Language::Cmake)
+        );
+        assert_eq!(Language::for_path("a.cmake"), Some(Language::Cmake));
+        assert_eq!(
+            Language::for_path("FooConfig.cmake.in"),
+            Some(Language::Cmake)
         );
         assert_eq!(Language::for_path("a.lock"), None);
         assert_eq!(Language::for_path("a.b/c"), None);

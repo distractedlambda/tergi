@@ -190,11 +190,12 @@ in the background, in a worker that `Highlighter::new` returns.
 
 Each language has its own lexer, written with Logos and kept in
 `src/highlight/`, one file per language: `c.rs` for C and C++,
-`rust.rs` for Rust, `racket.rs` for Racket and Scribble,
-`shrubbery.rs` for Rhombus, `toml.rs` for TOML, `markdown.rs` for
-Markdown, and `gitignore.rs` for `.gitignore` files. A lexer turns text into `Tokens`: byte
-ranges, each with a `Kind` such as `Comment`, `Keyword` or `Escape`. Plain text, such as
-most identifiers, has no token. The theme maps kinds to colors when the
+`cmake.rs` for CMake, `rust.rs` for Rust, `racket.rs` for Racket and
+Scribble, `shrubbery.rs` for Rhombus, `toml.rs` for TOML, `markdown.rs`
+for Markdown, and `gitignore.rs` for `.gitignore` files. A lexer turns
+text into `Tokens`: byte ranges, each with a `Kind` such as `Comment`,
+`Keyword` or `Escape`. Plain text, such as most identifiers, has no
+token. The theme maps kinds to colors when the
 line is drawn, so switching themes doesn't need to lex anything again.
 
 Colors come from lexing alone. There is no parser, so the lexer can't
@@ -418,6 +419,54 @@ names a class that doesn't exist. The pattern then matches nothing, so
 the rest of its line stays plain. A backslash at the end of a pattern
 also makes it match nothing, and it stays plain too.
 
+### CMake
+
+`cmake.rs` follows CMake's own source. `cmListFileLexer.in.l` splits
+the file into comments, brackets such as `[==[text]==]`, quoted
+arguments and unquoted arguments. The parser in `cmListFileCache.cxx`
+finds command names. `ExpandVariablesInStringImpl` in `cmMakefile.cxx`
+reads escapes and variable references. Files named `CMakeLists.txt`,
+and files ending in `.cmake` or `.cmake.in`, are CMake.
+
+A command name can only come at the start of a line, before a `(` on
+the same line. Most command names are plain, like function calls in
+other languages. The flow control commands, such as `if`, `foreach`
+and `endfunction`, get the keyword color, because CMake doesn't let a
+script define them again. Command names are case insensitive, so `IF`
+is a keyword too. Inside `if`, `elseif` and `while`, an unquoted word
+such as `AND`, `NOT` or `STREQUAL` gets the operator color. Those words
+are case sensitive, and they mean nothing when quoted.
+
+A `#` starts a comment anywhere outside of quotes, even in the middle
+of an argument, and `#[[` starts a bracket comment. Brackets and quoted
+arguments get the string color. They can go on over several lines, and
+one that never closes goes on to the end of the file. A `[` in the
+middle of an unquoted argument doesn't start a bracket.
+
+For compatibility with old versions, an unquoted argument can hold text
+in quotes, as in `-DA="b c"`, and `$(NAME)`. The quotes there hold
+spaces and don't end the argument, and they get the string color. A
+quote at the start of an argument starts a quoted argument instead.
+
+In quoted and unquoted arguments, escapes such as `\n` and `\;` get
+the escape color. A backslash before a letter or digit other than `t`,
+`n` or `r` is an error, and it stays plain. A variable reference such
+as `${NAME}`, `$ENV{NAME}` or `$CACHE{NAME}` gets the attribute color
+as a whole, so that it stands out inside a string. A name can hold
+escapes and other references, as in `${a_${b}}`. A reference with
+another character in its name, or one that doesn't close, is an error,
+and it stays plain.
+
+The `$<` and `>` of a generator expression get the punctuation color.
+CMake reads generator expressions later, and only in some commands,
+but the lexer can't tell which, so it colors them in every argument.
+A `$<` only gets a color when its `>` comes later in the same argument.
+
+The colors of a line never depend on the lines after it. So a variable
+reference or generator expression only gets a color when it ends on
+the line it starts on. CMake allows a line break inside a reference in
+a quoted argument, but nobody writes one.
+
 ### Markdown
 
 `markdown.rs` follows CommonMark 0.31.2, along with the tables and task
@@ -581,6 +630,11 @@ Selected lines get the selection background instead.
   as a bad delimiter, and on numbers like `1p-1`. In C++, clang only
   reads that as one number when it's hexadecimal, but the standard
   says it's always one.
+- `src/highlight/cmake.rs` has examples for comments, brackets,
+  command names, `if` operators, escapes, variable references,
+  generator expressions and the arguments that old versions allowed.
+  The dev image has no CMake, so nothing compares it with the real
+  lexer automatically.
 - `src/highlight/toml.rs` has examples for each kind of TOML token. Its
   property test builds random valid documents from tricky pieces, such
   as keys that look like values and strings that hold brackets. It
@@ -619,8 +673,11 @@ Selected lines get the selection background instead.
 ## Known gaps
 
 - A merge commit is diffed against its first parent only.
-- Only C, C++, Rust, Racket, Rhombus, Scribble, TOML, Markdown and
-  `.gitignore` files are highlighted.
+- Only C, C++, CMake, Rust, Racket, Rhombus, Scribble, TOML, Markdown
+  and `.gitignore` files are highlighted.
+- A hunk from the middle of a CMake `if` whose arguments go on over
+  several lines doesn't know it's in an `if`, so `AND` and the other
+  operators there are plain.
 - In Markdown, the text of a setext heading and a table's header row
   are colored as paragraph text, and a code span, link or tag that
   goes on over several lines only gets its color on its last line.
