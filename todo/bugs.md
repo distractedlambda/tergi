@@ -2,6 +2,32 @@
 
 Known problems that nobody has fixed yet.
 
+## Markdown headings that start with inline code get the wrong colors
+
+In a Markdown heading like ``# `code` title``, the closing backtick
+and the word `code` get the wrong colors, and so does the rest of the
+heading. ` title` comes out in the inline code color instead of the
+heading color. The same happens wherever an outer highlight and a
+highlight from an injected language start at the same byte. Examples
+are a link or emphasis that starts a heading, or a template string
+whose embedded language highlights its first character.
+
+To see it, highlight ``"# `code` title\n"`` with `highlight_lines` in
+`src/highlight/mod.rs` and look at the spans of ` title`.
+
+The cause is the order of tree-sitter-highlight's events (0.27.2).
+`HighlightIterLayer::sort_key` sorts by `(offset, is_start, -depth)`.
+So when an outer layer and an injected layer both start a highlight at
+the same byte, the injected one starts first, although it lies inside
+the outer one. The events don't say which layer they come from, so the
+color stack in `highlight_text` pops the wrong entries after that.
+`markdown_highlights` works around this for fenced code blocks by
+leaving out the outer patterns there.
+
+Fixing it in tree-sitter-highlight would mean sorting starts at the
+same offset with the outer layer first. Without that, tergi could walk
+the layers itself with tree-sitter's query cursors, as editors do.
+
 ## Copies are found from the wrong version of a changed file
 
 With `diff.renames = copies`, a commit diff looks for copies among the
