@@ -21,7 +21,8 @@
 //! git would show the change, one folder at a time, and checks that the
 //! watcher reports each one.
 //!
-//! Waiting for the watcher takes time, so this runs few cases.
+//! Waiting for the watcher takes time, so this runs few cases, and runs
+//! them in several tests at once.
 
 mod common;
 
@@ -713,13 +714,20 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
     probe(&repo, &rx, quiet)
 }
 
-/// Run `cases` cases, unless `PROPTEST_CASES` asks for some other number.
-/// `ProptestConfig::with_cases` would ignore the variable.
+/// The cases are split over this many tests, which run at the same time.
+/// Most of each case is spent waiting for the watcher to go quiet, so they
+/// barely compete for the processor.
+const SPLIT: u32 = 4;
+
+/// Run `cases` cases in all, unless `PROPTEST_CASES` asks for some other
+/// number, split evenly over the tests. `ProptestConfig::with_cases` would
+/// ignore the variable.
 fn config(cases: u32) -> ProptestConfig {
     let mut config = ProptestConfig::default();
     if std::env::var_os("PROPTEST_CASES").is_none() {
         config.cases = cases;
     }
+    config.cases = config.cases.div_ceil(SPLIT);
     // Each case takes seconds, so shrinking a failure for long would take
     // hours.
     if std::env::var_os("PROPTEST_MAX_SHRINK_ITERS").is_none() {
@@ -732,7 +740,22 @@ proptest! {
     #![proptest_config(config(16))]
 
     #[test]
-    fn the_watcher_reports_every_change(case in case()) {
+    fn the_watcher_reports_every_change_1(case in case()) {
+        check(&case)?;
+    }
+
+    #[test]
+    fn the_watcher_reports_every_change_2(case in case()) {
+        check(&case)?;
+    }
+
+    #[test]
+    fn the_watcher_reports_every_change_3(case in case()) {
+        check(&case)?;
+    }
+
+    #[test]
+    fn the_watcher_reports_every_change_4(case in case()) {
         check(&case)?;
     }
 }
