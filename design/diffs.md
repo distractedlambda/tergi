@@ -189,10 +189,10 @@ Highlighting a large file takes too long to do while drawing. So it runs
 in the background, in a worker that `Highlighter::new` returns.
 
 Each language has its own lexer, written with Logos and kept in
-`src/highlight/`, one file per language: `rust.rs` for Rust,
-`racket.rs` for Racket and Scribble, and `shrubbery.rs` for Rhombus. A lexer turns text into `Tokens`:
-byte ranges, each with a
-`Kind` such as `Comment`, `Keyword` or `Escape`. Plain text, such as
+`src/highlight/`, one file per language: `c.rs` for C and C++,
+`rust.rs` for Rust, `racket.rs` for Racket and Scribble, and
+`shrubbery.rs` for Rhombus. A lexer turns text into `Tokens`: byte
+ranges, each with a `Kind` such as `Comment`, `Keyword` or `Escape`. Plain text, such as
 most identifiers, has no token. The theme maps kinds to colors when the
 line is drawn, so switching themes doesn't need to lex anything again.
 
@@ -309,6 +309,50 @@ DrRacket's full shrubbery lexer adds `lex-open-close.rkt` on top. That
 layer reports the invisible parentheses that indentation makes, and it
 doesn't change any colors, so we leave it out.
 
+### C and C++
+
+`c.rs` lexes both C and C++. They differ in their keywords, and only
+C++ has raw strings. Files ending in `.c` are C. Headers ending in `.h`
+are read as C++, as Sublime Text does. A C++ header read as C would
+lose the colors of `class`, `template` and `namespace`. A C header read
+as C++ only colors the odd name, such as a variable called `new`.
+
+The lexer follows the translation phases of the C and C++ standards.
+A backslash at the end of a line joins it to the next, before anything
+else is read. So a `//` comment or a directive goes on to the next line
+when its line ends in a backslash. C++23 and the compilers allow spaces
+between the backslash and the line break, and so do we. Because
+splices come before escapes, a string with `\\` at the end of a line
+goes on to the next line too.
+
+A `#` at the start of a line begins a directive, even after a comment.
+The lexer keeps track of which directive a line is in, because some
+tokens read differently there:
+
+- After `#include`, `<stdio.h>` is a header name and gets the string
+  color. Backslashes in `"..."` are part of the path, not escapes.
+- The message of `#error` and `#warning` is text, which may hold a
+  lone quote, so all of it gets the string color.
+- In `#if` and `#elif`, `defined` is a keyword.
+
+The code between `#if 0` and its `#else`, `#elif` or `#endif` gets the
+comment color, as it does in most editors. Only a condition that is
+just `0` counts. The preprocessor still splits skipped code into
+tokens, so the lexer reads it as usual, and a `/*` in it can hide the
+`#endif`. It counts the conditionals inside to find the one that
+matches. The lexer colors the skipped lines once it finds the end, but
+which lines those are only depends on the lines before them, so a hunk
+lexed on its own gets the same colors.
+
+A number is a preprocessing number, as the standard defines it. It
+takes in letters, dots, digit separators, and signs after `e` or `p`,
+so `0x1e+1` and `12_km` are each one number, as they are for the
+compiler. A raw string such as `R"x(...)x"` ends at the first `)x"`.
+Its delimiter can't hold spaces, parentheses or backslashes, and we
+also leave out quotes. In C, which has no raw strings, the `R` is a
+name and the quote starts an ordinary string. Without quotes in the
+delimiter, that string can't end inside the token that Logos matched.
+
 The worker only highlights files that appear on screen.
 `request_visible_highlights` runs while drawing and asks for every file
 with a row on screen that hasn't been asked for yet. Each job carries the
@@ -412,6 +456,18 @@ Selected lines get the selection background instead.
   source, and they agreed on all of them. We left out about 1,000
   random texts that made the real lexer fail, for example on a `²`
   followed by a letter, which no rule of its lexer matches.
+- `src/highlight/c.rs` has examples for each kind of C and C++ token,
+  such as line splices, raw strings, digit separators, header names
+  and `#if 0`. The dev image has no C compiler, so nothing compares it
+  with one automatically. When we wrote it, we compared it with clang's
+  raw lexer (`clang -cc1 -dump-raw-tokens`) on about 3,000 random
+  texts, each read as C23 and as C++23. We checked whether each
+  character was in a comment, a string, a number or none of these.
+  They only differed on splices inside a token, on raw string
+  delimiters that hold a quote, on how clang recovers from errors such
+  as a bad delimiter, and on numbers like `1p-1`. In C++, clang only
+  reads that as one number when it's hexadecimal, but the standard
+  says it's always one.
 - `src/highlight/mod.rs` has property tests that lexers never panic and
   give tokens in order on character boundaries, and that every hunk line
   gets the same colors with or without the full text, where it should.
@@ -419,7 +475,13 @@ Selected lines get the selection background instead.
 ## Known gaps
 
 - A merge commit is diffed against its first parent only.
-- Only Rust, Racket, Rhombus and Scribble files are highlighted.
+- Only C, C++, Rust, Racket, Rhombus and Scribble files are
+  highlighted.
+- In C and C++, a splice in the middle of a token, as in `L\` at the
+  end of a line followed by `'x'`, splits the token in two. The
+  compiler joins them.
+- C and C++ read `<:` and `:>` as `[` and `]`. We read them as two
+  tokens, which only changes the color of the `<` or `>`.
 - A hunk from the middle of a Rhombus Scribble document that we don't
   have the full text for is lexed as Racket Scribble.
 - Other Racket languages with a reader of their own, such as

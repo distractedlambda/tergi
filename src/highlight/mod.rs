@@ -9,6 +9,7 @@
 //! the diff shows. When we only have the diff, we lex each hunk's old and
 //! new side on its own.
 
+mod c;
 mod racket;
 mod rust;
 mod shrubbery;
@@ -77,6 +78,8 @@ impl Tokens {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
+    C,
+    Cpp,
     Racket,
     Rhombus,
     Rust,
@@ -88,6 +91,14 @@ impl Language {
     pub fn for_path(path: &str) -> Option<Language> {
         let name = path.rsplit('/').next().unwrap_or(path);
         match name.rsplit_once('.')?.1 {
+            "c" => Some(Language::C),
+            // Headers ending in `.h` can be C or C++. We read them as C++,
+            // as Sublime Text does, so that `class` and `template` get
+            // colors. In a C header, a name such as `new` then does too.
+            "h" | "C" | "H" | "cc" | "cpp" | "cxx" | "c++" | "hh" | "hpp" | "hxx" | "h++"
+            | "ipp" | "tpp" | "inl" | "cppm" | "ixx" | "ccm" | "cxxm" | "c++m" => {
+                Some(Language::Cpp)
+            }
             "rkt" | "rktl" | "rktd" => Some(Language::Racket),
             "rhm" => Some(Language::Rhombus),
             "rs" => Some(Language::Rust),
@@ -99,6 +110,7 @@ impl Language {
     pub fn lex(self, text: &str) -> Tokens {
         let mut out = Tokens::default();
         match self {
+            Language::C | Language::Cpp => c::lex(text, self, &mut out),
             Language::Racket | Language::Rhombus | Language::Scribble => {
                 racket::lex(text, self, &mut out);
             }
@@ -293,7 +305,7 @@ mod tests {
     use super::*;
     use crate::git::commit::diff_texts;
 
-    const PATHS: &[&str] = &["a.rkt", "a.rhm", "a.rs", "a.scrbl"];
+    const PATHS: &[&str] = &["a.c", "a.cpp", "a.rkt", "a.rhm", "a.rs", "a.scrbl"];
 
     /// A line made of pieces that start or end strings, comments and
     /// @-forms in some language, along with tabs, wide characters and a
@@ -308,6 +320,11 @@ mod tests {
         // Pieces of shrubbery notation.
         pieces.extend([
             "#//", "~kw", "#{", "~#{", "«", "»", ":", "-1", "1.", "x.y", ",", "  ", "@//", "a:",
+        ]);
+        // Pieces of C and C++, such as directives and raw strings.
+        pieces.extend([
+            "#if 0", "#if", "#else", "#endif", "#include", "<a.h>", "#error", "%:", "R\"x(",
+            ")x\"", "R\"(", ")\"", "1'0", "[[", "\\ ", "u8'", "defined",
         ]);
         // Lines that choose how the rest of a Racket file is read.
         pieces.extend([
@@ -382,6 +399,9 @@ mod tests {
         assert_eq!(Language::for_path("info.rkt"), Some(Language::Racket));
         assert_eq!(Language::for_path("doc.scrbl"), Some(Language::Scribble));
         assert_eq!(Language::for_path("main.rhm"), Some(Language::Rhombus));
+        assert_eq!(Language::for_path("lib/a.c"), Some(Language::C));
+        assert_eq!(Language::for_path("a.h"), Some(Language::Cpp));
+        assert_eq!(Language::for_path("a.cpp"), Some(Language::Cpp));
         assert_eq!(Language::for_path("a.b/c"), None);
         assert_eq!(Language::for_path("rs"), None);
     }
