@@ -190,7 +190,8 @@ in the background, in a worker that `Highlighter::new` returns.
 
 Each language has its own lexer, written with Logos and kept in
 `src/highlight/`, one file per language: `rust.rs` for Rust and
-`racket.rs` for Racket. A lexer turns text into `Tokens`: byte ranges, each with a
+`racket.rs` for Racket and Scribble. A lexer turns text into `Tokens`:
+byte ranges, each with a
 `Kind` such as `Comment`, `Keyword` or `Escape`. Plain text, such as
 most identifiers, has no token. The theme maps kinds to colors when the
 line is drawn, so switching themes doesn't need to lex anything again.
@@ -215,6 +216,46 @@ Whether an atom such as `1/2`, `+i` or `1e5x` is a number or a symbol
 depends on Racket's long number syntax. `is_number` in `racket.rs`
 follows `string->number` from the reader's `number.rkt`, with about one
 state for each function there, but it only checks the syntax.
+
+A `#lang` line at the top of a Racket file chooses the reader for the
+rest. With `#lang at-exp`, the lexer also reads @-forms such as
+`@foo[1]{text}`. With a Scribble language such as `#lang
+scribble/manual`, the whole file is text with @-forms in it. A `.scrbl`
+file is Scribble text even without a `#lang` line, because a hunk from
+the middle of a document doesn't have one. A hunk from the middle of an
+`at-exp` file is lexed as plain Racket, but we almost always have the
+full text, which starts with the `#lang` line.
+
+The @-reader is `scribble/reader.rkt` in the `at-exp-lib` package, and
+the lexer follows its source. An @-form mixes Racket data and text,
+and each can hold the other, so the lexer keeps a stack of `Frame`s for
+what it's inside of. The `@` and a command that is a name, as in
+`@title`, get the keyword color, and the brackets and braces around the
+parts get the punctuation color. Text is plain. An `@;` comment gets the
+comment color, including its text in braces. The reader has a few
+surprises that the lexer copies:
+
+- The command is read with a readtable where `|` ends a symbol, so
+  `@foo|{text}|` has text after `foo`. That readtable only applies to
+  the outermost datum of the command. But escapes such as `@|x|` use it
+  for everything inside them. In `#lang at-exp`, so do data in brackets
+  inside an escape. The Scribble languages read those with the usual
+  readtable.
+- The data in `@foo[...]` and `@|...|` are read with
+  `read-syntax/recursive`, which returns comments instead of skipping
+  them. So a `#;` there takes the next comment as its datum, as in
+  `@foo[#; ; c` followed by a line with `1`, where `1` is not commented
+  out. Inside parentheses, or after a prefix such as `'`, a `#;` skips
+  comments as usual.
+- Outside of text, `@|{x}|` is text in other delimiters. Inside text,
+  it's an escape holding the list `{x}`.
+
+A `#;` or `@;{` comment can cover several lines. Its color leaves out
+the whitespace at the end of each line. Whether the comment covers that
+whitespace can depend on the next line, as with a `#;` at the end of a
+line and a `)` on the next one, which ends the comment early. Colors
+must not depend on what comes after a line, or a hunk lexed on its own
+would get different colors.
 
 The worker only highlights files that appear on screen.
 `request_visible_highlights` runs while drawing and asks for every file
@@ -293,12 +334,23 @@ Selected lines get the selection background instead.
   lifetimes.
 - `src/highlight/racket.rs` has examples for each kind of Racket token,
   such as `#;` comments, here strings, characters, and atoms that are
-  numbers and atoms that aren't. The dev image has no Racket, so nothing
-  runs the real reader automatically. When the lexer was written, we
-  checked `is_number` against Racket's reader on about 240,000 random
-  atoms. We also checked the whole lexer against `read-syntax` on about
+  numbers and atoms that aren't. It also has examples of @-forms in
+  Scribble and `#lang at-exp`, with other delimiters, escapes and
+  comments. The dev image has no Racket, so nothing runs the real
+  reader automatically. When the lexer was written, we checked
+  `is_number` against Racket's reader on about 240,000 random atoms.
+  We also checked the whole lexer against `read-syntax` on about
   120,000 random texts that Racket reads without an error, and they
   agreed on all of them.
+- When the lexer learned @-forms, we checked it against a copy of the
+  @-reader that marked where each piece of text came from. On about
+  200,000 random texts that Racket reads without an error, in plain
+  Racket, `#lang at-exp` and Scribble, every number, string, character,
+  boolean and keyword got its color, symbols and text got none, and
+  comments covered nothing that the reader read. We checked the 1,300
+  Scribble and `at-exp` files in Racket's own source the same way. The
+  only differences were here strings, where Racket counts the linefeed
+  after the terminator and the lexer doesn't, which changes no colors.
 - `src/highlight/mod.rs` has property tests that lexers never panic and
   give tokens in order on character boundaries, and that every hunk line
   gets the same colors with or without the full text, where it should.
@@ -306,10 +358,12 @@ Selected lines get the selection background instead.
 ## Known gaps
 
 - A merge commit is diffed against its first parent only.
-- Only Rust and Racket files are highlighted.
-- A Racket file is lexed with the default reader whatever its `#lang`
-  says. Languages with a reader of their own, such as
-  `#lang scribble/manual` or `#lang at-exp racket`, get wrong colors.
+- Only Rust, Racket and Scribble files are highlighted.
+- Other Racket languages with a reader of their own, such as
+  `#lang datalog`, are lexed with the default reader. So is
+  `#reader scribble/reader`.
+- A hunk from the middle of a `#lang at-exp` file that we don't have the
+  full text for is lexed as plain Racket.
 - Word marks pair removed and added lines in order. When lines were
   inserted between edited ones, a line can be paired with the wrong
   partner, and then gets no marks or odd ones.

@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 4824110eeed29e5256afffa2c851f679c5fef994104a2f0c8ab064e4f9220f44 # shrinks to path = "a.rkt", (old, new) = ("#;\r\n#;\n#;\r\n#;", "#;\n"), context = 0
+cc c89f4cc372ffa05530c860310f383868ee478f9fae3edb6f519678f0b5fbe89e # shrinks to path = "a.rkt", (old, new) = ("#;\r\n}|*/-->/*#lang scribble/manual=|<{\r\n#;", "}|*/-->/*#lang scribble/manual=|<{\r\n"), context = 0
+cc 5199b577e5ce7f83a281ad21f132b78c7f826e3bda80d3e2ba6641c86b1e4103 # shrinks to path = "a.scrbl", (text, _) = ("|#|<@#;\n|#|<@#;\n|#|<@#;", "")

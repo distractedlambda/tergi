@@ -65,6 +65,7 @@ impl Tokens {
 pub enum Language {
     Racket,
     Rust,
+    Scribble,
 }
 
 impl Language {
@@ -74,6 +75,7 @@ impl Language {
         match name.rsplit_once('.')?.1 {
             "rkt" | "rktl" | "rktd" => Some(Language::Racket),
             "rs" => Some(Language::Rust),
+            "scrbl" => Some(Language::Scribble),
             _ => None,
         }
     }
@@ -81,8 +83,9 @@ impl Language {
     pub fn lex(self, text: &str) -> Tokens {
         let mut out = Tokens::default();
         match self {
-            Language::Racket => racket::lex(text, &mut out),
+            Language::Racket => racket::lex(text, false, &mut out),
             Language::Rust => rust::lex(text, &mut out),
+            Language::Scribble => racket::lex(text, true, &mut out),
         }
         out
     }
@@ -273,18 +276,21 @@ mod tests {
     use super::*;
     use crate::git::commit::diff_texts;
 
-    const PATHS: &[&str] = &["a.rkt", "a.rs"];
+    const PATHS: &[&str] = &["a.rkt", "a.rs", "a.scrbl"];
 
-    /// A line made of pieces that start or end strings and comments in some
-    /// language, along with tabs, wide characters and a stray carriage
-    /// return.
+    /// A line made of pieces that start or end strings, comments and
+    /// @-forms in some language, along with tabs, wide characters and a
+    /// stray carriage return.
     fn line() -> impl Strategy<Value = String> {
-        let piece = prop::sample::select(vec![
+        let mut pieces = vec![
             "x", "fn", " ", "\t", "\"", "'", "`", "```", "\"\"\"", "//", "/*", "*/", "#", "<!--",
             "-->", "<a>", "{", "}", "(", ")", "\\", "$x", "=", ";", "0x1F", "r#\"", "\"#", "- ",
             "b'", "'a'", "中", "👍", "e\u{301}", "\r", "#|", "|#", "#;", ";", "|", "#\\", "#<<",
-            "1/2", "#:",
-        ]);
+            "1/2", "#:", "@", "@;", "@foo", "[", "]", "|{", "}|", "|<{", "}>|", "|<@",
+        ];
+        // Lines that choose how the rest of a Racket file is read.
+        pieces.extend(["#lang at-exp racket", "#lang scribble/manual"]);
+        let piece = prop::sample::select(pieces);
         prop::collection::vec(piece, 0..8).prop_map(|p| p.concat())
     }
 
@@ -348,6 +354,7 @@ mod tests {
     fn finds_languages_by_extension() {
         assert_eq!(Language::for_path("src/main.rs"), Some(Language::Rust));
         assert_eq!(Language::for_path("info.rkt"), Some(Language::Racket));
+        assert_eq!(Language::for_path("doc.scrbl"), Some(Language::Scribble));
         assert_eq!(Language::for_path("a.b/c"), None);
         assert_eq!(Language::for_path("rs"), None);
     }
