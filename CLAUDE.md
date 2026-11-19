@@ -125,7 +125,8 @@ of `Row`s so it can be scrolled and drawn quickly. Line staging builds a
 partial patch in `git/patch.rs` and feeds it to `git apply`. Syntax
 highlighting runs in the background (`highlight/`) and is matched to
 the current document by generation. Each language has its own lexer,
-written with Logos, and colors come from lexing alone.
+written with Logos. Colors come from lexing alone, so identifiers are
+plain unless they're keywords.
 
 `ui/draw.rs` draws in two phases. First it computes the layout and stores
 it in `App::areas`. Then it draws and records clickable regions in

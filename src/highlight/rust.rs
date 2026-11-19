@@ -2,8 +2,7 @@
 //!
 //! It follows the Rust reference closely enough to find where comments,
 //! strings and other tokens start and end, but it doesn't check that
-//! they're valid. Identifiers are only ASCII. Other characters outside
-//! strings and comments are left plain.
+//! they're valid. Identifiers are plain unless they're keywords.
 
 use logos::{Lexer, Logos};
 
@@ -24,7 +23,7 @@ enum Token {
     #[regex(r##"[bc]?r#*""##, raw_string)]
     RawStr,
 
-    #[regex(r"'[a-zA-Z_][a-zA-Z0-9_]*")]
+    #[regex(r"'[a-zA-Z_[^\x00-\x7F]][a-zA-Z0-9_[^\x00-\x7F]]*")]
     Lifetime,
 
     #[regex(r"0x[0-9a-fA-F_]+([iu](8|16|32|64|128|size))?")]
@@ -35,9 +34,9 @@ enum Token {
     )]
     Number,
 
-    // Only the start of an attribute, up to its path, such as `#[derive`.
-    // Finding its end would take a parser, since it can hold anything.
-    #[regex(r"#!?\[[ \t]*[a-zA-Z_][a-zA-Z0-9_]*(::[a-zA-Z_][a-zA-Z0-9_]*)*")]
+    // Only the start of an attribute. Finding its end would take a parser,
+    // since it can hold anything.
+    #[regex(r"#!?\[")]
     Attribute,
 
     #[regex(r"[-+*/%^!&|<>=]=?")]
@@ -47,21 +46,17 @@ enum Token {
     #[regex(r"[()\[\]{},;:.#$]|::")]
     Punctuation,
 
-    #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", word)]
-    #[regex(r"r#[a-zA-Z_][a-zA-Z0-9_]*", raw_word)]
+    // Outside strings and comments, Rust only allows characters beyond
+    // ASCII in identifiers, so we take them all as identifier characters.
+    // Then a keyword at the end of a longer name isn't colored.
+    #[regex(r"[a-zA-Z_[^\x00-\x7F]][a-zA-Z0-9_[^\x00-\x7F]]*", word)]
+    // A raw identifier such as `r#type` is never a keyword.
+    #[regex(r"r#[a-zA-Z_[^\x00-\x7F]][a-zA-Z0-9_[^\x00-\x7F]]*")]
     Ident,
-
-    /// `fn` and the name after it. A generic function's name isn't
-    /// followed by `(`, so `classify` can't tell it's a function.
-    #[regex(r"fn[ \t\r\n]+(r#)?[a-zA-Z_][a-zA-Z0-9_]*")]
-    FnName,
 
     // `word` turns identifiers into these.
     Keyword,
-    Constant,
-    Type,
-    Function,
-    Macro,
+    Bool,
 }
 
 /// Skip to the end of a block comment. Block comments nest.
@@ -115,60 +110,19 @@ fn raw_string(lex: &mut Lexer<Token>) {
 }
 
 fn word(lex: &mut Lexer<Token>) -> Token {
-    let word = lex.slice();
-    if KEYWORDS.contains(&word) {
-        Token::Keyword
-    } else if word == "true" || word == "false" {
-        Token::Constant
-    } else {
-        classify(word, lex.remainder())
+    match lex.slice() {
+        "true" | "false" => Token::Bool,
+        w if KEYWORDS.contains(&w) => Token::Keyword,
+        _ => Token::Ident,
     }
 }
 
-/// A raw identifier such as `r#type` is never a keyword.
-fn raw_word(lex: &mut Lexer<Token>) -> Token {
-    classify(&lex.slice()[2..], lex.remainder())
-}
-
-/// Tell what an identifier that isn't a keyword is, from how it's spelled
-/// and what comes right after it.
-fn classify(word: &str, after: &str) -> Token {
-    if TYPES.contains(&word) {
-        return Token::Type;
-    }
-    if after.starts_with('!') && !after.starts_with("!=") {
-        return Token::Macro;
-    }
-    if word.starts_with(|c: char| c.is_ascii_uppercase()) {
-        // `T` is a type parameter, while `MAX` and `MAX_LEN` are constants.
-        return if word.len() > 1 && is_upper(word) {
-            Token::Constant
-        } else {
-            Token::Type
-        };
-    }
-    if after.starts_with('(') || after.starts_with("::<") {
-        return Token::Function;
-    }
-    Token::Ident
-}
-
-fn is_upper(word: &str) -> bool {
-    !word.bytes().any(|b| b.is_ascii_lowercase())
-}
-
-/// The strict keywords, which can't be identifiers, except reserved ones
-/// that nobody uses yet.
+/// The strict keywords, except reserved ones that nobody uses yet.
 const KEYWORDS: &[&str] = &[
-    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
-    "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
-    "return", "self", "static", "struct", "super", "trait", "type", "unsafe", "use", "where",
-    "while",
-];
-
-const TYPES: &[&str] = &[
-    "Self", "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "str", "u8",
-    "u16", "u32", "u64", "u128", "usize",
+    "Self", "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
+    "extern", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
+    "ref", "return", "self", "static", "struct", "super", "trait", "type", "unsafe", "use",
+    "where", "while",
 ];
 
 /// The pieces of a string literal. Anything else in one, such as a
@@ -197,12 +151,6 @@ pub fn lex(text: &str, out: &mut Tokens) {
                 }
                 continue;
             }
-            Ok(Token::FnName) => {
-                let name = lex.slice().trim_start_matches("fn").trim_start();
-                out.push(span.start..span.start + 2, Kind::Keyword);
-                out.push(span.end - name.len()..span.end, Kind::Function);
-                continue;
-            }
             Ok(Token::RawStr) => Kind::String,
             Ok(Token::Lifetime) => Kind::Lifetime,
             Ok(Token::Number) => Kind::Number,
@@ -210,10 +158,7 @@ pub fn lex(text: &str, out: &mut Tokens) {
             Ok(Token::Operator) => Kind::Operator,
             Ok(Token::Punctuation) => Kind::Punctuation,
             Ok(Token::Keyword) => Kind::Keyword,
-            Ok(Token::Constant) => Kind::Constant,
-            Ok(Token::Type) => Kind::Type,
-            Ok(Token::Function) => Kind::Function,
-            Ok(Token::Macro) => Kind::Macro,
+            Ok(Token::Bool) => Kind::Constant,
             Ok(Token::Ident) | Err(()) => continue,
         };
         out.push(span, kind);
@@ -248,7 +193,6 @@ mod tests {
             [
                 ("pub", Keyword),
                 ("fn", Keyword),
-                ("f", Function),
                 ("<", Operator),
                 ("'a", Lifetime),
                 (">", Operator),
@@ -256,19 +200,14 @@ mod tests {
                 (":", Punctuation),
                 ("&", Operator),
                 ("'a", Lifetime),
-                ("str", Type),
                 (")", Punctuation),
                 ("->", Operator),
-                ("Vec", Type),
                 ("<", Operator),
-                ("u8", Type),
                 (">", Operator),
                 ("{", Punctuation),
                 (".", Punctuation),
-                ("len", Function),
                 ("()", Punctuation),
                 ("as", Keyword),
-                ("u8", Type),
                 ("}", Punctuation),
             ]
         );
@@ -356,6 +295,7 @@ mod tests {
         );
         assert_eq!(kinds_of("x: &'a T", Kind::Lifetime), ["'a"]);
         assert_eq!(kinds_of("'outer: loop {}", Kind::Lifetime), ["'outer"]);
+        assert_eq!(kinds_of("'été 'é'", Kind::Lifetime), ["'été"]);
     }
 
     #[test]
@@ -385,7 +325,6 @@ mod tests {
             [
                 ("1", Kind::Number),
                 (".", Kind::Punctuation),
-                ("max", Kind::Function),
                 ("(", Kind::Punctuation),
                 ("2", Kind::Number),
                 (")", Kind::Punctuation),
@@ -396,39 +335,20 @@ mod tests {
     #[test]
     fn identifiers() {
         assert_eq!(
-            tokens("self Self MAX T Foo r#match r#Type x"),
+            tokens("self Self MAX Foo u8 r#match fnord naïvefn x true false"),
             [
                 ("self", Kind::Keyword),
-                ("Self", Kind::Type),
-                ("MAX", Kind::Constant),
-                ("T", Kind::Type),
-                ("Foo", Kind::Type),
-                ("r#Type", Kind::Type),
+                ("Self", Kind::Keyword),
+                ("true", Kind::Constant),
+                ("false", Kind::Constant),
             ]
         );
         assert_eq!(
-            kinds_of("println!(x) x != y x!=y", Kind::Macro),
-            ["println"]
-        );
-        assert_eq!(
-            kinds_of("a.collect::<Vec<_>>() f (x) Some(x)", Kind::Function),
-            ["collect"]
-        );
-        assert_eq!(kinds_of("true false", Kind::Constant), ["true", "false"]);
-        assert_eq!(kinds_of("x.unwrap_or(y)", Kind::Function), ["unwrap_or"]);
-        assert_eq!(kinds_of("macro_rules! m", Kind::Macro), ["macro_rules"]);
-        assert_eq!(
-            tokens("fn\n  r#try<T> fn(u8) fnord"),
+            tokens("println!(x)"),
             [
-                ("fn", Kind::Keyword),
-                ("r#try", Kind::Function),
-                ("<", Kind::Operator),
-                ("T", Kind::Type),
-                (">", Kind::Operator),
-                ("fn", Kind::Keyword),
+                ("!", Kind::Operator),
                 ("(", Kind::Punctuation),
-                ("u8", Kind::Type),
-                (")", Kind::Punctuation),
+                (")", Kind::Punctuation)
             ]
         );
     }
@@ -440,7 +360,7 @@ mod tests {
                 "#[derive(Debug)] #![allow(x)] #[rustfmt::skip] #[ cfg(test)]",
                 Kind::Attribute
             ),
-            ["#[derive", "#![allow", "#[rustfmt::skip", "#[ cfg"]
+            ["#[", "#![", "#[", "#["]
         );
     }
 

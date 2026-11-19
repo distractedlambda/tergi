@@ -195,15 +195,12 @@ Each language has its own lexer, written with Logos and kept in
 most identifiers, has no token. The theme maps kinds to colors when the
 line is drawn, so switching themes doesn't need to lex anything again.
 
-Colors come from lexing alone. There is no parser, so the lexer only
-knows what an identifier is from its spelling and from what comes right
-after it. In Rust, a capitalized name is a type, an all-caps one is a
-constant, a name followed by `!` is a macro, and a name followed by `(`
-or `::<` is a function. `fn` and the name after it are matched as one
-token, so the names of generic functions are colored too. Attributes are
-colored from `#[` up to the end of their path, such as `#[derive`,
-because finding where an attribute ends would take a parser. Escapes
-inside strings and characters are found with a second, smaller lexer.
+Colors come from lexing alone. There is no parser, so the lexer can't
+tell what an identifier names, and we don't guess from its spelling.
+Identifiers are plain unless they're keywords. Only the `#[` that starts
+an attribute is colored, because finding where an attribute ends would
+take a parser. Escapes inside strings and characters are found with a
+second, smaller lexer.
 
 The worker only highlights files that appear on screen.
 `request_visible_highlights` runs while drawing and asks for every file
@@ -288,8 +285,6 @@ Selected lines get the selection background instead.
 
 - A merge commit is diffed against its first parent only.
 - Only Rust files are highlighted.
-- Rust identifiers are only lexed in ASCII. Other identifiers are left
-  plain.
 - Word marks pair removed and added lines in order. When lines were
   inserted between edited ones, a line can be paired with the wrong
   partner, and then gets no marks or odd ones.

@@ -2,9 +2,7 @@
 //!
 //! Each language has a lexer of its own, written with Logos, and tokens
 //! get their colors from what the lexer alone can tell. There is no
-//! parser, so an identifier that a parser would know is a function or a
-//! type is only colored when its spelling or the next character gives it
-//! away.
+//! parser, so identifiers are plain unless they're keywords.
 //!
 //! When we have the full text of a file, we lex the whole file so that
 //! multi-line strings and comments come out right, then pick out the lines
@@ -30,12 +28,9 @@ pub enum Kind {
     /// An escape inside a string, such as `\n`.
     Escape,
     Number,
-    /// Named constants and literals such as `true`.
+    /// Literals spelled as words, such as `true`.
     Constant,
     Keyword,
-    Type,
-    Function,
-    Macro,
     Attribute,
     Lifetime,
     Operator,
