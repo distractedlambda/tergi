@@ -8,7 +8,7 @@ syntax colors are added.
 
 The diff model and the parser for `git diff` output are in
 `src/git/diff.rs`. Commit diffs are in `src/git/commit.rs`, word marks in
-`src/git/words.rs`, and syntax highlighting in `src/highlight.rs`. The
+`src/git/words.rs`, and syntax highlighting in `src/highlight/`. The
 rows are built in `src/app/doc.rs` and drawn by `draw_doc` in
 `src/ui/draw.rs`. How the working directory is loaded is in
 `staging.md`.
@@ -186,20 +186,39 @@ files change.
 ## Syntax highlighting
 
 Highlighting a large file takes too long to do while drawing. So it runs
-in the background, in a worker that `Highlighter::new` returns, using
-syntect with the syntaxes and themes from two-face.
+in the background, in a worker that `Highlighter::new` returns.
+
+Each language has its own lexer, written with Logos and kept in
+`src/highlight/`, one file per language. So far there is only Rust, in
+`rust.rs`. A lexer turns text into `Tokens`: byte ranges, each with a
+`Kind` such as `Comment`, `Keyword` or `Escape`. Plain text, such as
+most identifiers, has no token. The theme maps kinds to colors when the
+line is drawn, so switching themes doesn't need to lex anything again.
+
+Colors come from lexing alone. There is no parser, so the lexer only
+knows what an identifier is from its spelling and from what comes right
+after it. In Rust, a capitalized name is a type, an all-caps one is a
+constant, a name followed by `!` is a macro, and a name followed by `(`
+or `::<` is a function. `fn` and the name after it are matched as one
+token, so the names of generic functions are colored too. Attributes are
+colored from `#[` up to the end of their path, such as `#[derive`,
+because finding where an attribute ends would take a parser. Escapes
+inside strings and characters are found with a second, smaller lexer.
 
 The worker only highlights files that appear on screen.
 `request_visible_highlights` runs while drawing and asks for every file
 with a row on screen that hasn't been asked for yet. Each job carries the
 file's hunks and, when we have it, the full text of each side.
 
-With the full text, the worker highlights the whole file, up to the last
-line the diff shows. That way a line in the middle of a multi-line string
-or comment gets the right colors. Then it picks out the lines the diff
-shows by their line numbers. Without the full text, or for a file over
-20,000 lines, it highlights each hunk's old side and new side on its
-own. Context lines use the new side's colors when it has them.
+With the full text, the worker lexes the whole file, up to the last line
+the diff shows. That way a line in the middle of a multi-line string or
+comment gets the right colors. Then it splits the tokens up by line and
+picks out the lines the diff shows by their line numbers. Lexing is fast
+enough that files of any size we load are lexed whole. Without the full
+text, it lexes each hunk's old side and new side on its own. It joins
+the side's lines with newlines, leaving one off only where the file has
+none, so a hunk at the top of a file gets the same colors either way.
+Context lines use the new side's colors when it has them.
 
 We have the full text of both sides of every diff. A commit diff has
 them from gitoxide. For an unstaged file, the old side is in the index
@@ -213,16 +232,14 @@ the diff's `index` lines, which `--full-index` makes complete. Asking by
 path wouldn't work for every name. `git cat-file` reads one name per
 line, and a path like `1:x` names a stage of the index.
 
-The syntax is chosen by file name, then extension, then the first line,
-such as a `#!` line. Files that come out as plain text aren't
-highlighted.
+The language is chosen by the file's extension, in
+`Language::for_path`. Files in other languages aren't highlighted.
 
 ### Dropping stale results
 
 Highlights are keyed by section and file index, and those indexes mean
 something else after a reload. So `Detail` has a `Generation` that the
-highlighter shares. It moves on whenever the files change or the theme
-changes. Jobs from an older generation are skipped before the worker
+highlighter shares. It moves on whenever the files change. Jobs from an older generation are skipped before the worker
 starts them, and results from one are dropped when they arrive.
 
 ## Drawing a line
@@ -260,10 +277,19 @@ Selected lines get the selection background instead.
   their rows when the pane is rebuilt, when the view changes, and when
   files change, go away or appear.
 - `tests/ui.rs` has `folds_do_not_carry_over_to_other_commits`.
+- `src/highlight/rust.rs` has examples for each kind of Rust token,
+  such as nested comments, raw strings, escapes, and characters next to
+  lifetimes.
+- `src/highlight/mod.rs` has property tests that lexers never panic and
+  give tokens in order on character boundaries, and that every hunk line
+  gets the same colors with or without the full text, where it should.
 
 ## Known gaps
 
 - A merge commit is diffed against its first parent only.
+- Only Rust files are highlighted.
+- Rust identifiers are only lexed in ASCII. Other identifiers are left
+  plain.
 - Word marks pair removed and added lines in order. When lines were
   inserted between edited ones, a line can be paired with the wrong
   partner, and then gets no marks or odd ones.

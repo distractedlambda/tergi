@@ -17,6 +17,7 @@ use tergi::app::doc::{Row, Section};
 use tergi::app::input::Target;
 use tergi::app::planner::PlanAction;
 use tergi::app::{After, AppEvent};
+use tergi::highlight::Kind;
 use tergi::ui::draw::draw;
 use tergi::util::fs_path;
 
@@ -981,17 +982,23 @@ fn the_theme_menu_previews_themes() {
     let config = dir.path().join("config.toml");
     let mut ui = Ui::open_with_config(&s, Some(&config));
     ui.wait_loaded(0);
-    let colors = |u: &Ui| {
-        u.app
-            .detail
-            .highlights
-            .values()
-            .next()
-            .map(|h| format!("{:?}", h.lines))
+    // The color that `fn` in the diff is drawn in, if it's on screen.
+    let drawn = |u: &Ui| {
+        let buf = u.term.backend().buffer();
+        let a = buf.area;
+        (a.top()..a.bottom())
+            .flat_map(|y| (a.left()..a.right().saturating_sub(7)).map(move |x| (x, y)))
+            .find(|&(x, y)| {
+                (0..7).all(|i| buf[(x + i, y)].symbol() == &"fn main"[i as usize..][..1])
+            })
+            .map(|p| buf[p].fg)
     };
-    ui.wait("syntax highlighting", |u| colors(u).is_some());
+    let keyword = |u: &Ui| u.app.theme.syntax.color(Kind::Keyword);
+    ui.wait("syntax highlighting", |u| {
+        drawn(u).is_some_and(|c| Some(c) == keyword(u))
+    });
     let first = ui.app.theme.id;
-    let first_colors = colors(&ui);
+    let first_color = keyword(&ui);
     let open = |ui: &mut Ui| {
         ui.palette("choose theme");
         assert!(
@@ -1005,13 +1012,12 @@ fn the_theme_menu_previews_themes() {
     ui.key(KeyCode::Down);
     let second = ui.app.theme.id;
     assert_ne!(second, first);
-    ui.wait("new syntax colors", |u| {
-        colors(u).is_some_and(|c| Some(c) != first_colors)
-    });
+    assert_ne!(keyword(&ui), first_color);
+    ui.wait("new syntax colors", |u| drawn(u) == keyword(u));
     ui.key(KeyCode::Esc);
     assert!(ui.app.overlays.is_empty());
     assert_eq!(ui.app.theme.id, first);
-    ui.wait("the old syntax colors", |u| colors(u) == first_colors);
+    ui.wait("the old syntax colors", |u| drawn(u) == first_color);
     assert!(!config.exists());
 
     // Enter keeps the theme and saves it.

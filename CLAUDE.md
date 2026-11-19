@@ -123,8 +123,9 @@ in `run_cmd`. Destructive commands ask first through `confirm_for`.
 `app/doc.rs` flattens a commit's diff, or the staging view, into a list
 of `Row`s so it can be scrolled and drawn quickly. Line staging builds a
 partial patch in `git/patch.rs` and feeds it to `git apply`. Syntax
-highlighting runs in the background (`highlight.rs`) and is matched to
-the current document by generation.
+highlighting runs in the background (`highlight/`) and is matched to
+the current document by generation. Each language has its own lexer,
+written with Logos, and colors come from lexing alone.
 
 `ui/draw.rs` draws in two phases. First it computes the layout and stores
 it in `App::areas`. Then it draws and records clickable regions in

@@ -20,7 +20,7 @@ use crate::git::diff::{FileStatus, LineKind};
 use crate::git::rebase::RepoState;
 use crate::git::refs::LabelKind;
 use crate::highlight::LineSpans;
-use crate::theme::Theme;
+use crate::theme::{Syntax, Theme};
 use crate::ui::text::{self, put, put_line, truncate, width};
 use crate::util::{format_day, short_date};
 
@@ -1208,6 +1208,7 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                     det.hscroll,
                     Style::default().bg(bg).fg(t.fg),
                     spans,
+                    t.syntax,
                     marks.map(Vec::as_slice),
                     emph,
                     app.cfg.tab_width,
@@ -1292,6 +1293,7 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                         det.hscroll,
                         Style::default().bg(bg).fg(t.fg),
                         spans,
+                        t.syntax,
                         mk.map(Vec::as_slice),
                         emph,
                         app.cfg.tab_width,
@@ -1324,6 +1326,7 @@ fn draw_code(
     skip: usize,
     base: Style,
     spans: Option<&LineSpans>,
+    syntax: &Syntax,
     marks: Option<&[(usize, usize)]>,
     emph: Color,
     tab: usize,
@@ -1336,9 +1339,10 @@ fn draw_code(
             while span_i < sp.len() && (sp[span_i].1 as usize) <= cell.byte {
                 span_i += 1;
             }
-            if let Some(&(s, e, c)) = sp.get(span_i)
+            if let Some(&(s, e, kind)) = sp.get(span_i)
                 && (s as usize) <= cell.byte
                 && cell.byte < e as usize
+                && let Some(c) = syntax.color(kind)
             {
                 style = style.fg(c);
             }
@@ -1993,6 +1997,7 @@ mod tests {
             skip,
             Style::default(),
             None,
+            Theme::default().syntax,
             None,
             Color::Reset,
             4,

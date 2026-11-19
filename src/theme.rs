@@ -1,6 +1,6 @@
 //! Colors. Each theme comes from a color scheme whose authors published its
-//! palette for others to use, and comes with that scheme's syntax
-//! highlighting. A palette doesn't cover everything we draw, such as the
+//! palette for others to use, along with colors for syntax highlighting
+//! that follow the scheme's own. A palette doesn't cover everything we draw, such as the
 //! backgrounds of added and removed lines. We get those colors by mixing two
 //! of the palette's colors, much as an editor draws a color at partial
 //! opacity.
@@ -8,14 +8,15 @@
 //! Everything is 24-bit, since ghostty and most modern terminals support it.
 
 use ratatui::style::Color;
-use two_face::theme::EmbeddedThemeName as Syntax;
+
+use crate::highlight::Kind;
 
 #[derive(Debug, Clone)]
 pub struct Theme {
     /// The name to use in the config file.
     pub id: &'static str,
     pub name: &'static str,
-    pub syntax: Syntax,
+    pub syntax: &'static Syntax,
     pub bg: Color,
     pub panel: Color,
     pub bar: Color,
@@ -51,6 +52,51 @@ pub struct Theme {
     pub tag_fg: Color,
     pub rename_fg: Color,
     pub lanes: [Color; 8],
+}
+
+/// Colors for syntax highlighting, one for each kind of token. Tokens
+/// without a color, and plain text, are drawn in the theme's `fg`.
+///
+/// The colors come from each scheme's TextMate theme, the one bat and
+/// Sublime Text use. Each kind gets the color of the scope that comes
+/// closest, such as `entity.name.function` for functions or
+/// `constant.character.escape` for escapes.
+#[derive(Debug)]
+pub struct Syntax {
+    pub comment: u32,
+    pub string: u32,
+    pub escape: u32,
+    pub number: u32,
+    pub constant: u32,
+    pub keyword: u32,
+    pub ty: u32,
+    pub function: u32,
+    pub macro_: u32,
+    pub attribute: u32,
+    pub lifetime: u32,
+    pub operator: Option<u32>,
+    pub punctuation: Option<u32>,
+}
+
+impl Syntax {
+    pub fn color(&self, kind: Kind) -> Option<Color> {
+        let hex = match kind {
+            Kind::Comment => self.comment,
+            Kind::String => self.string,
+            Kind::Escape => self.escape,
+            Kind::Number => self.number,
+            Kind::Constant => self.constant,
+            Kind::Keyword => self.keyword,
+            Kind::Type => self.ty,
+            Kind::Function => self.function,
+            Kind::Macro => self.macro_,
+            Kind::Attribute => self.attribute,
+            Kind::Lifetime => self.lifetime,
+            Kind::Operator => self.operator?,
+            Kind::Punctuation => self.punctuation?,
+        };
+        Some(rgb(hex))
+    }
 }
 
 /// The colors we take from a published palette. Each palette below notes
@@ -152,13 +198,13 @@ impl Theme {
         PALETTES.iter().find(|p| p.id == id).map(Theme::build)
     }
 
-    fn build(p: &Palette) -> Theme {
+    fn build(p: &'static Palette) -> Theme {
         let tint = |c, most, least| rgb(tint(p.bg, p.fg, c, most, least));
         let badge = |c| tint(c, 70, 20);
         Theme {
             id: p.id,
             name: p.name,
-            syntax: p.syntax,
+            syntax: &p.syntax,
             bg: rgb(p.bg),
             panel: rgb(p.panel),
             bar: rgb(p.bar),
@@ -228,7 +274,21 @@ static PALETTES: [Palette; 12] = [
 const CATPPUCCIN_LATTE: Palette = Palette {
     id: "catppuccin-latte",
     name: "Catppuccin Latte",
-    syntax: Syntax::CatppuccinLatte,
+    syntax: Syntax {
+        comment: 0x7c7f93,
+        string: 0x40a02b,
+        escape: 0xea76cb,
+        number: 0xfe640b,
+        constant: 0xfe640b,
+        keyword: 0x8839ef,
+        ty: 0xdf8e1d,
+        function: 0x1e66f5,
+        macro_: 0x1e66f5,
+        attribute: 0xdf8e1d,
+        lifetime: 0x179299,
+        operator: Some(0x179299),
+        punctuation: Some(0x7c7f93),
+    },
     bg: 0xeff1f5,      // base
     panel: 0xe6e9ef,   // mantle
     bar: 0xdce0e8,     // crust
@@ -252,7 +312,21 @@ const CATPPUCCIN_LATTE: Palette = Palette {
 const CATPPUCCIN_FRAPPE: Palette = Palette {
     id: "catppuccin-frappe",
     name: "Catppuccin Frappé",
-    syntax: Syntax::CatppuccinFrappe,
+    syntax: Syntax {
+        comment: 0x949cbb,
+        string: 0xa6d189,
+        escape: 0xf4b8e4,
+        number: 0xef9f76,
+        constant: 0xef9f76,
+        keyword: 0xca9ee6,
+        ty: 0xe5c890,
+        function: 0x8caaee,
+        macro_: 0x8caaee,
+        attribute: 0xe5c890,
+        lifetime: 0x81c8be,
+        operator: Some(0x81c8be),
+        punctuation: Some(0x949cbb),
+    },
     bg: 0x303446,
     panel: 0x292c3c,
     bar: 0x232634,
@@ -275,7 +349,21 @@ const CATPPUCCIN_FRAPPE: Palette = Palette {
 const CATPPUCCIN_MACCHIATO: Palette = Palette {
     id: "catppuccin-macchiato",
     name: "Catppuccin Macchiato",
-    syntax: Syntax::CatppuccinMacchiato,
+    syntax: Syntax {
+        comment: 0x939ab7,
+        string: 0xa6da95,
+        escape: 0xf5bde6,
+        number: 0xf5a97f,
+        constant: 0xf5a97f,
+        keyword: 0xc6a0f6,
+        ty: 0xeed49f,
+        function: 0x8aadf4,
+        macro_: 0x8aadf4,
+        attribute: 0xeed49f,
+        lifetime: 0x8bd5ca,
+        operator: Some(0x8bd5ca),
+        punctuation: Some(0x939ab7),
+    },
     bg: 0x24273a,
     panel: 0x1e2030,
     bar: 0x181926,
@@ -298,7 +386,21 @@ const CATPPUCCIN_MACCHIATO: Palette = Palette {
 const CATPPUCCIN_MOCHA: Palette = Palette {
     id: "catppuccin-mocha",
     name: "Catppuccin Mocha",
-    syntax: Syntax::CatppuccinMocha,
+    syntax: Syntax {
+        comment: 0x9399b2,
+        string: 0xa6e3a1,
+        escape: 0xf5c2e7,
+        number: 0xfab387,
+        constant: 0xfab387,
+        keyword: 0xcba6f7,
+        ty: 0xf9e2af,
+        function: 0x89b4fa,
+        macro_: 0x89b4fa,
+        attribute: 0xf9e2af,
+        lifetime: 0x94e2d5,
+        operator: Some(0x94e2d5),
+        punctuation: Some(0x9399b2),
+    },
     bg: 0x1e1e2e,
     panel: 0x181825,
     bar: 0x11111b,
@@ -323,7 +425,21 @@ const CATPPUCCIN_MOCHA: Palette = Palette {
 const DRACULA: Palette = Palette {
     id: "dracula",
     name: "Dracula",
-    syntax: Syntax::Dracula,
+    syntax: Syntax {
+        comment: 0x6272a4,
+        string: 0xf1fa8c,
+        escape: 0xff79c6,
+        number: 0xbd93f9,
+        constant: 0xbd93f9,
+        keyword: 0xff79c6,
+        ty: 0x8be9fd,
+        function: 0x50fa7b,
+        macro_: 0x50fa7b,
+        attribute: 0x50fa7b,
+        lifetime: 0xff79c6,
+        operator: Some(0xff79c6),
+        punctuation: None,
+    },
     bg: 0x282a36,                     // background
     panel: 0x21222c,                  // background dark
     bar: 0x191a21,                    // background darker
@@ -349,7 +465,21 @@ const DRACULA: Palette = Palette {
 const GRUVBOX_DARK: Palette = Palette {
     id: "gruvbox-dark",
     name: "Gruvbox Dark",
-    syntax: Syntax::GruvboxDark,
+    syntax: Syntax {
+        comment: 0x928374,
+        string: 0xb8bb26,
+        escape: 0xfb4934,
+        number: 0xd3869b,
+        constant: 0xd3869b,
+        keyword: 0xfb4934,
+        ty: 0xfabd2f,
+        function: 0xb8bb26,
+        macro_: 0x8ec07c,
+        attribute: 0xfabd2f,
+        lifetime: 0xb8bb26,
+        operator: Some(0x8ec07c),
+        punctuation: None,
+    },
     bg: 0x282828,      // dark0
     panel: 0x1d2021,   // dark0_hard
     bar: 0x3c3836,     // dark1
@@ -373,7 +503,21 @@ const GRUVBOX_DARK: Palette = Palette {
 const GRUVBOX_LIGHT: Palette = Palette {
     id: "gruvbox-light",
     name: "Gruvbox Light",
-    syntax: Syntax::GruvboxLight,
+    syntax: Syntax {
+        comment: 0x928374,
+        string: 0x79740e,
+        escape: 0x9d0006,
+        number: 0x8f3f71,
+        constant: 0x8f3f71,
+        keyword: 0x9d0006,
+        ty: 0xb57614,
+        function: 0x79740e,
+        macro_: 0x427b58,
+        attribute: 0xb57614,
+        lifetime: 0x79740e,
+        operator: Some(0x427b58),
+        punctuation: None,
+    },
     bg: 0xfbf1c7,      // light0
     panel: 0xf2e5bc,   // light0_soft
     bar: 0xebdbb2,     // light1
@@ -399,7 +543,21 @@ const GRUVBOX_LIGHT: Palette = Palette {
 const NORD: Palette = Palette {
     id: "nord",
     name: "Nord",
-    syntax: Syntax::Nord,
+    syntax: Syntax {
+        comment: 0x616e88,
+        string: 0xa3be8c,
+        escape: 0xebcb8b,
+        number: 0xb48ead,
+        constant: 0x81a1c1,
+        keyword: 0x81a1c1,
+        ty: 0x8fbcbb,
+        function: 0x88c0d0,
+        macro_: 0x88c0d0,
+        attribute: 0x8fbcbb,
+        lifetime: 0x5e81ac,
+        operator: Some(0x81a1c1),
+        punctuation: None,
+    },
     bg: 0x2e3440,                     // nord0
     panel: 0x3b4252,                  // nord1
     bar: 0x3b4252,                    // nord1
@@ -425,7 +583,21 @@ const NORD: Palette = Palette {
 const ONE_HALF_DARK: Palette = Palette {
     id: "one-half-dark",
     name: "One Half Dark",
-    syntax: Syntax::OneHalfDark,
+    syntax: Syntax {
+        comment: 0x5c6370,
+        string: 0x98c379,
+        escape: 0x56b6c2,
+        number: 0xe5c07b,
+        constant: 0xe5c07b,
+        keyword: 0xc678dd,
+        ty: 0xe5c07b,
+        function: 0x61afef,
+        macro_: 0x61afef,
+        attribute: 0xe5c07b,
+        lifetime: 0xe5c07b,
+        operator: Some(0xc678dd),
+        punctuation: None,
+    },
     bg: 0x282c34,      // black
     panel: 0x313640,   // cursor_line
     bar: 0x313640,     // cursor_line
@@ -449,7 +621,21 @@ const ONE_HALF_DARK: Palette = Palette {
 const ONE_HALF_LIGHT: Palette = Palette {
     id: "one-half-light",
     name: "One Half Light",
-    syntax: Syntax::OneHalfLight,
+    syntax: Syntax {
+        comment: 0xa0a1a7,
+        string: 0x50a14f,
+        escape: 0x0997b3,
+        number: 0xc18401,
+        constant: 0xc18401,
+        keyword: 0xa626a4,
+        ty: 0xc18401,
+        function: 0x0184bc,
+        macro_: 0x0184bc,
+        attribute: 0xc18401,
+        lifetime: 0xc18401,
+        operator: Some(0xa626a4),
+        punctuation: None,
+    },
     bg: 0xfafafa,                     // white
     panel: 0xf0f0f0,                  // cursor_line
     bar: 0xf0f0f0,                    // cursor_line
@@ -477,7 +663,21 @@ const ONE_HALF_LIGHT: Palette = Palette {
 const SOLARIZED_DARK: Palette = Palette {
     id: "solarized-dark",
     name: "Solarized Dark",
-    syntax: Syntax::SolarizedDark,
+    syntax: Syntax {
+        comment: 0x586e75,
+        string: 0x2aa198,
+        escape: 0xdc322f,
+        number: 0x6c71c4,
+        constant: 0xcb4b16,
+        keyword: 0x859900,
+        ty: 0xb58900,
+        function: 0xb58900,
+        macro_: 0x859900,
+        attribute: 0xb58900,
+        lifetime: 0xb58900,
+        operator: Some(0x859900),
+        punctuation: Some(0x657b83),
+    },
     bg: 0x002b36,                         // base03
     panel: 0x073642,                      // base02
     bar: 0x073642,                        // base02
@@ -501,7 +701,21 @@ const SOLARIZED_DARK: Palette = Palette {
 const SOLARIZED_LIGHT: Palette = Palette {
     id: "solarized-light",
     name: "Solarized Light",
-    syntax: Syntax::SolarizedLight,
+    syntax: Syntax {
+        comment: 0x93a1a1,
+        string: 0x2aa198,
+        escape: 0xdc322f,
+        number: 0x6c71c4,
+        constant: 0xcb4b16,
+        keyword: 0x859900,
+        ty: 0xb58900,
+        function: 0xb58900,
+        macro_: 0x859900,
+        attribute: 0xb58900,
+        lifetime: 0xb58900,
+        operator: Some(0x859900),
+        punctuation: None,
+    },
     bg: 0xfdf6e3,                         // base3
     panel: 0xeee8d5,                      // base2
     bar: 0xeee8d5,                        // base2

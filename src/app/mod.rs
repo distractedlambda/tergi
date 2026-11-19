@@ -363,10 +363,9 @@ impl App {
         let theme = Theme::named(&cfg.theme).unwrap_or_default();
         let detail = Detail::default();
         let tx2 = tx.clone();
-        let (highlighter, highlight) =
-            Highlighter::new(theme.syntax, detail.generation.clone(), move |k, h| {
-                let _ = tx2.send(AppEvent::Highlight(k, h));
-            });
+        let (highlighter, highlight) = Highlighter::new(detail.generation.clone(), move |k, h| {
+            let _ = tx2.send(AppEvent::Highlight(k, h));
+        });
         tasks.spawn_on(highlight, &rt);
         let repo = Arc::new(repo);
         let (detail_tx, detail_rx) = tokio::sync::watch::channel(None);
@@ -911,9 +910,7 @@ impl App {
         let Some(theme) = Theme::named(id) else {
             return;
         };
-        self.highlighter.set_theme(theme.syntax);
         self.theme = theme;
-        self.detail.reset_highlights();
         // The commit details have colors in them.
         self.rebuild_doc();
     }

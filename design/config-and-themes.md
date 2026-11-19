@@ -93,7 +93,7 @@ at startup, the app tries again after the first save creates it.
 ### Applying
 
 `apply_config` only redoes what depends on the settings that changed. A
-new theme swaps the colors and restarts syntax highlighting. New context
+new theme swaps the colors. New context
 lines reload the working directory and the commit on screen. The tab
 width and the date style are read every frame, so they need nothing
 else.
@@ -101,9 +101,16 @@ else.
 ## Themes
 
 Each theme comes from a color scheme whose authors published its
-palette, such as Catppuccin, Gruvbox or Solarized. It is paired with the
-same scheme's syntax highlighting theme from two-face. The README lists
+palette, such as Catppuccin, Gruvbox or Solarized. The README lists
 them all. `dark` and `light` in the config mean the One Half themes.
+
+Each palette also has a `Syntax`, which gives a color to each kind of
+token that the lexers find (see `diffs.md`). Operators and punctuation
+can have no color, which leaves them in the text color. These colors
+are written out by hand. They come from the scheme's TextMate theme,
+the one bat and Sublime Text use. Each kind has the color that theme
+gives the scope that comes closest, such as `entity.name.function` for
+functions or `constant.character.escape` for escapes.
 
 A palette is a `Palette`: a background, a few surface shades, text in
 three strengths, an accent, red, yellow, green and magenta, and eight
@@ -130,11 +137,11 @@ Everything is 24-bit color.
 ### Previewing
 
 The theme menu (`Choose theme…` in the palette) switches themes as you
-move through it, without saving. `set_theme` changes the colors, sends
-the new syntax theme to the highlighter, and moves the highlight
-generation on so old colors are dropped. Closing the menu without
-choosing puts the saved theme back. Choosing one saves it like any other
-setting. `commands-and-input.md` explains how menus preview.
+move through it, without saving. `set_theme` changes the colors. The
+highlighter only stores the kind of each token, and drawing looks up
+the colors, so nothing has to be highlighted again. Closing the menu
+without choosing puts the saved theme back. Choosing one saves it like
+any other setting. `commands-and-input.md` explains how menus preview.
 
 ## Tests
 
