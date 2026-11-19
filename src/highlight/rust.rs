@@ -10,6 +10,9 @@ use super::{Kind, Tokens};
 
 #[derive(Logos, Debug, Clone, Copy, PartialEq, Eq)]
 #[logos(skip r"[ \t\r\n\f]+")]
+// An identifier or keyword, as the reference defines it with Unicode's
+// XID_Start and XID_Continue.
+#[logos(subpattern ident = r"[\p{XID_Start}_]\p{XID_Continue}*")]
 enum Token {
     #[regex(r"//[^\n]*", allow_greedy = true)]
     #[token("/*", block_comment)]
@@ -23,7 +26,8 @@ enum Token {
     #[regex(r##"[bc]?r#*""##, raw_string)]
     RawStr,
 
-    #[regex(r"'[a-zA-Z_[^\x00-\x7F]][a-zA-Z0-9_[^\x00-\x7F]]*")]
+    #[regex(r"'(?&ident)")]
+    #[regex(r"'r#(?&ident)")]
     Lifetime,
 
     #[regex(r"0x[0-9a-fA-F_]+([iu](8|16|32|64|128|size))?")]
@@ -46,12 +50,9 @@ enum Token {
     #[regex(r"[()\[\]{},;:.#$]|::")]
     Punctuation,
 
-    // Outside strings and comments, Rust only allows characters beyond
-    // ASCII in identifiers, so we take them all as identifier characters.
-    // Then a keyword at the end of a longer name isn't colored.
-    #[regex(r"[a-zA-Z_[^\x00-\x7F]][a-zA-Z0-9_[^\x00-\x7F]]*")]
+    #[regex(r"(?&ident)")]
     // A raw identifier such as `r#type` is never a keyword.
-    #[regex(r"r#[a-zA-Z_[^\x00-\x7F]][a-zA-Z0-9_[^\x00-\x7F]]*")]
+    #[regex(r"r#(?&ident)")]
     Ident,
 
     // The strict keywords, except reserved ones that nobody uses yet. Logos
@@ -321,6 +322,7 @@ mod tests {
         assert_eq!(kinds_of("x: &'a T", Kind::Lifetime), ["'a"]);
         assert_eq!(kinds_of("'outer: loop {}", Kind::Lifetime), ["'outer"]);
         assert_eq!(kinds_of("'été 'é'", Kind::Lifetime), ["'été"]);
+        assert_eq!(kinds_of("'r#fn: loop {}", Kind::Lifetime), ["'r#fn"]);
     }
 
     #[test]
@@ -367,6 +369,14 @@ mod tests {
                 ("true", Kind::Constant),
                 ("false", Kind::Constant),
             ]
+        );
+        assert_eq!(kinds_of("Größe x·fn _fn _ fn", Kind::Keyword), ["fn"]);
+        // Characters that can't be part of an identifier are errors, so
+        // they don't hide a keyword after them. A combining mark can
+        // continue an identifier but not start one.
+        assert_eq!(
+            kinds_of("🦀fn x→fn \u{301}fn", Kind::Keyword),
+            ["fn", "fn", "fn"]
         );
         assert_eq!(
             tokens("println!(x)"),
