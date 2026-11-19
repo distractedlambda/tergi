@@ -191,8 +191,8 @@ in the background, in a worker that `Highlighter::new` returns.
 Each language has its own lexer, written with Logos and kept in
 `src/highlight/`, one file per language: `c.rs` for C and C++,
 `rust.rs` for Rust, `racket.rs` for Racket and Scribble,
-`shrubbery.rs` for Rhombus, `toml.rs` for TOML, and `markdown.rs` for
-Markdown. A lexer turns text into `Tokens`: byte
+`shrubbery.rs` for Rhombus, `toml.rs` for TOML, `markdown.rs` for
+Markdown, and `gitignore.rs` for `.gitignore` files. A lexer turns text into `Tokens`: byte
 ranges, each with a `Kind` such as `Comment`, `Keyword` or `Escape`. Plain text, such as
 most identifiers, has no token. The theme maps kinds to colors when the
 line is drawn, so switching themes doesn't need to lex anything again.
@@ -388,6 +388,36 @@ lexer reads `1979-05-27 07:32:00` as one token. Anything else that
 isn't a space or a bracket is one plain word, so that `xtrue` isn't
 partly colored.
 
+### gitignore
+
+`gitignore.rs` reads `.gitignore` files the way git does. In git's
+source, `add_patterns_from_buffer` and `parse_path_pattern` in `dir.c`
+split the file into lines and find comments and negated patterns.
+`dowild` in `wildmatch.c` reads each pattern. Templates such as
+`Rust.gitignore` are gitignore files too.
+
+A `#` starts a comment only at the very start of a line. A `!` there
+negates the pattern and gets the keyword color. `*`, `**` and `?` get
+the operator color, and `/` gets the punctuation color. A backslash and
+the character it escapes get the escape color.
+
+In a bracket expression such as `[a-z]`, the brackets get the
+punctuation color. A `!` or `^` that negates it, and the `-` of a
+range, get the operator color. A class such as `[:alpha:]` gets the
+constant color. `dowild` has a few rules that the lexer copies:
+
+- It reads one item before it looks for the closing `]`, so `[]]`
+  holds a `]`.
+- A `-` makes a range only between two items. At the start or the end
+  it's plain, and so is a `-` right after a range or a class.
+- A `[:` without a `:]` to end it is just a `[` and a `:`. So `[[:]`
+  holds `[` and `:`.
+
+git gives up on a pattern when a bracket expression isn't closed or
+names a class that doesn't exist. The pattern then matches nothing, so
+the rest of its line stays plain. A backslash at the end of a pattern
+also makes it match nothing, and it stays plain too.
+
 ### Markdown
 
 `markdown.rs` follows CommonMark 0.31.2, along with the tables and task
@@ -570,6 +600,18 @@ Selected lines get the selection background instead.
   line. After a table, pulldown-cmark reads an indented line as code if
   it has a pipe, and as a row if it doesn't. We always read it as a
   row.
+- `src/highlight/gitignore.rs` has examples for comments, negation,
+  escapes and bracket expressions. Its property test builds random
+  patterns, many of them with tricky bracket expressions. From the
+  colors alone, it works out a path that the pattern should match, and
+  asks `git check-ignore` whether it does. When the pattern has no `*`,
+  each part of it matches one byte. So the test also changes one byte
+  of the path at a time to one that the colors say its part doesn't
+  match, and checks that git doesn't match the result. They agreed on
+  about 200,000 patterns while we wrote the lexer. We ask git rather
+  than gix's port of `wildmatch.c`, because the port reads some
+  bracket expressions differently, such as `[:aa[:]` and
+  `[\*-[:alpha:]`.
 - `src/highlight/mod.rs` has property tests that lexers never panic and
   give tokens in order on character boundaries, and that every hunk line
   gets the same colors with or without the full text, where it should.
@@ -577,8 +619,8 @@ Selected lines get the selection background instead.
 ## Known gaps
 
 - A merge commit is diffed against its first parent only.
-- Only C, C++, Rust, Racket, Rhombus, Scribble, TOML and Markdown
-  files are highlighted.
+- Only C, C++, Rust, Racket, Rhombus, Scribble, TOML, Markdown and
+  `.gitignore` files are highlighted.
 - In Markdown, the text of a setext heading and a table's header row
   are colored as paragraph text, and a code span, link or tag that
   goes on over several lines only gets its color on its last line.

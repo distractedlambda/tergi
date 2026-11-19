@@ -10,6 +10,7 @@
 //! new side on its own.
 
 mod c;
+mod gitignore;
 mod markdown;
 mod racket;
 mod rust;
@@ -82,6 +83,7 @@ impl Tokens {
 pub enum Language {
     C,
     Cpp,
+    Gitignore,
     Markdown,
     Racket,
     Rhombus,
@@ -107,6 +109,8 @@ impl Language {
             | "ipp" | "tpp" | "inl" | "cppm" | "ixx" | "ccm" | "cxxm" | "c++m" => {
                 Some(Language::Cpp)
             }
+            // `.gitignore`, and templates such as `Rust.gitignore`.
+            "gitignore" => Some(Language::Gitignore),
             "md" | "markdown" | "mdown" | "mkd" | "mkdn" | "mdwn" => Some(Language::Markdown),
             "rkt" | "rktl" | "rktd" => Some(Language::Racket),
             "rhm" => Some(Language::Rhombus),
@@ -121,6 +125,7 @@ impl Language {
         let mut out = Tokens::default();
         match self {
             Language::C | Language::Cpp => c::lex(text, self, &mut out),
+            Language::Gitignore => gitignore::lex(text, &mut out),
             Language::Markdown => markdown::lex(text, &mut out),
             Language::Racket | Language::Rhombus | Language::Scribble => {
                 racket::lex(text, self, &mut out);
@@ -318,7 +323,15 @@ mod tests {
     use crate::git::commit::diff_texts;
 
     const PATHS: &[&str] = &[
-        "a.c", "a.cpp", "a.md", "a.rkt", "a.rhm", "a.rs", "a.scrbl", "a.toml",
+        "a.c",
+        "a.cpp",
+        ".gitignore",
+        "a.md",
+        "a.rkt",
+        "a.rhm",
+        "a.rs",
+        "a.scrbl",
+        "a.toml",
     ];
 
     /// A line made of pieces that start or end strings, comments and
@@ -380,6 +393,8 @@ mod tests {
             "<?",
             "?>",
         ]);
+        // Pieces of gitignore patterns.
+        pieces.extend(["!", "**/", "?", "[!a-]", "[[:alpha:]]", "\\#"]);
         // Lines that choose how the rest of a Racket file is read.
         pieces.extend([
             "#lang at-exp racket",
@@ -458,6 +473,11 @@ mod tests {
         assert_eq!(Language::for_path("a.cpp"), Some(Language::Cpp));
         assert_eq!(Language::for_path("Cargo.toml"), Some(Language::Toml));
         assert_eq!(Language::for_path("x/Cargo.lock"), Some(Language::Toml));
+        assert_eq!(Language::for_path(".gitignore"), Some(Language::Gitignore));
+        assert_eq!(
+            Language::for_path("t/Rust.gitignore"),
+            Some(Language::Gitignore)
+        );
         assert_eq!(Language::for_path("a.lock"), None);
         assert_eq!(Language::for_path("a.b/c"), None);
         assert_eq!(Language::for_path("rs"), None);
