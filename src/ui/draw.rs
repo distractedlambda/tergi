@@ -909,7 +909,14 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 if let Some(ml) = det.meta.get(*m)
                     && buf.area.contains(Position::new(a.x + 2, y))
                 {
-                    put_line(buf, a.x + 2, y, &ml.line, a.width.saturating_sub(3));
+                    put_line(
+                        buf,
+                        a.x + 2,
+                        y,
+                        &ml.line,
+                        det.hscroll,
+                        a.width.saturating_sub(3),
+                    );
                 }
             }
             Row::Section(sec) => {

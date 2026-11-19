@@ -157,23 +157,37 @@ pub fn put(buf: &mut Buffer, x: u16, y: u16, s: &str, max: u16, style: Style) ->
 }
 
 /// Draw a ratatui `Line` span by span. Tabs in each span are measured from
-/// the start of that span.
-pub fn put_line(buf: &mut Buffer, x: u16, y: u16, line: &Line, max: u16) -> u16 {
+/// the start of that span. The first `skip` columns of the whole line are
+/// scrolled off to the left, as in `draw`.
+pub fn put_line(buf: &mut Buffer, x: u16, y: u16, line: &Line, skip: usize, max: u16) -> u16 {
     let mut end = x;
+    let mut col = 0;
     for span in &line.spans {
-        let room = max.saturating_sub(end - x);
-        let next = put(
-            buf,
-            end,
-            y,
-            &span.content,
-            room,
-            line.style.patch(span.style),
-        );
-        if next == end && !span.content.is_empty() {
+        let w = width(&span.content, PUT_TAB);
+        let start = col;
+        col += w;
+        if col <= skip {
+            continue;
+        }
+        // Place each span by the widths before it rather than by where the
+        // last one stopped drawing. A wide grapheme cut off at the left edge
+        // draws nothing, but it still takes up its columns.
+        let offset = start.saturating_sub(skip);
+        if offset >= usize::from(max) {
             break;
         }
-        end = next;
+        let sx = x + offset as u16;
+        let next = draw(
+            buf,
+            sx,
+            y,
+            &span.content,
+            skip.saturating_sub(start),
+            usize::from(max) - offset,
+            PUT_TAB,
+            |_| line.style.patch(span.style),
+        );
+        end = end.max(next);
     }
     end
 }
@@ -182,6 +196,7 @@ pub fn put_line(buf: &mut Buffer, x: u16, y: u16, line: &Line, max: u16) -> u16 
 mod tests {
     use proptest::prelude::*;
     use ratatui::layout::Rect;
+    use ratatui::text::Span;
     use unicode_width::UnicodeWidthStr;
 
     use super::*;
@@ -236,6 +251,25 @@ mod tests {
         // A wide grapheme cut by either edge is left out.
         assert_eq!(drawn("日本x", 1, 4), [" ", "本", "", "x"]);
         assert_eq!(drawn("ab日", 0, 3), ["a", "b", " "]);
+    }
+
+    #[test]
+    fn line_scrolled() {
+        let line = Line::from(vec![Span::raw("ab"), Span::raw("日"), Span::raw("cd")]);
+        let drawn = |skip, w| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, w, 1));
+            put_line(&mut buf, 0, 0, &line, skip, w);
+            buf.content()
+                .iter()
+                .map(|c| c.symbol().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(drawn(0, 4), ["a", "b", "日", ""]);
+        assert_eq!(drawn(1, 4), ["b", "日", "", "c"]);
+        // The cut-off half of 日 still pushes the next span right.
+        assert_eq!(drawn(3, 4), [" ", "c", "d", " "]);
+        assert_eq!(drawn(4, 4), ["c", "d", " ", " "]);
+        assert_eq!(drawn(9, 4), [" ", " ", " ", " "]);
     }
 
     #[test]

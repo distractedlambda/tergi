@@ -328,6 +328,24 @@ fn folds_do_not_carry_over_to_other_commits() {
 }
 
 #[test]
+fn long_message_lines_scroll_sideways() {
+    let s = Scratch::new();
+    s.write("a.txt", "a\n");
+    let long = format!("{}the end", "word ".repeat(40));
+    s.commit_all(&format!("Subject\n\n{long}"));
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(1);
+    ui.select_commit(1);
+    ui.draw();
+    assert!(!ui.screen().contains("the end"), "{}", ui.screen());
+    let r = ui.doc_row(|r| matches!(r, Row::Meta(_)));
+    for _ in 0..40 {
+        ui.mouse(MouseEventKind::ScrollRight, r.x, r.y);
+    }
+    assert!(ui.screen().contains("the end"), "{}", ui.screen());
+}
+
+#[test]
 fn leaving_a_commit_while_it_loads_stops_loading() {
     let s = repo_with_change();
     let mut ui = Ui::open(&s);
