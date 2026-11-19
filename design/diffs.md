@@ -189,8 +189,8 @@ Highlighting a large file takes too long to do while drawing. So it runs
 in the background, in a worker that `Highlighter::new` returns.
 
 Each language has its own lexer, written with Logos and kept in
-`src/highlight/`, one file per language: `rust.rs` for Rust and
-`racket.rs` for Racket and Scribble. A lexer turns text into `Tokens`:
+`src/highlight/`, one file per language: `rust.rs` for Rust,
+`racket.rs` for Racket and Scribble, and `shrubbery.rs` for Rhombus. A lexer turns text into `Tokens`:
 byte ranges, each with a
 `Kind` such as `Comment`, `Keyword` or `Escape`. Plain text, such as
 most identifiers, has no token. The theme maps kinds to colors when the
@@ -256,6 +256,58 @@ whitespace can depend on the next line, as with a `#;` at the end of a
 line and a `)` on the next one, which ends the comment early. Colors
 must not depend on what comes after a line, or a hunk lexed on its own
 would get different colors.
+
+### Rhombus
+
+Rhombus and its relatives, such as Shplait, are written in shrubbery
+notation. `shrubbery.rs` follows the lexer that DrRacket colors them
+with, in `lex.rkt` from the `shrubbery-lib` package. A `#lang` line
+for one of these languages makes the Racket lexer hand the rest of the
+file to it, so the language decides and not the file's name. A `.rhm`
+file without a `#lang` line is shrubbery, because it's a piece from the
+middle of a file. The Rhombus Scribble languages, such as
+`rhombus/scribble/manual`, read the whole file as text with @-forms in
+it. Their files are `.scrbl` files like Racket's Scribble documents.
+Without a `#lang` line, we read a `.scrbl` file as Racket Scribble.
+
+Identifiers are plain, like Racket's symbols, and so are `fun` and
+`def`, which are bound like any other name. Keywords such as `~into`
+get the keyword color, and so do the `@` of an @-form and the names in
+its command, as in `@rhombus` or `@foo.bar`. The operators get the
+operator color. `:`, `|`, `\`, `,` and `;` mean something to the parser,
+so they get the punctuation color, like brackets and `'` quotes.
+
+Some rules of the lexer are surprising:
+
+- After a term, a `+`, `-` or `.` doesn't start a number, so `x-1` is
+  `x`, `-` and `1`. After a string it does.
+- An operator can't end with `/` or `:`, unless it's all colons. But a
+  `/` right after an operator joins it, unless a `/` or `*` follows,
+  so `+/` is one operator and `+:` is two tokens.
+- A string can't hold a line break. A string that isn't finished, or
+  has a bad escape, is an error that runs to its closing quote or the
+  end of the line. We color it as a string anyway. An unfinished `/*`
+  comment gets the comment color, for the same reason as in Racket.
+- An identifier can contain emoji, but a single emoji character like
+  `©` that isn't shown as an emoji by default is an operator. The
+  lexer has a list of emoji sequences from an older version of the
+  Unicode standard. We use Unicode's emoji properties instead. They
+  mostly agree, but can differ on newer emoji and unusual sequences.
+- `#{...}` holds Racket data, which the Racket lexer reads up to the
+  `}`. In `~#{...}`, only a symbol right after the brace gets a color.
+
+A `#//` comments out the group after it, which can go on over several
+lines. Finding where that group ends takes the parser, so DrRacket
+guesses from the indentation and the brackets, in `lex-comment.rkt`.
+`Groups` does the same. That code keeps its own count of lines and
+columns, and it doesn't count lines inside `#{...}` or a tab inside a
+token. We copy that, so that the colors are the same as DrRacket's.
+The guess only depends on what came before a token, so a line's colors
+never depend on the lines after it.
+
+DrRacket's full shrubbery lexer adds `lex-open-close.rkt` on top. That
+layer reports the invisible parentheses that indentation makes, and it
+doesn't change any colors, so we leave it out.
 
 The worker only highlights files that appear on screen.
 `request_visible_highlights` runs while drawing and asks for every file
@@ -351,6 +403,15 @@ Selected lines get the selection background instead.
   Scribble and `at-exp` files in Racket's own source the same way. The
   only differences were here strings, where Racket counts the linefeed
   after the terminator and the lexer doesn't, which changes no colors.
+- `src/highlight/shrubbery.rs` has examples for each kind of shrubbery
+  token, such as numbers and operators after a term, group comments,
+  quotes, Racket data, @-forms and Rhombus Scribble text. Like the
+  Racket lexer, nothing runs the real one automatically. When we wrote
+  it, we checked each character's color against DrRacket's lexer on
+  about 90,000 random texts and on the 1,091 Rhombus files in Racket's
+  source, and they agreed on all of them. We left out about 1,000
+  random texts that made the real lexer fail, for example on a `²`
+  followed by a letter, which no rule of its lexer matches.
 - `src/highlight/mod.rs` has property tests that lexers never panic and
   give tokens in order on character boundaries, and that every hunk line
   gets the same colors with or without the full text, where it should.
@@ -358,7 +419,9 @@ Selected lines get the selection background instead.
 ## Known gaps
 
 - A merge commit is diffed against its first parent only.
-- Only Rust, Racket and Scribble files are highlighted.
+- Only Rust, Racket, Rhombus and Scribble files are highlighted.
+- A hunk from the middle of a Rhombus Scribble document that we don't
+  have the full text for is lexed as Racket Scribble.
 - Other Racket languages with a reader of their own, such as
   `#lang datalog`, are lexed with the default reader. So is
   `#reader scribble/reader`.

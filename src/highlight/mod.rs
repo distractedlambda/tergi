@@ -11,6 +11,7 @@
 
 mod racket;
 mod rust;
+mod shrubbery;
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -59,11 +60,25 @@ impl Tokens {
         }
         self.0.push((r, kind));
     }
+
+    /// Color the range `r` of `text` as a comment, but not the whitespace
+    /// at the end of each of its lines. Whether a comment that covers
+    /// several lines covers the whitespace at the end of one can depend
+    /// on what comes on the next line, and colors shouldn't.
+    fn push_comment(&mut self, text: &str, r: Range<usize>) {
+        let mut start = r.start;
+        for line in text[r].split_inclusive('\n') {
+            let end = start + line.trim_end().len();
+            self.push(start..end, Kind::Comment);
+            start += line.len();
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
     Racket,
+    Rhombus,
     Rust,
     Scribble,
 }
@@ -74,6 +89,7 @@ impl Language {
         let name = path.rsplit('/').next().unwrap_or(path);
         match name.rsplit_once('.')?.1 {
             "rkt" | "rktl" | "rktd" => Some(Language::Racket),
+            "rhm" => Some(Language::Rhombus),
             "rs" => Some(Language::Rust),
             "scrbl" => Some(Language::Scribble),
             _ => None,
@@ -83,9 +99,10 @@ impl Language {
     pub fn lex(self, text: &str) -> Tokens {
         let mut out = Tokens::default();
         match self {
-            Language::Racket => racket::lex(text, false, &mut out),
+            Language::Racket | Language::Rhombus | Language::Scribble => {
+                racket::lex(text, self, &mut out);
+            }
             Language::Rust => rust::lex(text, &mut out),
-            Language::Scribble => racket::lex(text, true, &mut out),
         }
         out
     }
@@ -276,7 +293,7 @@ mod tests {
     use super::*;
     use crate::git::commit::diff_texts;
 
-    const PATHS: &[&str] = &["a.rkt", "a.rs", "a.scrbl"];
+    const PATHS: &[&str] = &["a.rkt", "a.rhm", "a.rs", "a.scrbl"];
 
     /// A line made of pieces that start or end strings, comments and
     /// @-forms in some language, along with tabs, wide characters and a
@@ -288,8 +305,17 @@ mod tests {
             "b'", "'a'", "中", "👍", "e\u{301}", "\r", "#|", "|#", "#;", ";", "|", "#\\", "#<<",
             "1/2", "#:", "@", "@;", "@foo", "[", "]", "|{", "}|", "|<{", "}>|", "|<@",
         ];
+        // Pieces of shrubbery notation.
+        pieces.extend([
+            "#//", "~kw", "#{", "~#{", "«", "»", ":", "-1", "1.", "x.y", ",", "  ", "@//", "a:",
+        ]);
         // Lines that choose how the rest of a Racket file is read.
-        pieces.extend(["#lang at-exp racket", "#lang scribble/manual"]);
+        pieces.extend([
+            "#lang at-exp racket",
+            "#lang scribble/manual",
+            "#lang rhombus",
+            "#lang rhombus/scribble/manual",
+        ]);
         let piece = prop::sample::select(pieces);
         prop::collection::vec(piece, 0..8).prop_map(|p| p.concat())
     }
@@ -355,6 +381,7 @@ mod tests {
         assert_eq!(Language::for_path("src/main.rs"), Some(Language::Rust));
         assert_eq!(Language::for_path("info.rkt"), Some(Language::Racket));
         assert_eq!(Language::for_path("doc.scrbl"), Some(Language::Scribble));
+        assert_eq!(Language::for_path("main.rhm"), Some(Language::Rhombus));
         assert_eq!(Language::for_path("a.b/c"), None);
         assert_eq!(Language::for_path("rs"), None);
     }

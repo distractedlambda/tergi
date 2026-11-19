@@ -13,7 +13,7 @@
 
 use logos::{Lexer, Logos};
 
-use super::{Kind, Tokens};
+use super::{Kind, Language, Tokens, shrubbery};
 
 /// How to lex the next Racket token.
 #[derive(Debug, Clone, Copy, Default)]
@@ -614,6 +614,9 @@ enum End {
     /// One datum, which is the command of an @-form, such as `foo` in
     /// `@foo{text}`.
     Command,
+    /// The `}` after Racket data in shrubbery notation, as in `#{x}`.
+    /// The `}` isn't part of the data.
+    Brace,
 }
 
 /// Racket data, up to its `End`.
@@ -721,6 +724,9 @@ struct Lex<'a> {
     /// How many frames on the stack are comments. Nothing inside a
     /// comment gets a color of its own.
     comments: usize,
+    /// Set when a `#lang` line chooses a language that uses shrubbery
+    /// notation. It says whether the language reads text.
+    shrubbery: Option<bool>,
 }
 
 impl Lex<'_> {
@@ -810,12 +816,7 @@ impl Lex<'_> {
     /// end of a line can depend on what comes on the next line, as in
     /// `#;` followed by a `)` that ends it, and colors shouldn't.
     fn comment(&mut self, r: std::ops::Range<usize>) {
-        let mut start = r.start;
-        for line in self.text[r].split_inclusive('\n') {
-            let end = start + line.trim_end().len();
-            self.out.push(start..end, Kind::Comment);
-            start += line.len();
-        }
+        self.out.push_comment(self.text, r);
     }
 
     /// Read the next Racket token. Returns false at the end of the text.
@@ -904,7 +905,7 @@ impl Lex<'_> {
                     && match end {
                         End::Bracket | End::Bar => true,
                         End::Comment { items, .. } => items,
-                        End::Text | End::Command => false,
+                        End::Text | End::Command | End::Brace => false,
                     };
                 let start = span.start;
                 self.push(Frame::Data(Data::new(End::Comment { start, items }, bars)));
@@ -932,7 +933,7 @@ impl Lex<'_> {
                         d.depth -= 1;
                     }
                     self.datum();
-                } else if end == End::Text {
+                } else if end == End::Text || end == End::Brace && slice != "}" {
                     self.emit(span, Kind::Punctuation);
                 } else if end == End::Bracket && slice == "]" {
                     self.emit(span, Kind::Punctuation);
@@ -981,6 +982,12 @@ impl Lex<'_> {
         if let Some(kind) = kind {
             self.emit(span, kind);
         }
+        if let Some(text_mode) = self.shrubbery {
+            shrubbery::lex(text, self.pos, text_mode, self.out);
+            self.stack.clear();
+            self.pos = text.len();
+            return false;
+        }
         self.datum();
         true
     }
@@ -988,6 +995,7 @@ impl Lex<'_> {
     /// Choose the reader for the rest of the file from the name of its
     /// language.
     fn choose_reader(&mut self, lang: &str) {
+        self.shrubbery = shrubbery::reader(lang);
         let mut words = lang.split_whitespace();
         let mut name = words.next().unwrap_or("");
         self.at_exp = name == "at-exp";
@@ -1161,14 +1169,19 @@ impl Lex<'_> {
     }
 }
 
-/// Lex a file of Racket code, or of Scribble text when `scribble` is set.
-/// A `#lang` line at the start chooses the reader either way.
-pub fn lex(text: &str, scribble: bool, out: &mut Tokens) {
+/// Lex a file of Racket code, Scribble text, or Rhombus code, as `lang`
+/// says. A `#lang` line at the start chooses the reader either way.
+pub fn lex(text: &str, lang: Language, out: &mut Tokens) {
     let mode = Mode::default();
-    // A Scribble document is text unless it starts with a `#lang` line.
-    // Without one, it's a piece from the middle of a file.
-    let text_first =
-        scribble && Token::lexer_with_extras(text, mode).next() != Some(Ok(Token::Lang));
+    // Without a `#lang` line, the text is a piece from the middle of a
+    // file, and its name tells us how to read it.
+    let lang_line = Token::lexer_with_extras(text, mode).next() == Some(Ok(Token::Lang));
+    if lang == Language::Rhombus && !lang_line {
+        shrubbery::lex(text, 0, false, out);
+        return;
+    }
+    let scribble = lang == Language::Scribble;
+    let text_first = scribble && !lang_line;
     let base = if text_first {
         Frame::text(None, None, false)
     } else {
@@ -1183,8 +1196,41 @@ pub fn lex(text: &str, scribble: bool, out: &mut Tokens) {
         at_exp: false,
         first: !text_first,
         comments: 0,
+        shrubbery: None,
     };
     lex.run();
+}
+
+/// Lex the Racket data in `#{...}` in shrubbery notation, from `start` up
+/// to the `}` that ends it. Returns where the last token before the `}`
+/// ends.
+pub fn lex_braced(text: &str, start: usize, out: &mut Tokens) -> usize {
+    let mut lex = Lex {
+        text,
+        out,
+        stack: vec![Frame::Data(Data::new(End::Brace, false))],
+        pos: start,
+        at: false,
+        at_exp: false,
+        first: false,
+        comments: 0,
+        shrubbery: None,
+    };
+    lex.run();
+    lex.pos
+}
+
+/// The length of the symbol at the very start of `text`, if one is there.
+pub fn symbol_len(text: &str) -> Option<usize> {
+    let mut lex = Token::lexer_with_extras(text, Mode::default());
+    let token = lex.next()?;
+    let slice = lex.slice();
+    let symbol = match token {
+        Ok(Token::Symbol) => true,
+        Ok(Token::Atom) => slice != "." && (slice.contains(['|', '\\']) || !is_number(slice)),
+        _ => false,
+    };
+    (symbol && lex.span().start == 0).then_some(slice.len())
 }
 
 #[cfg(test)]
@@ -1195,14 +1241,14 @@ mod tests {
     /// nothing between them come out as one.
     fn tokens(text: &str) -> Vec<(&str, Kind)> {
         let mut out = Tokens::default();
-        lex(text, false, &mut out);
+        lex(text, Language::Racket, &mut out);
         out.0.iter().map(|(r, k)| (&text[r.clone()], *k)).collect()
     }
 
     /// Like `tokens`, for a Scribble file.
     fn scribble(text: &str) -> Vec<(&str, Kind)> {
         let mut out = Tokens::default();
-        lex(text, true, &mut out);
+        lex(text, Language::Scribble, &mut out);
         out.0.iter().map(|(r, k)| (&text[r.clone()], *k)).collect()
     }
 
