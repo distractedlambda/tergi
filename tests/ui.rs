@@ -202,9 +202,10 @@ fn menus_from_the_keyboard_open_in_the_middle() {
     assert_eq!(anchor(&ui), None);
     ui.key(KeyCode::Esc);
 
-    // And the context menu key.
+    // The context menu key is the exception. Its menu opens next to the
+    // selected row, because that's what it acts on.
     ui.key(KeyCode::Char('.'));
-    assert_eq!(anchor(&ui), None);
+    assert!(anchor(&ui).is_some());
 }
 
 #[test]

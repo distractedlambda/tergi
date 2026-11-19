@@ -1584,8 +1584,9 @@ impl App {
         }));
     }
 
-    /// Open the right-click menu for the focused pane, at `at` or in the
-    /// middle of the screen.
+    /// Open the right-click menu for the focused pane, at `at` or near the
+    /// selected row. Unlike other menus, it stays near the row when the
+    /// keyboard opens it, because it acts on that row.
     pub fn open_context_menu(&mut self, at: Option<(u16, u16)>) {
         let items: Vec<ActionDef> = self
             .actions(self.context())
@@ -1595,11 +1596,33 @@ impl App {
         if items.is_empty() {
             return;
         }
+        let anchor = at.unwrap_or_else(|| {
+            let a = match self.focus {
+                Focus::Sidebar => (
+                    self.areas.sidebar,
+                    self.sidebar.selected.saturating_sub(self.sidebar.scroll),
+                ),
+                Focus::History => (
+                    self.areas.history,
+                    self.history
+                        .current_row()
+                        .saturating_sub(self.history.scroll),
+                ),
+                _ => (
+                    self.areas.doc,
+                    self.detail.cursor.saturating_sub(self.detail.scroll),
+                ),
+            };
+            (
+                a.0.x + 4,
+                a.0.y + (a.1 as u16).min(a.0.height.saturating_sub(1)) + 1,
+            )
+        });
         self.overlays.push(Overlay::Menu(Menu {
             title: None,
             items,
             selected: 0,
-            anchor: at,
+            anchor: Some(anchor),
             scroll: 0,
             preview: None,
         }));
