@@ -28,7 +28,7 @@ use crate::git::log::{self, CommitInfo};
 use crate::git::rebase::{self, RepoState};
 use crate::git::refs::{Label, Refs};
 use crate::git::workdir::Workdir;
-use crate::highlight::{self, FileHighlight, Highlighter};
+use crate::highlight::{self, Colors, FileHighlight, Highlighter};
 use crate::theme::Theme;
 use crate::ui::textarea::TextArea;
 use crate::util::Generation;
@@ -363,10 +363,13 @@ impl App {
         let theme = Theme::named(&cfg.theme).unwrap_or_default();
         let detail = Detail::default();
         let tx2 = tx.clone();
-        let (highlighter, highlight) =
-            Highlighter::new(theme.syntax, detail.generation.clone(), move |k, h| {
+        let (highlighter, highlight) = Highlighter::new(
+            Colors::new(theme.syntax),
+            detail.generation.clone(),
+            move |k, h| {
                 let _ = tx2.send(AppEvent::Highlight(k, h));
-            });
+            },
+        );
         tasks.spawn_on(highlight, &rt);
         let repo = Arc::new(repo);
         let (detail_tx, detail_rx) = tokio::sync::watch::channel(None);
@@ -911,7 +914,7 @@ impl App {
         let Some(theme) = Theme::named(id) else {
             return;
         };
-        self.highlighter.set_theme(theme.syntax);
+        self.highlighter.set_theme(Colors::new(theme.syntax));
         self.theme = theme;
         self.detail.reset_highlights();
         // The commit details have colors in them.

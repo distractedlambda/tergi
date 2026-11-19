@@ -101,9 +101,30 @@ else.
 ## Themes
 
 Each theme comes from a color scheme whose authors published its
-palette, such as Catppuccin, Gruvbox or Solarized. It is paired with the
-same scheme's syntax highlighting theme from two-face. The README lists
+palette, such as Catppuccin, Gruvbox or Solarized. The README lists
 them all. `dark` and `light` in the config mean the One Half themes.
+
+Each palette comes with a `Syntax`, the colors for syntax highlighting.
+It maps the names that tree-sitter queries give to pieces of code, such
+as `keyword` or `string.escape`, to colors. `diffs.md` explains how
+names that a theme leaves out get a color.
+
+These colors are written out by hand. They come from the scheme's
+TextMate theme, the one bat and Sublime Text use. Each name has the
+color that the TextMate theme gives the scope that comes closest, such
+as `entity.name.function` for `function` or `constant.character.escape`
+for `string.escape`. Where the general scope has the plain text color
+but the language syntaxes use a more specific one, the color comes from
+that. Markdown headings are an example. Their scope is
+`entity.name.section`.
+
+Two things differ from the TextMate themes on purpose. Identifiers
+aren't colored. Tree-sitter calls every identifier a `variable`, while
+TextMate grammars only give a few of them that scope, so coloring it
+would turn most of the code one color. Built-in types such as `u32` take
+the color of other types instead of the keyword color some schemes give
+them. Plain code uses the syntax theme's own `fg`. In Gruvbox that's a
+brighter shade than the palette's text color, as in its TextMate theme.
 
 A palette is a `Palette`: a background, a few surface shades, text in
 three strengths, an accent, red, yellow, green and magenta, and eight
@@ -131,7 +152,7 @@ Everything is 24-bit color.
 
 The theme menu (`Choose theme…` in the palette) switches themes as you
 move through it, without saving. `set_theme` changes the colors, sends
-the new syntax theme to the highlighter, and moves the highlight
+the new syntax colors to the highlighter, and moves the highlight
 generation on so old colors are dropped. Closing the menu without
 choosing puts the saved theme back. Choosing one saves it like any other
 setting. `commands-and-input.md` explains how menus preview.
