@@ -2,31 +2,50 @@
 
 Known problems that nobody has fixed yet.
 
-## Markdown headings that start with inline code get the wrong colors
+## Highlighting JavaScript can hang forever
 
-In a Markdown heading like ``# `code` title``, the closing backtick
-and the word `code` get the wrong colors, and so does the rest of the
-heading. ` title` comes out in the inline code color instead of the
-heading color. The same happens wherever an outer highlight and a
-highlight from an injected language start at the same byte. Examples
-are a link or emphasis that starts a heading, or a template string
-whose embedded language highlights its first character.
+A JavaScript line with a value, a space and a block comment makes
+syntect loop forever. `a = 1 /* c */`, `return x /* c */` and
+``x = `a` /* c */`` all do it. So does ``"`a` /*"``, with no end to the
+comment. `f() /* c */`, `a = 1; /* c */` and ``a = `s` // c`` don't.
+The highlighter handles one job at a time, so after this no file gets
+colors for the rest of the session. A blocking thread also spins at
+full CPU until tergi exits, because nothing can stop it.
 
-To see it, highlight ``"# `code` title\n"`` with `highlight_lines` in
-`src/highlight/mod.rs` and look at the spans of ` title`.
+To see it, run `highlight_lines` with the JavaScript syntax on
+`"a = 1 /* c */\n"`. It never returns, in debug or release builds.
 
-The cause is the order of tree-sitter-highlight's events (0.27.2).
-`HighlightIterLayer::sort_key` sorts by `(offset, is_start, -depth)`.
-So when an outer layer and an injected layer both start a highlight at
-the same byte, the injected one starts first, although it lies inside
-the outer one. The events don't say which layer they come from, so the
-color stack in `highlight_text` pops the wrong entries after that.
-`markdown_highlights` works around this for fenced code blocks by
-leaving out the outer patterns there.
+The cause is two rules in the JavaScript syntax from two-face 0.5.2
+(bat 0.26.1), together with syntect 5.3.0. After an expression, one
+context has a lookahead for "only spaces and comments until the end of
+the line", roughly `(?=(?:\s+|/\*.*?\*/)*(?:/\*.*)?$)`. It `set`s
+another context without consuming anything. That context has a
+lookahead for a binary operator after optional spaces, `(?=\s*[-+*/%...])`.
+The `/` of the comment matches it, so it `set`s the first context back,
+again without consuming anything. `ParseState::parse_next_token` in
+syntect only breaks loops where a push that consumes nothing is
+followed by a pop that consumes nothing. Its own comment says that a
+`set` can loop too, but it doesn't check for that. Without the space,
+the comment rule in the prototype matches first at the same position,
+so there's no loop.
 
-Fixing it in tree-sitter-highlight would mean sorting starts at the
-same offset with the outer layer first. Without that, tergi could walk
-the layers itself with tree-sitter's query cursors, as editors do.
+To trace it, copy syntect into a scratch folder, point a
+`[patch.crates-io]` entry at it, and print each match in
+`parse_next_token` (position, stack depth, operation and regex). The
+two contexts were 148 and 11 of syntax 37 in that build.
+
+Things to find out before fixing it:
+
+- Does upstream syntect or bat already know about this? A fix in
+  syntect that also breaks loops of `set`s would be best. Sublime Text
+  moves on by one character when it sees such a loop.
+- Until then, tergi could guard against it. Some options are a patched
+  syntect, editing the syntax before use, or highlighting in a separate
+  process that we can kill after a timeout.
+- Do other syntaxes, such as TypeScript or JSX, have the same loop?
+
+The property test in `src/highlight.rs` leaves JavaScript out because of
+this. Put `a.js` back in its `PATHS` once it's fixed.
 
 ## Copies are found from the wrong version of a changed file
 

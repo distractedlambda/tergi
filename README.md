@@ -10,8 +10,7 @@ and the kitty keyboard protocol, such as ghostty, kitty or WezTerm.
 
 ## Building
 
-You need a recent stable Rust toolchain, a C compiler for the
-tree-sitter grammars, and `git` on your `PATH`.
+You need a recent stable Rust toolchain and `git` on your `PATH`.
 
 ```sh
 cargo install --path .
@@ -176,7 +175,7 @@ symlink, tergi writes to the file the link points to.
 ## Themes
 
 Each theme uses the colors that a popular color scheme publishes, and
-the same scheme's colors for syntax highlighting. To try them out, press Ctrl+P and
+the same scheme's syntax highlighting. To try them out, press Ctrl+P and
 run "Choose theme…". The theme changes as you move through the list.
 Press Enter to keep one and save it to the config file, or Esc to go
 back.
@@ -199,11 +198,6 @@ back.
 - There is no search, file history or blame yet.
 - Merge conflicts are resolved by picking a side or editing the file.
   There is no three-way merge view.
-- Syntax highlighting covers Bash, C, C++, C#, CSS, diffs, Elixir, Go,
-  Haskell, HTML, INI, Java, JavaScript, JSON, Lua, Make, Markdown, Nix,
-  OCaml, PHP, Protocol Buffers, Python, Racket, Ruby, Rust, Scala,
-  Swift, TOML, TypeScript, XML, YAML and Zig. Files in other languages
-  are shown without colors.
 
 ## License
 

@@ -187,30 +187,19 @@ files change.
 
 Highlighting a large file takes too long to do while drawing. So it runs
 in the background, in a worker that `Highlighter::new` returns, using
-tree-sitter and the parsers and highlight queries from each language's
-grammar crate.
+syntect with the syntaxes and themes from two-face.
 
 The worker only highlights files that appear on screen.
 `request_visible_highlights` runs while drawing and asks for every file
 with a row on screen that hasn't been asked for yet. Each job carries the
 file's hunks and, when we have it, the full text of each side.
 
-Tree-sitter parses a whole text at once. Text further down can change
-how a line reads, and there is no state to pick up partway through. So
-with the full text, the worker parses all of it and goes through the
-highlights up to the last line the diff shows. Then it picks out the
-lines the diff shows by their line numbers. Without the full text, it
-highlights each hunk's old side and new side as a text of its own.
-Tree-sitter makes what it can of such a fragment. Context lines use the
-new side's colors when they have them.
-
-Parsing is fast enough that there is no size limit beyond `MAX_BLOB`. A
-4 MB file takes between a fifth and half a second in a release build.
-Markdown, which parses its inline text and code blocks separately,
-takes about a second. A job that runs over five seconds is stopped, and
-so is one whose generation is no longer current (see below). Both work
-through tree-sitter's cancellation flag, which the worker sets while the
-job runs on a blocking thread.
+With the full text, the worker highlights the whole file, up to the last
+line the diff shows. That way a line in the middle of a multi-line string
+or comment gets the right colors. Then it picks out the lines the diff
+shows by their line numbers. Without the full text, or for a file over
+20,000 lines, it highlights each hunk's old side and new side on its
+own. Context lines use the new side's colors when it has them.
 
 We have the full text of both sides of every diff. A commit diff has
 them from gitoxide. For an unstaged file, the old side is in the index
@@ -224,57 +213,9 @@ the diff's `index` lines, which `--full-index` makes complete. Asking by
 path wouldn't work for every name. `git cat-file` reads one name per
 line, and a path like `1:x` names a stage of the index.
 
-### Languages
-
-`src/highlight/languages.rs` lists the languages. Each one has its
-names, extensions, whole file names such as `Makefile`, and the programs
-a `#!` line can name. A file's language is found by its name, then its
-extension, then its `#!` line. Files in other languages aren't
+The syntax is chosen by file name, then extension, then the first line,
+such as a `#!` line. Files that come out as plain text aren't
 highlighted.
-
-Each grammar crate ships the queries its authors wrote for
-`tree-sitter highlight`. We use them as they are, with a few
-exceptions:
-
-- TypeScript and TSX build on the JavaScript queries, and C++ on the C
-  ones. As in the grammars' `tree-sitter.json`, the base queries come
-  first, because the last pattern that matches a node wins.
-- The PHP crate leaves out the query that parses the HTML around the
-  code, so we add it.
-- In the Markdown queries we take out two patterns that hide the colors
-  of code blocks. We also hand the grammars that Markdown injects the
-  punctuation that the block grammar keeps as separate nodes, or they
-  would parse code with its `=` and `;` cut out. The comments on
-  `markdown_highlights` and `markdown_injections` explain more.
-
-Injections highlight one language inside another, such as the script in
-an HTML page or a code block in Markdown. The worker finds the injected
-language by name with `languages::named`, which also accepts
-extensions, so a code block marked `py` works.
-
-Compiling a language's queries takes a while, so it happens the first
-time a file in that language is highlighted.
-
-### Colors
-
-The queries give each piece of code a name, such as `keyword`,
-`string.escape` or `function.method`. Older queries use older names,
-such as `conditional` or `text.title`. `NAMES` in `src/highlight/mod.rs`
-lists the names we recognize and the name each one goes by in themes.
-`config-and-themes.md` explains where each theme's colors come from.
-
-`Colors::new` turns a theme into a color for each of those names. A
-name the theme doesn't list takes the color of the longest name it does
-list that starts it, so `keyword` colors `keyword.return`. With no such
-name, a piece of code takes the color of the highlight around it, such
-as the string around an escape, or else the theme's plain foreground.
-`none` and `embedded` reset to the foreground. Queries use them for the
-code inside a template string, for example.
-
-The worker turns tree-sitter's stream of start, end and text events into
-colored byte ranges for each line, with `Lines`. The ranges cover each
-line with no gaps, and one byte more for its newline, even on a last
-line that has none.
 
 ### Dropping stale results
 
@@ -319,15 +260,6 @@ Selected lines get the selection background instead.
   their rows when the pane is rebuilt, when the view changes, and when
   files change, go away or appear.
 - `tests/ui.rs` has `folds_do_not_carry_over_to_other_commits`.
-- `src/highlight/mod.rs` has property tests that every line of random
-  texts in a dozen languages gets colors from its start to past its end,
-  that asking for fewer lines gives the same colors for those lines,
-  and that every line of a diff gets the colors of the side it comes
-  from. Other tests check a few colors, Markdown code blocks,
-  cancelling, and lines that used to hang syntect.
-- `src/highlight/languages.rs` checks that every language's queries
-  compile, how files are matched to languages, and that the Markdown
-  patterns we change are still there.
 
 ## Known gaps
 

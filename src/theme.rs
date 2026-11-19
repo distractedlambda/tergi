@@ -8,13 +8,14 @@
 //! Everything is 24-bit, since ghostty and most modern terminals support it.
 
 use ratatui::style::Color;
+use two_face::theme::EmbeddedThemeName as Syntax;
 
 #[derive(Debug, Clone)]
 pub struct Theme {
     /// The name to use in the config file.
     pub id: &'static str,
     pub name: &'static str,
-    pub syntax: &'static Syntax,
+    pub syntax: Syntax,
     pub bg: Color,
     pub panel: Color,
     pub bar: Color,
@@ -50,23 +51,6 @@ pub struct Theme {
     pub tag_fg: Color,
     pub rename_fg: Color,
     pub lanes: [Color; 8],
-}
-
-/// Colors for syntax highlighting. The keys are the names that
-/// tree-sitter's highlight queries give to pieces of code, such as
-/// `keyword` or `string.escape`. `highlight::Colors` explains how names
-/// without a color of their own get one.
-///
-/// Each scheme's colors here are the ones its TextMate theme, as bat and
-/// Sublime Text use it, gives to the scopes that come closest to these
-/// names. Plain code is drawn in `fg`, which isn't always the palette's
-/// text color. Identifiers aren't colored, even in schemes whose TextMate
-/// theme colors variables. Tree-sitter calls every identifier a variable,
-/// where TextMate grammars only scope a few of them that way.
-#[derive(Debug)]
-pub struct Syntax {
-    pub fg: u32,
-    pub colors: &'static [(&'static str, u32)],
 }
 
 /// The colors we take from a published palette. Each palette below notes
@@ -110,7 +94,7 @@ const fn mix(a: u32, b: u32, pct: u32) -> u32 {
     ch(a, b, pct, 16) | ch(a, b, pct, 8) | ch(a, b, pct, 0)
 }
 
-pub const fn rgb(hex: u32) -> Color {
+const fn rgb(hex: u32) -> Color {
     Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
@@ -168,13 +152,13 @@ impl Theme {
         PALETTES.iter().find(|p| p.id == id).map(Theme::build)
     }
 
-    fn build(p: &'static Palette) -> Theme {
+    fn build(p: &Palette) -> Theme {
         let tint = |c, most, least| rgb(tint(p.bg, p.fg, c, most, least));
         let badge = |c| tint(c, 70, 20);
         Theme {
             id: p.id,
             name: p.name,
-            syntax: &p.syntax,
+            syntax: p.syntax,
             bg: rgb(p.bg),
             panel: rgb(p.panel),
             bar: rgb(p.bar),
@@ -244,7 +228,7 @@ static PALETTES: [Palette; 12] = [
 const CATPPUCCIN_LATTE: Palette = Palette {
     id: "catppuccin-latte",
     name: "Catppuccin Latte",
-    syntax: CATPPUCCIN_LATTE_SYNTAX,
+    syntax: Syntax::CatppuccinLatte,
     bg: 0xeff1f5,      // base
     panel: 0xe6e9ef,   // mantle
     bar: 0xdce0e8,     // crust
@@ -265,44 +249,10 @@ const CATPPUCCIN_LATTE: Palette = Palette {
     ],
 };
 
-const CATPPUCCIN_LATTE_SYNTAX: Syntax = Syntax {
-    fg: 0x4c4f69,
-    colors: &[
-        ("attribute", 0xdf8e1d),             // yellow
-        ("boolean", 0xfe640b),               // peach
-        ("comment", 0x7c7f93),               // overlay2
-        ("constant", 0xfe640b),              // peach
-        ("constant.builtin", 0xd20f39),      // red
-        ("constructor", 0xdf8e1d),           // yellow
-        ("function", 0x1e66f5),              // blue
-        ("keyword", 0x8839ef),               // mauve
-        ("label", 0x179299),                 // teal
-        ("markup.heading", 0x179299),        // teal
-        ("markup.italic", 0xd20f39),         // red
-        ("markup.link", 0x7287fd),           // lavender
-        ("markup.link.url", 0x1e66f5),       // blue
-        ("markup.list", 0x7c7f93),           // overlay2
-        ("markup.quote", 0xea76cb),          // pink
-        ("markup.strong", 0xd20f39),         // red
-        ("module", 0xdf8e1d),                // yellow
-        ("number", 0xfe640b),                // peach
-        ("operator", 0x179299),              // teal
-        ("punctuation", 0x7c7f93),           // overlay2
-        ("string", 0x40a02b),                // green
-        ("string.escape", 0xea76cb),         // pink
-        ("string.special.key", 0x1e66f5),    // blue
-        ("string.special.symbol", 0xd20f39), // red
-        ("tag", 0x1e66f5),                   // blue
-        ("tag.attribute", 0xdf8e1d),         // yellow
-        ("type", 0xdf8e1d),                  // yellow
-        ("variable.parameter", 0xe64553),    // maroon
-    ],
-};
-
 const CATPPUCCIN_FRAPPE: Palette = Palette {
     id: "catppuccin-frappe",
     name: "Catppuccin Frappé",
-    syntax: CATPPUCCIN_FRAPPE_SYNTAX,
+    syntax: Syntax::CatppuccinFrappe,
     bg: 0x303446,
     panel: 0x292c3c,
     bar: 0x232634,
@@ -322,44 +272,10 @@ const CATPPUCCIN_FRAPPE: Palette = Palette {
     ],
 };
 
-const CATPPUCCIN_FRAPPE_SYNTAX: Syntax = Syntax {
-    fg: 0xc6d0f5,
-    colors: &[
-        ("attribute", 0xe5c890),
-        ("boolean", 0xef9f76),
-        ("comment", 0x949cbb),
-        ("constant", 0xef9f76),
-        ("constant.builtin", 0xe78284),
-        ("constructor", 0xe5c890),
-        ("function", 0x8caaee),
-        ("keyword", 0xca9ee6),
-        ("label", 0x81c8be),
-        ("markup.heading", 0x81c8be),
-        ("markup.italic", 0xe78284),
-        ("markup.link", 0xbabbf1),
-        ("markup.link.url", 0x8caaee),
-        ("markup.list", 0x949cbb),
-        ("markup.quote", 0xf4b8e4),
-        ("markup.strong", 0xe78284),
-        ("module", 0xe5c890),
-        ("number", 0xef9f76),
-        ("operator", 0x81c8be),
-        ("punctuation", 0x949cbb),
-        ("string", 0xa6d189),
-        ("string.escape", 0xf4b8e4),
-        ("string.special.key", 0x8caaee),
-        ("string.special.symbol", 0xe78284),
-        ("tag", 0x8caaee),
-        ("tag.attribute", 0xe5c890),
-        ("type", 0xe5c890),
-        ("variable.parameter", 0xea999c),
-    ],
-};
-
 const CATPPUCCIN_MACCHIATO: Palette = Palette {
     id: "catppuccin-macchiato",
     name: "Catppuccin Macchiato",
-    syntax: CATPPUCCIN_MACCHIATO_SYNTAX,
+    syntax: Syntax::CatppuccinMacchiato,
     bg: 0x24273a,
     panel: 0x1e2030,
     bar: 0x181926,
@@ -379,44 +295,10 @@ const CATPPUCCIN_MACCHIATO: Palette = Palette {
     ],
 };
 
-const CATPPUCCIN_MACCHIATO_SYNTAX: Syntax = Syntax {
-    fg: 0xcad3f5,
-    colors: &[
-        ("attribute", 0xeed49f),
-        ("boolean", 0xf5a97f),
-        ("comment", 0x939ab7),
-        ("constant", 0xf5a97f),
-        ("constant.builtin", 0xed8796),
-        ("constructor", 0xeed49f),
-        ("function", 0x8aadf4),
-        ("keyword", 0xc6a0f6),
-        ("label", 0x8bd5ca),
-        ("markup.heading", 0x8bd5ca),
-        ("markup.italic", 0xed8796),
-        ("markup.link", 0xb7bdf8),
-        ("markup.link.url", 0x8aadf4),
-        ("markup.list", 0x939ab7),
-        ("markup.quote", 0xf5bde6),
-        ("markup.strong", 0xed8796),
-        ("module", 0xeed49f),
-        ("number", 0xf5a97f),
-        ("operator", 0x8bd5ca),
-        ("punctuation", 0x939ab7),
-        ("string", 0xa6da95),
-        ("string.escape", 0xf5bde6),
-        ("string.special.key", 0x8aadf4),
-        ("string.special.symbol", 0xed8796),
-        ("tag", 0x8aadf4),
-        ("tag.attribute", 0xeed49f),
-        ("type", 0xeed49f),
-        ("variable.parameter", 0xee99a0),
-    ],
-};
-
 const CATPPUCCIN_MOCHA: Palette = Palette {
     id: "catppuccin-mocha",
     name: "Catppuccin Mocha",
-    syntax: CATPPUCCIN_MOCHA_SYNTAX,
+    syntax: Syntax::CatppuccinMocha,
     bg: 0x1e1e2e,
     panel: 0x181825,
     bar: 0x11111b,
@@ -436,46 +318,12 @@ const CATPPUCCIN_MOCHA: Palette = Palette {
     ],
 };
 
-const CATPPUCCIN_MOCHA_SYNTAX: Syntax = Syntax {
-    fg: 0xcdd6f4,
-    colors: &[
-        ("attribute", 0xf9e2af),
-        ("boolean", 0xfab387),
-        ("comment", 0x9399b2),
-        ("constant", 0xfab387),
-        ("constant.builtin", 0xf38ba8),
-        ("constructor", 0xf9e2af),
-        ("function", 0x89b4fa),
-        ("keyword", 0xcba6f7),
-        ("label", 0x94e2d5),
-        ("markup.heading", 0x94e2d5),
-        ("markup.italic", 0xf38ba8),
-        ("markup.link", 0xb4befe),
-        ("markup.link.url", 0x89b4fa),
-        ("markup.list", 0x9399b2),
-        ("markup.quote", 0xf5c2e7),
-        ("markup.strong", 0xf38ba8),
-        ("module", 0xf9e2af),
-        ("number", 0xfab387),
-        ("operator", 0x94e2d5),
-        ("punctuation", 0x9399b2),
-        ("string", 0xa6e3a1),
-        ("string.escape", 0xf5c2e7),
-        ("string.special.key", 0x89b4fa),
-        ("string.special.symbol", 0xf38ba8),
-        ("tag", 0x89b4fa),
-        ("tag.attribute", 0xf9e2af),
-        ("type", 0xf9e2af),
-        ("variable.parameter", 0xeba0ac),
-    ],
-};
-
 // Dracula, https://draculatheme.com/spec. It has no blue, so its purple is
 // the accent and its pink stands in for magenta.
 const DRACULA: Palette = Palette {
     id: "dracula",
     name: "Dracula",
-    syntax: DRACULA_SYNTAX,
+    syntax: Syntax::Dracula,
     bg: 0x282a36,                     // background
     panel: 0x21222c,                  // background dark
     bar: 0x191a21,                    // background darker
@@ -496,47 +344,12 @@ const DRACULA: Palette = Palette {
     ],
 };
 
-const DRACULA_SYNTAX: Syntax = Syntax {
-    fg: 0xf8f8f2,
-    colors: &[
-        ("attribute", 0x50fa7b),
-        ("boolean", 0xbd93f9),
-        ("comment", 0x6272a4),
-        ("constant", 0xbd93f9),
-        ("constructor", 0x8be9fd),
-        ("function", 0x50fa7b),
-        ("function.builtin", 0x8be9fd),
-        ("keyword", 0xff79c6),
-        ("keyword.function", 0x8be9fd),
-        ("keyword.type", 0x8be9fd),
-        ("markup.heading", 0x8be9fd),
-        ("markup.italic", 0xffb86c),
-        ("markup.link", 0xf1fa8c),
-        ("markup.link.url", 0xbd93f9),
-        ("markup.list", 0xff79c6),
-        ("markup.quote", 0x6272a4),
-        ("markup.raw", 0x50fa7b),
-        ("markup.strong", 0xffb86c),
-        ("number", 0xbd93f9),
-        ("operator", 0xff79c6),
-        ("string", 0xf1fa8c),
-        ("string.escape", 0xff79c6),
-        ("string.special.key", 0xff79c6),
-        ("string.special.symbol", 0xbd93f9),
-        ("tag", 0xff79c6),
-        ("tag.attribute", 0x50fa7b),
-        ("type", 0x8be9fd),
-        ("variable.builtin", 0xbd93f9),
-        ("variable.parameter", 0xffb86c),
-    ],
-};
-
 // Gruvbox, https://github.com/morhetz/gruvbox. The dark theme uses the
 // bright accents and the light theme the faded ones, as the original does.
 const GRUVBOX_DARK: Palette = Palette {
     id: "gruvbox-dark",
     name: "Gruvbox Dark",
-    syntax: GRUVBOX_DARK_SYNTAX,
+    syntax: Syntax::GruvboxDark,
     bg: 0x282828,      // dark0
     panel: 0x1d2021,   // dark0_hard
     bar: 0x3c3836,     // dark1
@@ -557,48 +370,10 @@ const GRUVBOX_DARK: Palette = Palette {
     ],
 };
 
-const GRUVBOX_DARK_SYNTAX: Syntax = Syntax {
-    fg: 0xfbf1c7,
-    colors: &[
-        ("attribute", 0xfabd2f),
-        ("boolean", 0xd3869b),
-        ("comment", 0x928374),
-        ("constant", 0xd3869b),
-        ("constructor", 0xfabd2f),
-        ("function", 0xb8bb26),
-        ("function.builtin", 0x8ec07c),
-        ("function.call", 0x83a598),
-        ("keyword", 0xfb4934),
-        ("keyword.function", 0x8ec07c),
-        ("keyword.operator", 0x8ec07c),
-        ("label", 0xb8bb26),
-        ("markup.heading", 0xb8bb26),
-        ("markup.italic", 0xfb4934),
-        ("markup.link", 0x8ec07c),
-        ("markup.link.url", 0xd3869b),
-        ("markup.list", 0x458588),
-        ("markup.quote", 0xd3869b),
-        ("markup.raw", 0xfabd2f),
-        ("markup.strong", 0xfe8019),
-        ("module", 0xfabd2f),
-        ("number", 0xd3869b),
-        ("operator", 0x8ec07c),
-        ("property", 0x83a598),
-        ("string", 0xb8bb26),
-        ("string.escape", 0xfb4934),
-        ("string.special.key", 0x83a598),
-        ("string.special.symbol", 0xd3869b),
-        ("tag", 0x83a598),
-        ("tag.attribute", 0xfabd2f),
-        ("type", 0xfabd2f),
-        ("variable.builtin", 0xd3869b),
-    ],
-};
-
 const GRUVBOX_LIGHT: Palette = Palette {
     id: "gruvbox-light",
     name: "Gruvbox Light",
-    syntax: GRUVBOX_LIGHT_SYNTAX,
+    syntax: Syntax::GruvboxLight,
     bg: 0xfbf1c7,      // light0
     panel: 0xf2e5bc,   // light0_soft
     bar: 0xebdbb2,     // light1
@@ -618,51 +393,13 @@ const GRUVBOX_LIGHT: Palette = Palette {
     ],
 };
 
-const GRUVBOX_LIGHT_SYNTAX: Syntax = Syntax {
-    fg: 0x282828,
-    colors: &[
-        ("attribute", 0xb57614),
-        ("boolean", 0x8f3f71),
-        ("comment", 0x928374),
-        ("constant", 0x8f3f71),
-        ("constructor", 0xb57614),
-        ("function", 0x79740e),
-        ("function.builtin", 0x427b58),
-        ("function.call", 0x076678),
-        ("keyword", 0x9d0006),
-        ("keyword.function", 0x427b58),
-        ("keyword.operator", 0x427b58),
-        ("label", 0x79740e),
-        ("markup.heading", 0x79740e),
-        ("markup.italic", 0x9d0006),
-        ("markup.link", 0x427b58),
-        ("markup.link.url", 0x8f3f71),
-        ("markup.list", 0x458588),
-        ("markup.quote", 0x8f3f71),
-        ("markup.raw", 0xb57614),
-        ("markup.strong", 0xaf3a03),
-        ("module", 0xb57614),
-        ("number", 0x8f3f71),
-        ("operator", 0x427b58),
-        ("property", 0x076678),
-        ("string", 0x79740e),
-        ("string.escape", 0x9d0006),
-        ("string.special.key", 0x076678),
-        ("string.special.symbol", 0x8f3f71),
-        ("tag", 0x076678),
-        ("tag.attribute", 0xb57614),
-        ("type", 0xb57614),
-        ("variable.builtin", 0x8f3f71),
-    ],
-};
-
 // Nord, https://www.nordtheme.com/docs/colors-and-palettes. Its comment
 // color, nord3, is also a background, and text in it can't be read on the
 // panels. So the gray text colors are mixes of nord3 and nord4.
 const NORD: Palette = Palette {
     id: "nord",
     name: "Nord",
-    syntax: NORD_SYNTAX,
+    syntax: Syntax::Nord,
     bg: 0x2e3440,                     // nord0
     panel: 0x3b4252,                  // nord1
     bar: 0x3b4252,                    // nord1
@@ -683,42 +420,12 @@ const NORD: Palette = Palette {
     ],
 };
 
-const NORD_SYNTAX: Syntax = Syntax {
-    fg: 0xd8dee9,
-    colors: &[
-        ("attribute", 0x8fbcbb),
-        ("boolean", 0x81a1c1),
-        ("comment", 0x616e88),
-        ("constant", 0x81a1c1),
-        ("constructor", 0x8fbcbb),
-        ("function", 0x88c0d0),
-        ("keyword", 0x81a1c1),
-        ("label", 0x5e81ac),
-        ("markup.heading", 0x88c0d0),
-        ("markup.quote", 0x616e88),
-        ("markup.raw", 0x8fbcbb),
-        ("module", 0x8fbcbb),
-        ("number", 0xb48ead),
-        ("operator", 0x81a1c1),
-        ("punctuation.delimiter", 0xeceff4),
-        ("string", 0xa3be8c),
-        ("string.escape", 0xebcb8b),
-        ("string.regexp", 0xebcb8b),
-        ("string.special.key", 0x81a1c1),
-        ("string.special.symbol", 0x81a1c1),
-        ("tag", 0x81a1c1),
-        ("tag.attribute", 0x8fbcbb),
-        ("type", 0x8fbcbb),
-        ("variable.builtin", 0x81a1c1),
-    ],
-};
-
 // One Half, https://github.com/sonph/onehalf. It has no orange, so the
 // graph uses its grays for the last lanes.
 const ONE_HALF_DARK: Palette = Palette {
     id: "one-half-dark",
     name: "One Half Dark",
-    syntax: ONE_HALF_DARK_SYNTAX,
+    syntax: Syntax::OneHalfDark,
     bg: 0x282c34,      // black
     panel: 0x313640,   // cursor_line
     bar: 0x313640,     // cursor_line
@@ -739,44 +446,10 @@ const ONE_HALF_DARK: Palette = Palette {
     ],
 };
 
-const ONE_HALF_DARK_SYNTAX: Syntax = Syntax {
-    fg: 0xdcdfe4,
-    colors: &[
-        ("attribute", 0xe5c07b),
-        ("boolean", 0xe5c07b),
-        ("comment", 0x5c6370),
-        ("constant", 0xe5c07b),
-        ("constructor", 0xe5c07b),
-        ("function", 0x61afef),
-        ("function.call", 0xe06c75),
-        ("keyword", 0xc678dd),
-        ("label", 0xe5c07b),
-        ("markup.heading", 0x61afef),
-        ("markup.italic", 0xc678dd),
-        ("markup.link", 0x98c379),
-        ("markup.quote", 0x98c379),
-        ("markup.raw", 0x98c379),
-        ("markup.strong", 0xc678dd),
-        ("module", 0xe5c07b),
-        ("number", 0xe5c07b),
-        ("operator", 0xc678dd),
-        ("property", 0xe06c75),
-        ("string", 0x98c379),
-        ("string.escape", 0x56b6c2),
-        ("string.special.key", 0xe06c75),
-        ("string.special.symbol", 0xe5c07b),
-        ("tag", 0xe06c75),
-        ("tag.attribute", 0xe5c07b),
-        ("type", 0xe5c07b),
-        ("variable.builtin", 0xe06c75),
-        ("variable.parameter", 0xe06c75),
-    ],
-};
-
 const ONE_HALF_LIGHT: Palette = Palette {
     id: "one-half-light",
     name: "One Half Light",
-    syntax: ONE_HALF_LIGHT_SYNTAX,
+    syntax: Syntax::OneHalfLight,
     bg: 0xfafafa,                     // white
     panel: 0xf0f0f0,                  // cursor_line
     bar: 0xf0f0f0,                    // cursor_line
@@ -797,38 +470,6 @@ const ONE_HALF_LIGHT: Palette = Palette {
     ],
 };
 
-const ONE_HALF_LIGHT_SYNTAX: Syntax = Syntax {
-    fg: 0x383a42,
-    colors: &[
-        ("attribute", 0xc18401),
-        ("boolean", 0xc18401),
-        ("comment", 0xa0a1a7),
-        ("constant", 0xc18401),
-        ("constructor", 0xc18401),
-        ("function", 0x0184bc),
-        ("function.call", 0xe45649),
-        ("keyword", 0xa626a4),
-        ("markup.heading", 0x0184bc),
-        ("markup.italic", 0xa626a4),
-        ("markup.link", 0x50a14f),
-        ("markup.quote", 0x50a14f),
-        ("markup.raw", 0x50a14f),
-        ("markup.strong", 0xa626a4),
-        ("number", 0xc18401),
-        ("operator", 0xa626a4),
-        ("property", 0xe45649),
-        ("string", 0x50a14f),
-        ("string.escape", 0x0997b3),
-        ("string.special.key", 0xe45649),
-        ("string.special.symbol", 0xc18401),
-        ("tag", 0xe45649),
-        ("tag.attribute", 0xc18401),
-        ("type", 0xc18401),
-        ("variable.builtin", 0xe45649),
-        ("variable.parameter", 0xe45649),
-    ],
-};
-
 // Solarized, https://ethanschoonover.com/solarized. It has only two
 // background shades for each mode, so buttons and borders are mixes of the
 // second background and the secondary text color. The accents are the same
@@ -836,7 +477,7 @@ const ONE_HALF_LIGHT_SYNTAX: Syntax = Syntax {
 const SOLARIZED_DARK: Palette = Palette {
     id: "solarized-dark",
     name: "Solarized Dark",
-    syntax: SOLARIZED_DARK_SYNTAX,
+    syntax: Syntax::SolarizedDark,
     bg: 0x002b36,                         // base03
     panel: 0x073642,                      // base02
     bar: 0x073642,                        // base02
@@ -857,49 +498,10 @@ const SOLARIZED_DARK: Palette = Palette {
     ],
 };
 
-const SOLARIZED_DARK_SYNTAX: Syntax = Syntax {
-    fg: 0x839496,
-    colors: &[
-        ("attribute", 0xb58900),
-        ("boolean", 0xb58900),
-        ("comment", 0x586e75),
-        ("constant", 0xcb4b16),
-        ("constant.builtin", 0xb58900),
-        ("constructor", 0xb58900),
-        ("function", 0xb58900),
-        ("function.builtin", 0x859900),
-        ("function.macro", 0x859900),
-        ("keyword", 0x859900),
-        ("keyword.function", 0x268bd2),
-        ("keyword.import", 0xcb4b16),
-        ("keyword.modifier", 0x93a1a1),
-        ("keyword.type", 0x268bd2),
-        ("label", 0xb58900),
-        ("markup.heading", 0xcb4b16),
-        ("markup.link", 0x2aa198),
-        ("markup.quote", 0x859900),
-        ("module", 0xb58900),
-        ("number", 0x6c71c4),
-        ("operator", 0x859900),
-        ("property", 0x268bd2),
-        ("punctuation.bracket", 0x657b83),
-        ("punctuation.special", 0x657b83),
-        ("string", 0x2aa198),
-        ("string.escape", 0xdc322f),
-        ("string.special.key", 0x268bd2),
-        ("string.special.symbol", 0xb58900),
-        ("tag", 0x268bd2),
-        ("tag.attribute", 0xb58900),
-        ("type", 0xb58900),
-        ("variable.builtin", 0xd33682),
-        ("variable.parameter", 0x268bd2),
-    ],
-};
-
 const SOLARIZED_LIGHT: Palette = Palette {
     id: "solarized-light",
     name: "Solarized Light",
-    syntax: SOLARIZED_LIGHT_SYNTAX,
+    syntax: Syntax::SolarizedLight,
     bg: 0xfdf6e3,                         // base3
     panel: 0xeee8d5,                      // base2
     bar: 0xeee8d5,                        // base2
@@ -910,43 +512,6 @@ const SOLARIZED_LIGHT: Palette = Palette {
     dim: 0x93a1a1, // base1
     faint: mix(0x93a1a1, 0xeee8d5, 35),
     ..SOLARIZED_DARK
-};
-
-const SOLARIZED_LIGHT_SYNTAX: Syntax = Syntax {
-    fg: 0x657b83,
-    colors: &[
-        ("attribute", 0xb58900),
-        ("boolean", 0xb58900),
-        ("comment", 0x93a1a1),
-        ("constant", 0xcb4b16),
-        ("constant.builtin", 0xb58900),
-        ("constructor", 0xb58900),
-        ("function", 0xb58900),
-        ("function.builtin", 0x859900),
-        ("function.macro", 0x859900),
-        ("keyword", 0x859900),
-        ("keyword.function", 0x268bd2),
-        ("keyword.import", 0xcb4b16),
-        ("keyword.modifier", 0x586e75),
-        ("keyword.type", 0x268bd2),
-        ("label", 0xb58900),
-        ("markup.heading", 0xcb4b16),
-        ("markup.link", 0x2aa198),
-        ("markup.quote", 0x859900),
-        ("module", 0xb58900),
-        ("number", 0x6c71c4),
-        ("operator", 0x859900),
-        ("property", 0x268bd2),
-        ("string", 0x2aa198),
-        ("string.escape", 0xdc322f),
-        ("string.special.key", 0x268bd2),
-        ("string.special.symbol", 0xb58900),
-        ("tag", 0x268bd2),
-        ("tag.attribute", 0xb58900),
-        ("type", 0xb58900),
-        ("variable.builtin", 0xd33682),
-        ("variable.parameter", 0x268bd2),
-    ],
 };
 
 #[cfg(test)]
