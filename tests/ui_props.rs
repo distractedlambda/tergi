@@ -418,7 +418,9 @@ fn wait_quiet(ui: &mut Ui) -> Result<(), TestCaseError> {
             a.detail.loading,
             ui.screen()
         );
-        std::thread::sleep(Duration::from_millis(2));
+        if let Some(ev) = ui.next_event(Duration::from_millis(10)) {
+            ui.handle(ev);
+        }
     }
 }
 

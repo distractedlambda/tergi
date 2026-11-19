@@ -831,9 +831,8 @@ fn selection_follows_its_commit_through_a_reload() {
             Instant::now() < deadline,
             "timed out waiting for the reload"
         );
-        match ui.app.try_recv() {
-            Some(ev) => ui.handle(ev),
-            None => std::thread::sleep(Duration::from_millis(5)),
+        if let Some(ev) = ui.next_event(Duration::from_millis(10)) {
+            ui.handle(ev);
         }
         if let Some(c) = ui.app.history.selected_commit() {
             assert_eq!(c.id, id, "the selection moved to {}", c.summary);

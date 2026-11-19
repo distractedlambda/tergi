@@ -24,7 +24,7 @@ pub struct Ui {
     pub app: App,
     pub term: Terminal<TestBackend>,
     // Declared after `app`, so the app and its tasks go away first.
-    _rt: tokio::runtime::Runtime,
+    rt: tokio::runtime::Runtime,
 }
 
 impl Ui {
@@ -51,7 +51,7 @@ impl Ui {
             app
         };
         let term = Terminal::new(TestBackend::new(140, 36)).expect("terminal");
-        Ui { app, term, _rt: rt }
+        Ui { app, term, rt }
     }
 
     /// Handle one event, as the main loop does. Anything the app does in
@@ -102,8 +102,22 @@ impl Ui {
                 "timed out waiting for {what}\n{}",
                 self.screen()
             );
-            std::thread::sleep(Duration::from_millis(10));
+            if let Some(ev) = self.next_event(Duration::from_millis(10)) {
+                self.handle(ev);
+            }
         }
+    }
+
+    /// Wait up to `timeout` for the next event, without handling it. This
+    /// returns as soon as one arrives, so the tests don't sleep for longer
+    /// than they have to.
+    pub fn next_event(&mut self, timeout: Duration) -> Option<AppEvent> {
+        let app = &mut self.app;
+        // The timer has to be made inside the runtime.
+        self.rt
+            .block_on(async { tokio::time::timeout(timeout, app.next()).await })
+            .ok()
+            .flatten()
     }
 
     /// Wait until the history and the working directory have both loaded.
