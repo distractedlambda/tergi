@@ -13,6 +13,7 @@ mod c;
 mod racket;
 mod rust;
 mod shrubbery;
+mod toml;
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -84,12 +85,17 @@ pub enum Language {
     Rhombus,
     Rust,
     Scribble,
+    Toml,
 }
 
 impl Language {
     /// The language of a file, from its name.
     pub fn for_path(path: &str) -> Option<Language> {
         let name = path.rsplit('/').next().unwrap_or(path);
+        // Some tools keep TOML in files with names of their own.
+        if matches!(name, "Cargo.lock" | "Pipfile" | "poetry.lock" | "uv.lock") {
+            return Some(Language::Toml);
+        }
         match name.rsplit_once('.')?.1 {
             "c" => Some(Language::C),
             // Headers ending in `.h` can be C or C++. We read them as C++,
@@ -103,6 +109,7 @@ impl Language {
             "rhm" => Some(Language::Rhombus),
             "rs" => Some(Language::Rust),
             "scrbl" => Some(Language::Scribble),
+            "toml" => Some(Language::Toml),
             _ => None,
         }
     }
@@ -115,6 +122,7 @@ impl Language {
                 racket::lex(text, self, &mut out);
             }
             Language::Rust => rust::lex(text, &mut out),
+            Language::Toml => toml::lex(text, &mut out),
         }
         out
     }
@@ -305,7 +313,9 @@ mod tests {
     use super::*;
     use crate::git::commit::diff_texts;
 
-    const PATHS: &[&str] = &["a.c", "a.cpp", "a.rkt", "a.rhm", "a.rs", "a.scrbl"];
+    const PATHS: &[&str] = &[
+        "a.c", "a.cpp", "a.rkt", "a.rhm", "a.rs", "a.scrbl", "a.toml",
+    ];
 
     /// A line made of pieces that start or end strings, comments and
     /// @-forms in some language, along with tabs, wide characters and a
@@ -325,6 +335,12 @@ mod tests {
         pieces.extend([
             "#if 0", "#if", "#else", "#endif", "#include", "<a.h>", "#error", "%:", "R\"x(",
             ")x\"", "R\"(", ")\"", "1'0", "[[", "\\ ", "u8'", "defined",
+        ]);
+        // Pieces of TOML, such as table headers, multi-line strings and
+        // dates.
+        pieces.extend([
+            "[[", "]]", "'''", "\"\"\"\"", "a.b", "1979", "-05-27", "T", "07:32", "Z", "+inf",
+            "true =", "\\e",
         ]);
         // Lines that choose how the rest of a Racket file is read.
         pieces.extend([
@@ -402,6 +418,9 @@ mod tests {
         assert_eq!(Language::for_path("lib/a.c"), Some(Language::C));
         assert_eq!(Language::for_path("a.h"), Some(Language::Cpp));
         assert_eq!(Language::for_path("a.cpp"), Some(Language::Cpp));
+        assert_eq!(Language::for_path("Cargo.toml"), Some(Language::Toml));
+        assert_eq!(Language::for_path("x/Cargo.lock"), Some(Language::Toml));
+        assert_eq!(Language::for_path("a.lock"), None);
         assert_eq!(Language::for_path("a.b/c"), None);
         assert_eq!(Language::for_path("rs"), None);
     }

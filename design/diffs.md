@@ -190,8 +190,8 @@ in the background, in a worker that `Highlighter::new` returns.
 
 Each language has its own lexer, written with Logos and kept in
 `src/highlight/`, one file per language: `c.rs` for C and C++,
-`rust.rs` for Rust, `racket.rs` for Racket and Scribble, and
-`shrubbery.rs` for Rhombus. A lexer turns text into `Tokens`: byte
+`rust.rs` for Rust, `racket.rs` for Racket and Scribble,
+`shrubbery.rs` for Rhombus, and `toml.rs` for TOML. A lexer turns text into `Tokens`: byte
 ranges, each with a `Kind` such as `Comment`, `Keyword` or `Escape`. Plain text, such as
 most identifiers, has no token. The theme maps kinds to colors when the
 line is drawn, so switching themes doesn't need to lex anything again.
@@ -353,6 +353,40 @@ also leave out quotes. In C, which has no raw strings, the `R` is a
 name and the quote starts an ordinary string. Without quotes in the
 delimiter, that string can't end inside the token that Logos matched.
 
+### TOML
+
+`toml.rs` follows TOML 1.1, which adds the `\e` and `\xHH` escapes and
+allows line breaks, comments and a final comma inside inline tables.
+Files ending in `.toml` are TOML, and so are `Cargo.lock`, `Pipfile`,
+`poetry.lock` and `uv.lock`.
+
+A word can be a key or a value depending on where it is. `true = 1`,
+`123 = 1` and `2024-01-01 = 1` all have bare keys. So the lexer keeps a
+stack of the arrays and inline tables it's inside of, and it remembers
+whether a key or a value comes next. A key comes first on a line
+outside of brackets, and after `{` or a comma in an inline table. A
+value comes after `=`, and after `[` or a comma in an array. A line
+break outside of brackets starts a new key. Keys are plain, except that
+quoted keys get the string color and the dots between parts get the
+punctuation color.
+
+A `[` where a key would start, outside of brackets, starts a table
+header. The whole header, such as `[server]` or `[[bin]]`, gets the
+attribute color, so that the sections of a file stand out. A `]` that
+closes nothing is punctuation and changes nothing. That's what a hunk
+from the middle of a multi-line array has, and the header after it
+still reads as a header.
+
+Basic and literal strings can't go on to the next line, so one without
+its closing quote ends with its line. Multi-line strings end at three
+quotes, but up to two more quotes just before them belong to the
+string, so `'''a'''''` is one string. Numbers, dates and times, `inf`
+and `nan` get the number color, and `true` and `false` get the
+constant color. A date and a time can be separated by a space, so the
+lexer reads `1979-05-27 07:32:00` as one token. Anything else that
+isn't a space or a bracket is one plain word, so that `xtrue` isn't
+partly colored.
+
 The worker only highlights files that appear on screen.
 `request_visible_highlights` runs while drawing and asks for every file
 with a row on screen that hasn't been asked for yet. Each job carries the
@@ -468,6 +502,12 @@ Selected lines get the selection background instead.
   as a bad delimiter, and on numbers like `1p-1`. In C++, clang only
   reads that as one number when it's hexadecimal, but the standard
   says it's always one.
+- `src/highlight/toml.rs` has examples for each kind of TOML token. Its
+  property test builds random valid documents from tricky pieces, such
+  as keys that look like values and strings that hold brackets. It
+  parses them with `toml_edit`, which already reads the config file,
+  and checks that each value has the color of its type and that each
+  key is plain, or a string if it's quoted.
 - `src/highlight/mod.rs` has property tests that lexers never panic and
   give tokens in order on character boundaries, and that every hunk line
   gets the same colors with or without the full text, where it should.
@@ -475,8 +515,13 @@ Selected lines get the selection background instead.
 ## Known gaps
 
 - A merge commit is diffed against its first parent only.
-- Only C, C++, Rust, Racket, Rhombus and Scribble files are
+- Only C, C++, Rust, Racket, Rhombus, Scribble and TOML files are
   highlighted.
+- A hunk from the middle of a multi-line TOML array that we don't have
+  the full text for reads its values as keys. Strings keep their
+  color, but numbers, `true` and `false` are plain. A
+  nested array that starts a line there, as in `[1, 2],`, gets the
+  color of a table header.
 - In C and C++, a splice in the middle of a token, as in `L\` at the
   end of a line followed by `'x'`, splits the token in two. The
   compiler joins them.
