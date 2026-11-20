@@ -370,6 +370,36 @@ fn each_file_scrolls_sideways_on_its_own() {
 }
 
 #[test]
+fn sideways_scrolling_stops_at_the_end_of_the_longest_line() {
+    let s = Scratch::new();
+    s.write("a.txt", "a\n");
+    s.commit_all("init");
+    s.write("a.txt", &format!("{}the end\nshort\n", "word ".repeat(40)));
+    s.commit_all("long line");
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    ui.select_commit(1);
+    ui.draw();
+    let r = ui.doc_row(|r| matches!(r, Row::Line { file: 0, .. }));
+    for _ in 0..200 {
+        ui.mouse(MouseEventKind::ScrollRight, r.x, r.y);
+    }
+    // The end of the line is at the right edge, with the rest of the pane
+    // still full of the line.
+    let screen = ui.screen();
+    assert!(
+        screen.contains(&format!("{}the end", "word ".repeat(8))),
+        "{screen}"
+    );
+    // Going back starts right away, without first undoing any scrolling
+    // past the end.
+    ui.mouse(MouseEventKind::ScrollLeft, r.x, r.y);
+    let screen = ui.screen();
+    assert!(!screen.contains("the end"), "{screen}");
+    assert!(screen.contains("word the"), "{screen}");
+}
+
+#[test]
 fn leaving_a_commit_while_it_loads_stops_loading() {
     let s = repo_with_change();
     let mut ui = Ui::open(&s);

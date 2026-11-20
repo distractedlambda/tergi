@@ -49,7 +49,8 @@ Skip and Abort buttons.
 - Drag over diff lines to select them, then click "Stage lines" or
   "Unstage lines".
 - Scroll with the wheel. Hold Shift to scroll the file or commit message
-  under the pointer sideways. Each one keeps its own position.
+  under the pointer sideways. Each one keeps its own position, and it
+  stops once the end of its longest line is in view.
 - In the rebase planner, drag commits to reorder them.
 
 ## Keys

@@ -892,6 +892,10 @@ impl App {
                 self.request_commit(id);
             }
         }
+        if old.tab_width != self.cfg.tab_width {
+            // The widths that limit sideways scrolling depend on it.
+            self.rebuild_doc();
+        }
         // Drawing reads the other settings each frame.
     }
 

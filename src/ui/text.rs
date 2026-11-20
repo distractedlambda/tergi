@@ -156,6 +156,11 @@ pub fn put(buf: &mut Buffer, x: u16, y: u16, s: &str, max: u16, style: Style) ->
     draw(buf, x, y, s, 0, usize::from(max), PUT_TAB, |_| style)
 }
 
+/// How many columns `put_line` takes to draw the whole line.
+pub fn line_width(line: &Line) -> usize {
+    line.spans.iter().map(|s| width(&s.content, PUT_TAB)).sum()
+}
+
 /// Draw a ratatui `Line` span by span. Tabs in each span are measured from
 /// the start of that span. The first `skip` columns of the whole line are
 /// scrolled off to the left, as in `draw`.

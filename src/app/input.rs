@@ -211,11 +211,13 @@ impl App {
                 true
             }
             (Focus::Detail, KeyCode::Left) => {
-                self.detail.hscroll_by(self.detail.cursor, -8);
+                self.detail
+                    .hscroll_by(self.detail.cursor, -8, self.areas.doc.width);
                 true
             }
             (Focus::Detail, KeyCode::Right) => {
-                self.detail.hscroll_by(self.detail.cursor, 8);
+                self.detail
+                    .hscroll_by(self.detail.cursor, 8, self.areas.doc.width);
                 true
             }
             (Focus::Detail, KeyCode::Esc) => {
@@ -490,7 +492,8 @@ impl App {
 
     fn hscroll_at(&mut self, x: u16, y: u16, right: bool) {
         if let Some(Target::DocRow(i)) = self.target_at(x, y) {
-            self.detail.hscroll_by(i, if right { 4 } else { -4 });
+            self.detail
+                .hscroll_by(i, if right { 4 } else { -4 }, self.areas.doc.width);
         }
     }
 

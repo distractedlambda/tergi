@@ -18,6 +18,7 @@ use crate::git::words::{Marks, hunk_marks};
 use crate::git::workdir::Workdir;
 use crate::highlight::FileHighlight;
 use crate::theme::Theme;
+use crate::ui::text::{line_width, width};
 use crate::util::{Generation, format_date};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,6 +170,11 @@ pub struct Detail {
     /// Each has its own offset, so a long line in one file doesn't push
     /// the others out of view.
     hscroll: HashMap<Scrolls, usize>,
+    /// How wide the widest line of each file and of the commit message is,
+    /// so sideways scrolling can stop once that line's end is in view.
+    widths: HashMap<Scrolls, usize>,
+    /// Whether the rows were built for the split diff view.
+    split: bool,
     pub collapsed: HashSet<(Section, BString)>,
     pub collapsed_sections: HashSet<Section>,
     seen: HashSet<(Section, BString)>,
@@ -196,6 +202,8 @@ impl Default for Detail {
             anchor: None,
             scroll: 0,
             hscroll: HashMap::new(),
+            widths: HashMap::new(),
+            split: false,
             collapsed: HashSet::new(),
             collapsed_sections: HashSet::new(),
             seen: HashSet::new(),
@@ -286,19 +294,41 @@ impl Detail {
         }
     }
 
-    /// How far the given row is scrolled sideways.
-    pub fn hscroll(&self, row: usize) -> usize {
-        self.scrolls(row)
-            .and_then(|k| self.hscroll.get(&k).copied())
-            .unwrap_or(0)
+    /// How far the file or message is scrolled sideways in a pane that is
+    /// `pane` columns wide. The pane may have grown, or the lines may have
+    /// got shorter, since it was scrolled, so this never goes past the
+    /// point where the widest line ends at the right edge.
+    pub fn hscroll(&self, row: usize, pane: u16) -> usize {
+        let Some(k) = self.scrolls(row) else {
+            return 0;
+        };
+        let v = self.hscroll.get(&k).copied().unwrap_or(0);
+        v.min(self.max_hscroll(&k, pane))
     }
 
     /// Scroll the file or message that the given row belongs to sideways.
-    pub fn hscroll_by(&mut self, row: usize, delta: isize) {
+    pub fn hscroll_by(&mut self, row: usize, delta: isize, pane: u16) {
         if let Some(k) = self.scrolls(row) {
+            let max = self.max_hscroll(&k, pane);
             let v = self.hscroll.entry(k).or_default();
-            *v = v.saturating_add_signed(delta);
+            *v = (*v).min(max).saturating_add_signed(delta).min(max);
         }
+    }
+
+    fn max_hscroll(&self, k: &Scrolls, pane: u16) -> usize {
+        // These match the columns that drawing gives the text of each kind
+        // of row.
+        let pane = usize::from(pane);
+        let cols = match k {
+            Scrolls::Message => pane.saturating_sub(3),
+            Scrolls::File(..) if self.split => (pane / 2).saturating_sub(self.gutter + 3),
+            Scrolls::File(..) => pane.saturating_sub(self.gutter * 2 + 4),
+        };
+        self.widths
+            .get(k)
+            .copied()
+            .unwrap_or(0)
+            .saturating_sub(cols)
     }
 
     pub fn rebuild(
@@ -337,13 +367,15 @@ impl Detail {
         });
         self.rows.clear();
         self.meta.clear();
+        self.widths.clear();
+        self.split = split;
 
         match &self.source {
             Source::None => {}
             Source::Commit(_) | Source::Stash(..) => match &commit {
                 Some(c) => {
                     self.build_meta(c, labels, theme, cfg);
-                    self.build_files(Section::Commit, &c.files, split, false);
+                    self.build_files(Section::Commit, &c.files, split, false, cfg);
                 }
                 None => self.rows.push(Row::Empty(if self.loading {
                     "Loading…".into()
@@ -366,7 +398,7 @@ impl Detail {
                         any = true;
                         self.rows.push(Row::Section(sec));
                         if !self.collapsed_sections.contains(&sec) {
-                            self.build_files(sec, files, split, true);
+                            self.build_files(sec, files, split, true, cfg);
                         }
                         self.rows.push(Row::Blank);
                     }
@@ -457,9 +489,11 @@ impl Detail {
         cfg: &Config,
     ) {
         let _ = cfg;
+        let mut widest = 0;
         let dim = Style::default().fg(theme.dim);
         let fg = Style::default().fg(theme.fg);
         let mut push = |line: Line<'static>, click: Option<Cmd>| {
+            widest = widest.max(line_width(&line));
             self.meta.push(MetaLine { line, click });
             self.rows.push(Row::Meta(self.meta.len() - 1));
         };
@@ -571,9 +605,17 @@ impl Detail {
             None,
         );
         push(Line::default(), None);
+        self.widths.insert(Scrolls::Message, widest);
     }
 
-    fn build_files(&mut self, sec: Section, files: &[Arc<FileDiff>], split: bool, staging: bool) {
+    fn build_files(
+        &mut self,
+        sec: Section,
+        files: &[Arc<FileDiff>],
+        split: bool,
+        staging: bool,
+        cfg: &Config,
+    ) {
         let many = files.len() > 40;
         for (fi, f) in files.iter().enumerate() {
             let key = (sec, f.path().to_owned());
@@ -610,6 +652,17 @@ impl Detail {
             self.marks
                 .entry((sec, fi))
                 .or_insert_with(|| Arc::new(f.hunks.iter().map(hunk_marks).collect()));
+            // A line without a newline at the end has a marker after it,
+            // one column past the text and two columns wide.
+            let widest = f
+                .hunks
+                .iter()
+                .flat_map(|h| &h.lines)
+                .map(|l| width(&l.text, cfg.tab_width) + if l.no_eol { 3 } else { 0 })
+                .max()
+                .unwrap_or(0);
+            self.widths
+                .insert(Scrolls::File(sec, key.1.clone()), widest);
             for (hi, h) in f.hunks.iter().enumerate() {
                 self.rows.push(Row::Hunk {
                     sec,
