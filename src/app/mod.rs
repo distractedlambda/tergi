@@ -143,6 +143,10 @@ pub struct Busy {
 }
 
 /// The loaded history.
+/// Each entry in the history takes this many rows on screen. The first
+/// row has the summary and the second has the author and the date.
+pub const HISTORY_ROW_HEIGHT: u16 = 2;
+
 #[derive(Default)]
 pub struct History {
     pub commits: Vec<CommitInfo>,
@@ -812,8 +816,13 @@ impl App {
         }
     }
 
+    /// How many history entries fit in the pane without being cut off.
+    pub fn history_page(&self) -> usize {
+        usize::from(self.areas.history.height / HISTORY_ROW_HEIGHT).max(1)
+    }
+
     pub fn ensure_history_visible(&mut self) {
-        let h = usize::from(self.areas.history.height.max(1));
+        let h = self.history_page();
         let sel = self
             .history
             .current_row()

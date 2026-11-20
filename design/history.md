@@ -149,11 +149,19 @@ the status bar says it isn't in the history yet.
 
 ## Drawing
 
-`draw_history` only draws the rows that are visible, so a long history
-costs nothing to draw. Each row has the graph, the ref labels, the
-summary, and, if the pane is at least 70 columns wide, the author and
-the date. Dates are relative ("3 days ago") unless `relative_dates` is
-off. Then they are the day, in the commit's own time zone.
+`draw_history` only draws the entries that are visible, so a long
+history costs nothing to draw. Each entry takes two rows on screen
+(`HISTORY_ROW_HEIGHT`). The first row has the graph, the ref labels and
+the summary. The second has the author and the date, and the short
+commit id on the right if there's room. Lanes that go on down to the
+next commit are drawn through the second row as well. Dates are
+relative ("3 days ago") unless `relative_dates` is off. Then they are
+the day, in the commit's own time zone.
+
+The selection, the scroll offset and `Target::HistoryRow` all count
+entries, not screen rows. `App::history_page` says how many whole
+entries fit in the pane. Keeping the selection in view, paging and
+scrolling with the wheel all use it.
 
 ## Tests
 

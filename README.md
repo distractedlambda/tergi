@@ -28,8 +28,9 @@ tergi path/to/repo
 - The **sidebar** on the left lists branches, remotes, tags and stashes.
   Click a ref to jump to it in the history. Double-click a branch to
   check it out.
-- The **history** in the middle shows the commit graph. The first row is
-  the working directory.
+- The **history** in the middle shows the commit graph. Each commit
+  takes two rows: the summary and its labels, then the author, the date
+  and the short commit id. The first entry is the working directory.
 - The **detail pane** on the right shows the selected commit with its
   full diff. For the working directory, it shows the commit message box
   and your changes, grouped into conflicts, untracked, unstaged and

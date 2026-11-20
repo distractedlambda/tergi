@@ -15,8 +15,9 @@ use crate::app::cmd::{ActionDef, Cmd, Overlay, SideKey, SideRow, Unit};
 use crate::app::doc::{Row, Section, Source};
 use crate::app::input::{Target, palette_filter};
 use crate::app::planner::PlanAction;
-use crate::app::{App, Drag, Focus, Level, Splitter};
+use crate::app::{App, Drag, Focus, HISTORY_ROW_HEIGHT, Level, Splitter};
 use crate::git::diff::{FileStatus, LineKind};
+use crate::git::graph::DOWN;
 use crate::git::rebase::RepoState;
 use crate::git::refs::LabelKind;
 use crate::highlight::LineSpans;
@@ -161,7 +162,8 @@ fn layout(app: &mut App, area: Rect) {
         }
     };
     let (hlen, slen) = (app.history.row_count(), app.sidebar.rows.len());
-    clamp(&mut app.history.scroll, hlen, app.areas.history.height);
+    let hpage = app.history_page() as u16;
+    clamp(&mut app.history.scroll, hlen, hpage);
     clamp(&mut app.sidebar.scroll, slen, app.areas.sidebar.height);
     let doc_len = app.detail.rows.len() + usize::from(app.areas.doc.height / 2);
     let doc_h = app.areas.doc.height;
@@ -628,7 +630,8 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
     let focused = app.focus == Focus::History;
     let h = &app.history;
     let start = h.scroll;
-    let end = (start + usize::from(a.height)).min(h.row_count());
+    // An entry that only half fits at the bottom is still drawn.
+    let end = (start + usize::from(a.height.div_ceil(HISTORY_ROW_HEIGHT))).min(h.row_count());
     let now = crate::util::now();
 
     // Fit the graph to the widest visible row, within limits.
@@ -639,42 +642,23 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
         .max()
         .unwrap_or(1)
         .min(usize::from(a.width / 3)) as u16;
-    let show_meta = a.width >= 70;
-    let date_w: u16 = if show_meta { 13 } else { 0 };
-    let author_w: u16 = if show_meta {
-        (a.width / 6).clamp(8, 18)
-    } else {
-        0
-    };
     let selected = h.selected_row();
 
     for i in start..end {
-        let y = a.y + (i - start) as u16;
-        let rr = Rect::new(a.x, y, a.width, 1);
+        let y = a.y + (i - start) as u16 * HISTORY_ROW_HEIGHT;
+        let y2 = y + 1;
+        let rr = Rect::new(a.x, y, a.width, HISTORY_ROW_HEIGHT.min(a.bottom() - y));
         let bg = row_bg(app, selected == Some(i), focused, rr, t.bg);
         fill(buf, rr, bg);
         hits.push((rr, Target::HistoryRow(i)));
         let st = Style::default().bg(bg).fg(t.fg);
-        let mut x = a.x + 1;
+        let x = a.x + 1;
+        let text_x = x + graph_w + 1;
+        let text_w = a.right().saturating_sub(text_x + 1);
+        let second_row = y2 < a.bottom();
         if i == 0 {
-            let (text, n) = match &app.workdir {
-                Some(w) => {
-                    let n = w.change_count();
-                    (
-                        if n == 0 {
-                            "Working directory · no changes".to_string()
-                        } else {
-                            format!(
-                                "Working directory · {n} change{}",
-                                if n == 1 { "" } else { "s" }
-                            )
-                        },
-                        n,
-                    )
-                }
-                None => ("Working directory".to_string(), 0),
-            };
-            x = put(
+            let n = app.workdir.as_ref().map_or(0, |w| w.change_count());
+            put(
                 buf,
                 x,
                 y,
@@ -684,13 +668,21 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
             );
             put(
                 buf,
-                x + 1 + graph_w.saturating_sub(1),
+                text_x,
                 y,
-                &text,
-                a.right().saturating_sub(x + graph_w + 1),
+                "Working directory",
+                text_w,
                 st.fg(if n > 0 { t.fg } else { t.dim })
                     .add_modifier(Modifier::ITALIC),
             );
+            if second_row && app.workdir.is_some() {
+                let changes = match n {
+                    0 => "No changes".to_string(),
+                    1 => "1 change".to_string(),
+                    n => format!("{n} changes"),
+                };
+                put(buf, text_x, y2, &changes, text_w, st.fg(t.dim));
+            }
             continue;
         }
         let Some(c) = h.commits.get(i - 1) else {
@@ -698,20 +690,32 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
         };
         if let Some(row) = h.rows.get(i - 1) {
             for (k, cell) in row.cells.iter().take(usize::from(graph_w)).enumerate() {
+                let cx = x + k as u16;
                 let mut ch = cell.glyph();
                 if ch == '●' && Some(c.id) == app.refs.head {
                     ch = '◉';
                 }
-                if let Some(bc) = buf.cell_mut((x + k as u16, y)) {
-                    bc.set_char(ch).set_fg(t.lane(cell.color())).set_bg(bg);
+                let fg = t.lane(cell.color());
+                if let Some(bc) = buf.cell_mut((cx, y)) {
+                    bc.set_char(ch).set_fg(fg).set_bg(bg);
+                }
+                // Lanes that go on down to the next commit carry on
+                // through the second row.
+                if second_row
+                    && k % 2 == 0
+                    && cell.bits() & DOWN != 0
+                    && let Some(bc) = buf.cell_mut((cx, y2))
+                {
+                    bc.set_char('│').set_fg(fg).set_bg(bg);
                 }
             }
         }
-        x += graph_w + 1;
-        let right = a.right().saturating_sub(date_w + author_w + 1);
+
+        let right = text_x + text_w;
+        let mut lx = text_x;
         if let Some(labels) = app.labels.get(&c.id) {
             for l in labels {
-                if x + 4 >= right {
+                if lx + 4 >= right {
                     break;
                 }
                 let lbg = match l.kind {
@@ -725,46 +729,56 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 if l.kind == LabelKind::Head {
                     s = s.add_modifier(Modifier::BOLD);
                 }
-                x = put(buf, x, y, &format!(" {name} "), right.saturating_sub(x), s) + 1;
+                lx = put(
+                    buf,
+                    lx,
+                    y,
+                    &format!(" {name} "),
+                    right.saturating_sub(lx),
+                    s,
+                ) + 1;
             }
         }
-        let summary_w = right.saturating_sub(x);
+        let summary_w = right.saturating_sub(lx);
         put(
             buf,
-            x,
+            lx,
             y,
             &truncate(&c.summary, usize::from(summary_w)),
             summary_w,
             st,
         );
-        if show_meta {
-            let ax = a.right().saturating_sub(date_w + author_w);
-            put(
-                buf,
-                ax,
-                y,
-                &truncate(&c.author, usize::from(author_w.saturating_sub(1))),
-                author_w,
-                st.fg(t.dim),
-            );
-            let date = if app.cfg.relative_dates {
-                short_date(c.time, now)
-            } else {
-                format_day(c.time, c.offset)
-            };
-            let dx = a.right().saturating_sub(date_w);
-            put(
-                buf,
-                dx,
-                y,
-                &truncate(&date, usize::from(date_w - 1)),
-                date_w,
-                st.fg(t.dim),
-            );
+
+        if !second_row {
+            continue;
         }
+        // The short id goes on the right, if there's room for it after
+        // the author and the date.
+        let id = c.id.to_hex_with_len(7).to_string();
+        let date = if app.cfg.relative_dates {
+            short_date(c.time, now)
+        } else {
+            format_day(c.time, c.offset)
+        };
+        let meta = format!("{} · {date}", c.author);
+        let id_w = width(&id, 4) as u16;
+        let meta_w = if usize::from(text_w) >= width(&meta, 4) + usize::from(id_w) + 2 {
+            put(buf, right - id_w, y2, &id, id_w, st.fg(t.faint));
+            text_w - id_w - 2
+        } else {
+            text_w
+        };
+        put(
+            buf,
+            text_x,
+            y2,
+            &truncate(&meta, usize::from(meta_w)),
+            meta_w,
+            st.fg(t.dim),
+        );
     }
     if let Some(err) = &h.error {
-        let y = a.y + (end - start) as u16 + 1;
+        let y = a.y + (end - start) as u16 * HISTORY_ROW_HEIGHT + 1;
         if y < a.bottom() {
             let w = a.width.saturating_sub(2);
             let msg = format!("Couldn't read the history: {err}");

@@ -124,7 +124,7 @@ impl App {
     /// Movement keys for the focused list. Returns true if the key was used.
     fn nav_key(&mut self, k: KeyEvent) -> bool {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        let page = |a: Rect| usize::from(a.height.max(2)) - 1;
+        let page = |h: u16| usize::from(h.max(2)) - 1;
         enum Move {
             By(isize),
             Top,
@@ -146,20 +146,24 @@ impl App {
             _ => None,
         };
         if let Some(mv) = mv {
-            let (area, len, cur) = match self.focus {
+            let (p, len, cur) = match self.focus {
                 Focus::Sidebar => (
-                    self.areas.sidebar,
+                    page(self.areas.sidebar.height),
                     self.sidebar.rows.len(),
                     self.sidebar.selected,
                 ),
                 Focus::History => (
-                    self.areas.history,
+                    page(self.history_page() as u16),
                     self.history.row_count(),
                     self.history.current_row(),
                 ),
-                _ => (self.areas.doc, self.detail.rows.len(), self.detail.cursor),
+                _ => (
+                    page(self.areas.doc.height),
+                    self.detail.rows.len(),
+                    self.detail.cursor,
+                ),
             };
-            let p = page(area) as isize;
+            let p = p as isize;
             let target = match mv {
                 Move::Top => 0,
                 Move::Bottom => len.saturating_sub(1),
@@ -793,10 +797,7 @@ impl App {
                 .saturating_sub(usize::from(self.areas.sidebar.height));
             apply(&mut self.sidebar.scroll, max);
         } else if inside(self.areas.history) {
-            let max = self
-                .history
-                .row_count()
-                .saturating_sub(usize::from(self.areas.history.height));
+            let max = self.history.row_count().saturating_sub(self.history_page());
             apply(&mut self.history.scroll, max);
         } else if inside(self.areas.detail) {
             let max = self

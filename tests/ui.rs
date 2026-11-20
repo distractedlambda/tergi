@@ -43,7 +43,8 @@ fn shows_history_and_working_directory() {
     ui.wait_loaded(2);
     let screen = ui.screen();
     for text in [
-        "Working directory · 1 change",
+        "Working directory",
+        "1 change",
         "Add a fourth note",
         "Add notes",
         "Unstaged changes (1)",

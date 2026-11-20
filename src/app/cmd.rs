@@ -14,7 +14,7 @@ use gix::bstr::{BStr, BString, ByteSlice as _};
 use super::doc::{Row, Section, Source};
 use super::input::Target;
 use super::planner::{PlanAction, Planner};
-use super::{After, App, Focus, Level, Suspend};
+use super::{After, App, Focus, HISTORY_ROW_HEIGHT, Level, Suspend};
 use crate::config;
 use crate::git::commit::FileTexts;
 use crate::git::diff::FileDiff;
@@ -1604,9 +1604,12 @@ impl App {
                 ),
                 Focus::History => (
                     self.areas.history,
+                    // The menu goes below the second row of the entry.
                     self.history
                         .current_row()
-                        .saturating_sub(self.history.scroll),
+                        .saturating_sub(self.history.scroll)
+                        * usize::from(HISTORY_ROW_HEIGHT)
+                        + usize::from(HISTORY_ROW_HEIGHT - 1),
                 ),
                 _ => (
                     self.areas.doc,
