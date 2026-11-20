@@ -198,12 +198,20 @@ text into `Tokens`: byte ranges, each with a `Kind` such as `Comment`,
 token. The theme maps kinds to colors when the
 line is drawn, so switching themes doesn't need to lex anything again.
 
-Colors come from lexing alone. There is no parser, so the lexer can't
-tell what an identifier names, and we don't guess from its spelling.
-Identifiers are plain unless they're keywords. Only the `#[` that starts
-an attribute is colored, because finding where an attribute ends would
-take a parser. Escapes inside strings and characters are found with a
-second, smaller lexer.
+Colors come from lexing alone. There is no parser, so the Rust lexer
+guesses what an identifier names from its spelling and from the tokens
+right before and after it. A capitalized name is a type, and an
+all-caps one with more than one character is a constant. A name
+followed by `!` is a macro. A name followed by `(` or `::<` is a
+function, and so is the name right after `fn`, which catches generic
+functions too. These are the usual Rust conventions, so code that
+breaks them gets the wrong color. An enum variant such as `Some` is
+colored as a type, for example.
+
+An attribute is colored from `#[` up to the end of its path, such as
+`#[rustfmt::skip`. Finding where the attribute itself ends would take a
+parser. Escapes inside strings and characters are found with a second,
+smaller lexer.
 
 The Racket lexer follows Racket's reader with the default readtable. It
 was written from the reader's source in `racket/src/expander/read`

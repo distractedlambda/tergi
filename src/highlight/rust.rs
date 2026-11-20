@@ -2,7 +2,14 @@
 //!
 //! It follows the Rust reference closely enough to find where comments,
 //! strings and other tokens start and end, but it doesn't check that
-//! they're valid. Identifiers are plain unless they're keywords.
+//! they're valid.
+//!
+//! Without a parser we can't know what an identifier names, so we guess
+//! from its spelling and from what comes right before and after it. A
+//! capitalized name is a type and an all-caps one is a constant. A name
+//! followed by `!` is a macro, and one followed by `(` or `::<`, or after
+//! `fn`, is a function. These guesses are the usual Rust conventions, and
+//! code that breaks them gets the wrong color.
 
 use logos::{Lexer, Logos};
 
@@ -38,8 +45,9 @@ enum Token {
     )]
     Number,
 
-    // Only the start of an attribute. Finding its end would take a parser,
-    // since it can hold anything.
+    // Only the start of an attribute. `lex` also colors the path after it,
+    // such as `derive` or `rustfmt::skip`. Finding where the attribute ends
+    // would take a parser, since it can hold anything.
     #[regex(r"#!?\[")]
     Attribute,
 
@@ -151,6 +159,41 @@ fn raw_string(lex: &mut Lexer<Token>) {
     lex.bump(rest.find(&close).map_or(rest.len(), |i| i + close.len()));
 }
 
+/// Guess what an identifier that isn't a keyword names, from how it's
+/// spelled and what comes right after it.
+fn ident(word: &str, after: &str) -> Option<Kind> {
+    let word = word.strip_prefix("r#").unwrap_or(word);
+    if TYPES.contains(&word) {
+        return Some(Kind::Type);
+    }
+    if after.starts_with('!') && !after.starts_with("!=") {
+        return Some(Kind::Macro);
+    }
+    let mut chars = word.chars();
+    if chars.next().is_some_and(char::is_uppercase) {
+        // `T` is a type parameter, while `MAX` and `MAX_LEN` are constants.
+        let upper = chars.next().is_some() && !word.chars().any(char::is_lowercase);
+        return Some(if upper { Kind::Constant } else { Kind::Type });
+    }
+    if after.starts_with('(') || after.starts_with("::<") {
+        return Some(Kind::Function);
+    }
+    None
+}
+
+/// The primitive types, which are lowercase.
+const TYPES: &[&str] = &[
+    "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "str", "u8", "u16",
+    "u32", "u64", "u128", "usize",
+];
+
+/// What comes next in the path at the start of an attribute.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AttrPath {
+    Name,
+    Sep,
+}
+
 /// The pieces of a string literal. Anything else in one, such as a
 /// backslash before a character that can't be escaped, is plain string.
 #[derive(Logos, Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,12 +206,41 @@ enum Part {
 
 pub fn lex(text: &str, out: &mut Tokens) {
     let mut lex = Token::lexer(text);
+    // Whether the last token was `fn`, so that the name after it is a
+    // function even when `<` follows, as in a generic function.
+    let mut after_fn = false;
+    // Whether we're in the path of an attribute, such as `#[rustfmt::skip`.
+    let mut attr = None;
     while let Some(token) = lex.next() {
         let span = lex.span();
+        let slice = lex.slice();
+        // A comment between `fn` and its name changes nothing.
+        if token == Ok(Token::Comment) {
+            out.push(span, Kind::Comment);
+            continue;
+        }
+        let was_fn = std::mem::replace(&mut after_fn, token == Ok(Token::Keyword) && slice == "fn");
+        let path = attr.take();
         let kind = match token {
-            Ok(Token::Comment) => Kind::Comment,
+            Ok(Token::Attribute) => {
+                attr = Some(AttrPath::Name);
+                Kind::Attribute
+            }
+            Ok(Token::Ident) if path == Some(AttrPath::Name) => {
+                attr = Some(AttrPath::Sep);
+                Kind::Attribute
+            }
+            Ok(Token::Punctuation) if path == Some(AttrPath::Sep) && slice == "::" => {
+                attr = Some(AttrPath::Name);
+                Kind::Attribute
+            }
+            Ok(Token::Ident) if was_fn => Kind::Function,
+            Ok(Token::Ident) => match ident(slice, lex.remainder()) {
+                Some(kind) => kind,
+                None => continue,
+            },
             Ok(Token::Str) => {
-                for (part, r) in Part::lexer(lex.slice()).spanned() {
+                for (part, r) in Part::lexer(slice).spanned() {
                     let kind = match part {
                         Ok(Part::Escape) => Kind::Escape,
                         _ => Kind::String,
@@ -180,12 +252,11 @@ pub fn lex(text: &str, out: &mut Tokens) {
             Ok(Token::RawStr) => Kind::String,
             Ok(Token::Lifetime) => Kind::Lifetime,
             Ok(Token::Number) => Kind::Number,
-            Ok(Token::Attribute) => Kind::Attribute,
             Ok(Token::Operator) => Kind::Operator,
             Ok(Token::Punctuation) => Kind::Punctuation,
             Ok(Token::Keyword) => Kind::Keyword,
             Ok(Token::Bool) => Kind::Constant,
-            Ok(Token::Ident) | Err(()) => continue,
+            Ok(Token::Comment) | Err(()) => continue,
         };
         out.push(span, kind);
     }
@@ -219,6 +290,7 @@ mod tests {
             [
                 ("pub", Keyword),
                 ("fn", Keyword),
+                ("f", Function),
                 ("<", Operator),
                 ("'a", Lifetime),
                 (">", Operator),
@@ -226,14 +298,19 @@ mod tests {
                 (":", Punctuation),
                 ("&", Operator),
                 ("'a", Lifetime),
+                ("str", Type),
                 (")", Punctuation),
                 ("->", Operator),
+                ("Vec", Type),
                 ("<", Operator),
+                ("u8", Type),
                 (">", Operator),
                 ("{", Punctuation),
                 (".", Punctuation),
+                ("len", Function),
                 ("()", Punctuation),
                 ("as", Keyword),
+                ("u8", Type),
                 ("}", Punctuation),
             ]
         );
@@ -352,6 +429,7 @@ mod tests {
             [
                 ("1", Kind::Number),
                 (".", Kind::Punctuation),
+                ("max", Kind::Function),
                 ("(", Kind::Punctuation),
                 ("2", Kind::Number),
                 (")", Kind::Punctuation),
@@ -366,6 +444,9 @@ mod tests {
             [
                 ("self", Kind::Keyword),
                 ("Self", Kind::Keyword),
+                ("MAX", Kind::Constant),
+                ("Foo", Kind::Type),
+                ("u8", Kind::Type),
                 ("true", Kind::Constant),
                 ("false", Kind::Constant),
             ]
@@ -381,6 +462,7 @@ mod tests {
         assert_eq!(
             tokens("println!(x)"),
             [
+                ("println", Kind::Macro),
                 ("!", Kind::Operator),
                 ("(", Kind::Punctuation),
                 (")", Kind::Punctuation)
@@ -389,14 +471,61 @@ mod tests {
     }
 
     #[test]
+    fn guesses_from_spelling() {
+        use Kind::*;
+        let text = "T MAX_LEN X1 Größe ÉTAT _x x _";
+        assert_eq!(
+            tokens(text),
+            [
+                ("T", Type),
+                ("MAX_LEN", Constant),
+                ("X1", Constant),
+                ("Größe", Type),
+                ("ÉTAT", Constant),
+            ]
+        );
+        assert_eq!(
+            kinds_of("Some(x) None Ok::<u8, E>(1)", Type),
+            ["Some", "None", "Ok", "u8", "E"]
+        );
+    }
+
+    #[test]
+    fn guesses_from_neighbors() {
+        use Kind::*;
+        assert_eq!(
+            kinds_of(
+                "f(x) x.g() collect::<Vec<_>>() h (y) i::j fn k<T>() fn /* c */ l fn r#m",
+                Function
+            ),
+            ["f", "g", "collect", "k", "l", "r#m"]
+        );
+        assert_eq!(
+            kinds_of("vec![x] r#try!(y) x != y z!= w", Macro),
+            ["vec", "r#try"]
+        );
+        // `fn` only colors the name right after it.
+        assert_eq!(kinds_of("fn(x) -> y", Function), Vec::<&str>::new());
+    }
+
+    #[test]
     fn attributes() {
         assert_eq!(
             kinds_of(
-                "#[derive(Debug)] #![allow(x)] #[rustfmt::skip] #[ cfg(test)]",
+                "#[derive(Debug)] #![allow(x)] #[rustfmt::skip] #[ cfg(test)] #[a::]",
                 Kind::Attribute
             ),
-            ["#[", "#![", "#[", "#["]
+            [
+                "#[derive",
+                "#![allow",
+                "#[rustfmt::skip",
+                "#[",
+                "cfg",
+                "#[a::"
+            ]
         );
+        assert_eq!(kinds_of("#[derive(Debug)]", Kind::Type), ["Debug"]);
+        assert_eq!(kinds_of("#[x] y::z", Kind::Attribute), ["#[x"]);
     }
 
     #[test]
