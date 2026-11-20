@@ -1858,6 +1858,15 @@ mod tests {
                 ("// c", Comment)
             ]
         );
+        assert_eq!(
+            lex(Language::Rhombus, "; c\n#lang rhombus\nx: 1"),
+            [
+                ("; c", Comment),
+                ("#lang rhombus", Attribute),
+                (":", Punctuation),
+                ("1", Number)
+            ]
+        );
         // A piece from the middle of a file has no `#lang` line.
         assert_eq!(
             lex(Language::Rhombus, "1; x"),

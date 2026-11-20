@@ -252,13 +252,14 @@ follows `string->number` from the reader's `number.rkt`, with about one
 state for each function there, but it only checks the syntax.
 
 A `#lang` line at the top of a Racket file chooses the reader for the
-rest. With `#lang at-exp`, the lexer also reads @-forms such as
-`@foo[1]{text}`. With a Scribble language such as `#lang
-scribble/manual`, the whole file is text with @-forms in it. A `.scrbl`
-file is Scribble text even without a `#lang` line, because a hunk from
-the middle of a document doesn't have one. A hunk from the middle of an
-`at-exp` file is lexed as plain Racket, but we almost always have the
-full text, which starts with the `#lang` line.
+rest. Only Racket comments can come before it. With `#lang at-exp`, the
+lexer also reads @-forms such as `@foo[1]{text}`. With a Scribble
+language such as `#lang scribble/manual`, the whole file is text with
+@-forms in it. A `.scrbl` file is Scribble text even without a `#lang`
+line, because a hunk from the middle of a document doesn't have one. A
+hunk from the middle of an `at-exp` file is lexed as plain Racket, but
+we almost always have the full text, which starts with the `#lang`
+line.
 
 `default_reader` in `racket.rs` lists languages that we know use the
 default reader, such as `racket/base` and `typed/racket`. A language

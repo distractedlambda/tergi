@@ -1212,8 +1212,10 @@ impl Lex<'_> {
 pub fn lex(text: &str, lang: Language, out: &mut Tokens) {
     let mode = Mode::default();
     // Without a `#lang` line, the text is a piece from the middle of a
-    // file, and its name tells us how to read it.
-    let lang_line = Token::lexer_with_extras(text, mode).next() == Some(Ok(Token::Lang));
+    // file, and its name tells us how to read it. Comments can come before
+    // the `#lang` line, as `read-language` skips them.
+    let lang_line = Token::lexer_with_extras(text, mode).find(|t| *t != Ok(Token::Comment))
+        == Some(Ok(Token::Lang));
     if lang == Language::Rhombus && !lang_line {
         shrubbery::lex(text, 0, false, out);
         return;
@@ -1621,6 +1623,18 @@ mod tests {
         assert_eq!(
             scribble("#lang racket\n(1) @f"),
             [
+                ("#lang racket", Attribute),
+                ("(", Punctuation),
+                ("1", Number),
+                (")", Punctuation)
+            ]
+        );
+        // Comments can come before the `#lang` line.
+        assert_eq!(
+            scribble("; c\n#| d |#\n#lang racket\n(1) @f"),
+            [
+                ("; c", Comment),
+                ("#| d |#", Comment),
                 ("#lang racket", Attribute),
                 ("(", Punctuation),
                 ("1", Number),
