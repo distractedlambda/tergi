@@ -226,7 +226,7 @@ back.
 Names in C, C++, CMake, Rust, Racket, Rhombus and Scribble code get a
 color picked from the name itself, so each use of a variable has the
 same color. Keywords, and names that already have a color, such as
-types and functions in Rust, keep theirs. Each theme has its own set of
+macros and constants in Rust, keep theirs. Each theme has its own set of
 these colors. To draw the other names in the text color instead, set
 `rainbow_identifiers = false`.
 

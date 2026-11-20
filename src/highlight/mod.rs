@@ -2,10 +2,9 @@
 //!
 //! Each language has a lexer of its own, written with Logos, and tokens
 //! get their colors from what the lexer alone can tell. There is no
-//! parser, so an identifier that a parser would know is a function or a
-//! type is only colored when its spelling or the next character gives it
-//! away. Other identifiers are marked as such, so that drawing can give
-//! each name a color of its own, unless the user turns that off.
+//! parser, so we can't tell which identifiers name functions or types.
+//! Identifiers are marked as such instead, so that drawing can give each
+//! name a color of its own, unless the user turns that off.
 //!
 //! When we have the full text of a file, we lex the whole file so that
 //! multi-line strings and comments come out right, then pick out the lines
