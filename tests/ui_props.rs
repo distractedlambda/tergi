@@ -577,6 +577,26 @@ fn check_state(ui: &Ui) -> Result<(), TestCaseError> {
         );
     }
 
+    // An anchor that a rewrite took away goes once the walk is done.
+    if !h.loading
+        && h.error.is_none()
+        && let Some(anchor) = h.anchor
+    {
+        prop_assert!(
+            h.index.contains_key(&anchor),
+            "the commit selection starts at {anchor}, which isn't in the history\n{}",
+            screen()
+        );
+    }
+    if let Some((lo, hi)) = h.marked_rows() {
+        prop_assert!(
+            1 <= lo && lo <= hi && hi < h.row_count(),
+            "commit rows {lo} to {hi} of {} are selected\n{}",
+            h.row_count(),
+            screen()
+        );
+    }
+
     let d = &a.detail;
     let last = d.rows.len().saturating_sub(1);
     prop_assert!(

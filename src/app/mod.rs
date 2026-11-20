@@ -165,6 +165,9 @@ pub struct History {
     /// isn't loaded, moving with the keys starts from here. If the commit
     /// is gone after a reload, the row stays selected instead.
     pub last_row: usize,
+    /// Where a selection of several commits started, while there is one.
+    /// The selection runs from here to the selected row.
+    pub anchor: Option<ObjectId>,
     /// How far the list is scrolled, in screen rows rather than entries.
     /// The top entry can be cut off.
     pub scroll: usize,
@@ -193,6 +196,21 @@ impl History {
     /// The row of the selection, or the row it was last in.
     pub fn current_row(&self) -> usize {
         self.selected_row().unwrap_or(self.last_row)
+    }
+
+    /// The first and last row of the commits selected with the anchor, if
+    /// there is one. The working directory row is never part of it.
+    pub fn marked_rows(&self) -> Option<(usize, usize)> {
+        let a = self.index.get(&self.anchor?)? + 1;
+        let c = self.current_row();
+        Some((a.min(c).max(1), a.max(c)))
+    }
+
+    /// The commits selected with the anchor, newest first.
+    pub fn marked(&self) -> Option<Vec<ObjectId>> {
+        let (lo, hi) = self.marked_rows()?;
+        let commits = self.commits.get(lo - 1..hi)?;
+        Some(commits.iter().map(|c| c.id).collect())
     }
 
     pub fn selected_commit(&self) -> Option<&CommitInfo> {
@@ -780,6 +798,11 @@ impl App {
         h.rows.extend(batch.rows);
         if batch.done {
             h.loading = false;
+            // The anchor is gone, usually because a rebase rewrote it. If
+            // it came back later, an old selection would come back with it.
+            if h.anchor.is_some_and(|a| !h.index.contains_key(&a)) {
+                h.anchor = None;
+            }
         }
         if let Selected::Commit(id) = h.selected {
             if let Some(&i) = h.index.get(&id) {
@@ -820,6 +843,14 @@ impl App {
             self.show_source(doc::Source::Commit(id));
         }
         self.ensure_history_visible();
+    }
+
+    /// Start a selection of several commits at the selected one, unless
+    /// one has started already.
+    pub fn start_marking(&mut self) {
+        if let (None, Selected::Commit(id)) = (self.history.anchor, self.history.selected) {
+            self.history.anchor = Some(id);
+        }
     }
 
     /// How many history entries fit in the pane without being cut off.

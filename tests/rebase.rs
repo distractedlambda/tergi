@@ -165,6 +165,74 @@ async fn fixup_and_squash_into_parent() {
 }
 
 #[tokio::test]
+async fn drop_several_commits() {
+    let (s, ids) = four();
+    let r = rebase::several(&s.git, &exe(), &[id(&ids[3]), id(&ids[1])], Action::Drop)
+        .await
+        .expect("drop");
+    assert_eq!(r, Outcome::Done);
+    assert_eq!(s.log(), ["three", "one"]);
+    assert!(!s.file("two.txt").exists() && !s.file("four.txt").exists());
+}
+
+#[tokio::test]
+async fn fixup_and_squash_several_commits() {
+    let (s, ids) = four();
+    let chosen = [id(&ids[3]), id(&ids[2]), id(&ids[1])];
+    rebase::several(&s.git, &exe(), &chosen, Action::Fixup)
+        .await
+        .expect("fixup");
+    assert_eq!(s.log(), ["two", "one"]);
+    let files = s.sh(&["show", "--name-only", "--format=", "HEAD"]);
+    assert_eq!(
+        files.lines().collect::<Vec<_>>(),
+        ["four.txt", "three.txt", "two.txt"]
+    );
+
+    // Down to the root, in either order.
+    let (s, ids) = four();
+    let chosen = [id(&ids[0]), id(&ids[1])];
+    rebase::several(
+        &s.git,
+        &exe(),
+        &chosen,
+        Action::Squash("one and two".into()),
+    )
+    .await
+    .expect("squash");
+    assert_eq!(s.log(), ["four", "three", "one and two"]);
+    assert_eq!(s.sh(&["rev-list", "--count", "HEAD"]).trim(), "3");
+}
+
+/// Melding has to keep every other commit where it is.
+#[tokio::test]
+async fn refuses_to_meld_commits_that_are_apart() {
+    let (s, ids) = four();
+    let apart = [id(&ids[3]), id(&ids[1])];
+    for action in [Action::Fixup, Action::Squash("two and four".into())] {
+        let e = rebase::several(&s.git, &exe(), &apart, action).await;
+        assert!(e.is_err());
+    }
+    let e = rebase::several(&s.git, &exe(), &[id(&ids[2])], Action::Fixup).await;
+    assert!(e.is_err(), "one commit has nothing to meld with");
+    assert_eq!(s.log(), ["four", "three", "two", "one"]);
+}
+
+#[tokio::test]
+async fn refuses_several_commits_off_the_branch() {
+    let (s, ids) = four();
+    s.sh(&["checkout", "-q", "-b", "side", &ids[1]]);
+    s.write("side.txt", "side\n");
+    let side = s.commit_all("side");
+    s.sh(&["checkout", "-q", "-"]);
+    for chosen in [vec![id(&side)], vec![id(&side), id(&ids[2])]] {
+        let e = rebase::several(&s.git, &exe(), &chosen, Action::Drop).await;
+        assert!(e.is_err(), "{chosen:?}");
+    }
+    assert_eq!(s.log(), ["four", "three", "two", "one"]);
+}
+
+#[tokio::test]
 async fn move_commits() {
     let (s, ids) = four();
     rebase::move_commit(&s.git, &exe(), id(&ids[1]), true)

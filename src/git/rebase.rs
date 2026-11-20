@@ -547,6 +547,62 @@ pub async fn single(git: &Git, exe: &Path, id: ObjectId, action: Action) -> Resu
     run(git, &plan, exe).await
 }
 
+/// Drop several commits, or meld them together. A fixup or squash melds
+/// them all into the oldest of them, which keeps its place in the branch.
+/// A fixup keeps the oldest commit's message, and a squash gives the
+/// result the new message.
+pub async fn several(git: &Git, exe: &Path, ids: &[ObjectId], action: Action) -> Result<Outcome> {
+    let oldest = oldest_of(git, ids).await?;
+    let mut plan = plan_from(git, oldest).await?;
+    apply_to_several(&mut plan, ids, action)?;
+    run(git, &plan, exe).await
+}
+
+/// The commit that all of `ids` descend from, if it's one of them.
+async fn oldest_of(git: &Git, ids: &[ObjectId]) -> Result<ObjectId> {
+    let mut args = vec!["merge-base".to_string(), "--octopus".to_string()];
+    args.extend(ids.iter().map(ObjectId::to_string));
+    let base = git
+        .read_text(&args)
+        .await
+        .ok()
+        .and_then(|out| ObjectId::from_hex(out.trim().as_bytes()).ok());
+    match base {
+        Some(b) if ids.contains(&b) => Ok(b),
+        _ => bail!("The selected commits aren't all part of the current branch."),
+    }
+}
+
+/// Set the steps for `several`. The plan starts at the oldest of `ids`.
+pub fn apply_to_several(plan: &mut Plan, ids: &[ObjectId], action: Action) -> Result<()> {
+    if ids.iter().any(|id| !plan.steps.iter().any(|s| s.id == *id)) {
+        bail!("The selected commits aren't all part of the current branch.");
+    }
+    let chosen = |s: &Step| ids.contains(&s.id);
+    if !action.melds() {
+        for step in plan.steps.iter_mut().filter(|s| chosen(s)) {
+            step.action = action.clone();
+        }
+        return Ok(());
+    }
+    let n = plan.steps.iter().filter(|s| chosen(s)).count();
+    if n < 2 {
+        bail!("Select at least two commits to meld together.");
+    }
+    // Melding commits that have others between them would move those
+    // others too, which the user didn't ask for.
+    if !plan.steps[..n].iter().all(chosen) {
+        bail!("Only commits that follow one another can be melded together.");
+    }
+    for step in &mut plan.steps[1..n] {
+        step.action = Action::Fixup;
+    }
+    // The message goes on the newest one, so that it applies once all of
+    // them are melded in.
+    plan.steps[n - 1].action = action;
+    Ok(())
+}
+
 /// Move a commit one step towards HEAD (`newer`) or away from it.
 pub async fn move_commit(git: &Git, exe: &Path, id: ObjectId, newer: bool) -> Result<Outcome> {
     let start = if newer {

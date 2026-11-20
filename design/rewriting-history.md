@@ -206,6 +206,41 @@ dialog starts with the parent's message followed by this one. The dialog
 only opens if no other dialog opened in the meantime, because then the
 user has moved on.
 
+## Several commits
+
+Pressing `v` in the history starts a selection of commits. `History`
+keeps the commit it started at in `anchor`, and the selection runs from
+there to the selected row. Like the selection itself, the anchor is a
+commit id, so a reload can't move it to another commit. When the walk
+ends without finding the anchor, usually because a rebase rewrote it,
+the selection ends. Otherwise it would come back if the commit came
+back, for example after an abort.
+
+While there is a selection, `marked_actions` replaces the actions for
+one commit. Each command carries the selected ids, newest first.
+
+- Drop, fixup and squash go through `several`. It finds the oldest of
+  the commits with `git merge-base --octopus`, which gives back one of
+  them only if all the others descend from it. Then it makes a plan from
+  that commit and checks that every selected commit is in it, so that
+  they are all on the current branch.
+- `apply_to_several` sets the steps. A drop drops each commit. A fixup
+  or squash melds the others into the oldest, which keeps its place. A
+  squash puts its message on the newest commit, so that git amends the
+  message once everything is melded in. Melding refuses commits that
+  have unselected ones between them, because those would have to move.
+  A selection in the history can't have gaps on the current branch,
+  since the history is in topological order, but `several` doesn't rely
+  on that.
+- The squash dialog starts with the messages of all the commits, oldest
+  first.
+- Cherry-pick and revert pass all the commits to one git command, which
+  applies them in the order given. Cherry-picks go oldest first, and
+  reverts newest first.
+
+The selection ends when one of these commands runs. Cancelling the
+squash dialog or the question before a drop keeps it.
+
 ## The planner
 
 The planner (`i` in the history) edits a whole plan before running it.
@@ -245,7 +280,9 @@ commit, message lines that start with `#`, drop, fixup, squash, moves,
 edit with continue, a planner-style plan, autostash, a conflict that
 stops and aborts, skipping a reword that conflicts, amending staged
 changes into an older commit and aborting that, refusing merges in the
-range, and refusing to start during another rebase.
+range, and refusing to start during another rebase. It also drops,
+fixes up and squashes several commits, and checks that `several`
+refuses commits that are apart or off the branch.
 `reword_where_paths_are_not_utf8` rewords and squashes in a repository
 whose path isn't UTF-8, with tergi run from a folder whose name isn't
 UTF-8 either.
@@ -263,7 +300,8 @@ quotes and non-ASCII text.
 `tests/rebase_stop_props.rs` covers rebases that stop. Most of its
 commits change one of three lines in a shared file, so reordering,
 dropping and melding them can conflict. It starts each rebase through
-the planner or one of the single-commit actions. At a conflict it takes
+the planner, one of the single-commit actions, or `several` on a run
+of commits. At a conflict it takes
 a side with `take_side`, edits the file, skips or aborts. At an `edit`
 step it continues, amends the commit, skips or aborts. A model replays
 the todo list with a three-way merge of each line and file. It says
@@ -278,6 +316,9 @@ rows, and that `build_todo` accepts every plan that `to_plan` accepts. In `tests
 `the_planner_asks_for_a_message_after_its_row_moves` and
 `a_reword_without_its_dialog_goes_back_to_pick` cover the dialogs, and
 `rewords_a_commit_and_runs_a_plan` runs the whole flow from the keyboard.
+`squashes_commits_selected_with_v` and
+`selects_commits_with_shift_and_the_mouse` cover selecting several
+commits.
 
 The tests set `repo.exe` to `CARGO_BIN_EXE_tergi`, because during a test
 the current executable is the test runner, not tergi.

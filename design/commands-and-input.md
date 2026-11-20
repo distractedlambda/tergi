@@ -40,9 +40,10 @@ says what comes before its key, and three flags:
 
 `via` is one of three things. The keys of `Direct` actions work by
 themselves. These are movement keys like `l` and `h`, Space for
-folding, and the global keys. `Dot` actions act on the selection. Their
-keys only work in the menu that `.` and the right mouse button open, so
-that letters like `d` can't clash with movement. `Esc` actions are the
+folding, `v` for selecting lines or commits, and the global keys. `Dot`
+actions act on the selection. Their keys only work in the menu that `.`
+and the right mouse button open, so that letters like `d` can't clash
+with movement. `Esc` actions are the
 ones in `repo_actions`. Their keys work in the git menu that Esc opens.
 The planner is the exception. Its actions are `Direct` and also in its
 right-click menu, because setting actions on its rows is all it does.
@@ -78,7 +79,8 @@ depending on what the cursor is on.
 
 Esc opens the git menu only when nothing else uses it. In a text box
 it cancels or leaves the box, and in a menu or dialog it closes it. In
-the planner it cancels the plan. In the detail pane, it first ends a
+the planner it cancels the plan. In the history it first ends a
+selection of commits. In the detail pane, it first ends a
 line selection and then backs out one level, like `h`. It opens the git
 menu once the cursor is at the file level. `diffs.md` explains the
 levels.
@@ -170,9 +172,12 @@ it changes.
 
 - A left click selects. Two clicks on the same cell within 400 ms count
   as a double click, which opens or checks out.
-- A right click selects the row and opens its menu. In the detail pane,
-  a right click inside the selected lines keeps the selection, so the
-  menu acts on those lines.
+- A right click selects the row and opens its menu. A right click
+  inside the selected lines or commits keeps the selection, so the menu
+  acts on all of them.
+- Shift with a click in the history selects the commits from the
+  selected one to the one clicked. A click without Shift ends the
+  selection.
 - Dragging over diff lines selects them. Dragging past the top or bottom
   edge scrolls.
 - Dragging a divider resizes the panes. Dragging a planner row moves it.

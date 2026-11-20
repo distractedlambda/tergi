@@ -2,8 +2,8 @@
 //!
 //! Each case makes a history in which most commits change one line of
 //! `shared.txt`, so reordering, dropping and melding commits can conflict.
-//! It starts a rebase through the planner or one of the single commit
-//! operations. At each stop it picks a way to go on. At a conflict it can
+//! It starts a rebase through the planner, one of the single commit
+//! operations, or an operation on several commits. At each stop it picks a way to go on. At a conflict it can
 //! take a side, edit the file, skip or abort. At an `edit` step it can
 //! continue, amend the commit, skip or abort. A model replays the todo
 //! list and says where the rebase should stop, what `state_in` should
@@ -274,6 +274,9 @@ enum Op {
     Reword(usize, u8),
     /// `rebase::single` with a drop, edit, fixup or squash.
     Single(usize, PlanAction, u8),
+    /// `rebase::several` with a drop, fixup or squash of the commits from
+    /// the first to the second.
+    Several(usize, usize, PlanAction, u8),
     /// Move a commit towards HEAD, or away from it.
     Move(usize, bool),
     /// Stage a change to a slot and a new file, and fix up a commit with
@@ -345,8 +348,21 @@ fn op(n: usize) -> impl Strategy<Value = Op> {
         PlanAction::Fixup,
         PlanAction::Squash,
     ]);
+    // Melding needs at least two commits.
+    let several = (1..=n)
+        .prop_flat_map(move |lo| (Just(lo), lo..=n))
+        .prop_flat_map(|(lo, hi)| {
+            let actions = if lo < hi {
+                vec![PlanAction::Drop, PlanAction::Fixup, PlanAction::Squash]
+            } else {
+                vec![PlanAction::Drop]
+            };
+            (Just(lo), Just(hi), prop::sample::select(actions), 0u8..2)
+        })
+        .prop_map(|(lo, hi, a, v)| Op::Several(lo, hi, a, v));
     prop_oneof![
         4 => plan,
+        2 => several,
         1 => (1..=n, 0u8..2).prop_map(|(k, v)| Op::Reword(k, v)),
         2 => (1..=n, single, 0u8..2).prop_map(|(k, a, v)| Op::Single(k, a, v)),
         2 => (1..=n, any::<bool>()).prop_map(move |(k, newer)| Op::Move(k, newer && k < n)),
@@ -452,6 +468,19 @@ fn rows(case: &Case) -> Option<(usize, Vec<(usize, Action)>)> {
             let mut rows = picks(start);
             set(&mut rows, *k, action);
             (start, rows)
+        }
+        Op::Several(lo, hi, action, v) => {
+            let mut rows = picks(*lo);
+            for k in *lo..=*hi {
+                let a = match action {
+                    PlanAction::Drop => Action::Drop,
+                    _ if k == *lo => Action::Pick,
+                    PlanAction::Squash if k == *hi => Action::Squash(new_message(k, *v)),
+                    _ => Action::Fixup,
+                };
+                set(&mut rows, k, a);
+            }
+            (*lo, rows)
         }
         Op::Move(k, newer) => {
             let start = if *newer { *k } else { k - 1 };
@@ -704,6 +733,16 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
                 _ => Action::Squash(new_message(*k, *v)),
             };
             rt.block_on(rebase::single(&s.git, &exe, id(&ids[*k]), action))
+        }
+        Op::Several(lo, hi, action, v) => {
+            let action = match action {
+                PlanAction::Drop => Action::Drop,
+                PlanAction::Fixup => Action::Fixup,
+                _ => Action::Squash(new_message(*hi, *v)),
+            };
+            // Newest first, as the history lists them.
+            let chosen: Vec<ObjectId> = (*lo..=*hi).rev().map(|k| id(&ids[k])).collect();
+            rt.block_on(rebase::several(&s.git, &exe, &chosen, action))
         }
         Op::Move(k, newer) => rt.block_on(rebase::move_commit(&s.git, &exe, id(&ids[*k]), *newer)),
         Op::FixupStaged(target, _) => {

@@ -136,6 +136,15 @@ pub enum Cmd {
     Reset(ObjectId, ResetMode),
     CopyHash(ObjectId),
     AmendInto(ObjectId),
+    /// Start or end a selection of several commits in the history.
+    SelectCommits,
+    // These act on several commits, which are listed newest first.
+    SquashCommits(Vec<ObjectId>),
+    FixupCommits(Vec<ObjectId>),
+    DropCommits(Vec<ObjectId>),
+    CherryPickCommits(Vec<ObjectId>),
+    RevertCommits(Vec<ObjectId>),
+    CopyHashes(Vec<ObjectId>),
     JumpTo(ObjectId),
 
     Stage(Unit),
@@ -376,6 +385,7 @@ pub enum Purpose {
     NewTag(ObjectId),
     Reword(ObjectId),
     Squash(ObjectId),
+    SquashCommits(Vec<ObjectId>),
     StashPush,
     SetUpstream(BString),
     /// The message for the planner row with this commit.
@@ -742,6 +752,9 @@ impl App {
     }
 
     fn history_actions(&self) -> Vec<ActionDef> {
+        if let Some(ids) = self.history.marked() {
+            return self.marked_actions(ids);
+        }
         let Some(c) = self.history.selected_commit() else {
             return vec![
                 act(
@@ -782,6 +795,9 @@ impl App {
             )
             .hint()
             .enabled(!merge),
+            act(Some(Key::ch('v')), "Select commits", Cmd::SelectCommits)
+                .hint()
+                .direct(),
             act(
                 Some(Key::ch('A')),
                 "Amend staged changes into this commit",
@@ -807,6 +823,59 @@ impl App {
                 Cmd::ResetMenu(id),
             ),
             act(Some(Key::ch('y')), "Copy commit hash", Cmd::CopyHash(id)),
+        ]
+    }
+
+    /// The actions on the commits selected with `v`, newest first.
+    fn marked_actions(&self, ids: Vec<ObjectId>) -> Vec<ActionDef> {
+        let h = &self.history;
+        let merge = ids.iter().any(|id| {
+            h.index
+                .get(id)
+                .and_then(|&i| h.commits.get(i))
+                .is_some_and(|c| c.parents.len() > 1)
+        });
+        let n = ids.len();
+        let commits = commits_noun(n);
+        vec![
+            act(Some(Key::ch('v')), "Stop selecting", Cmd::SelectCommits)
+                .hint()
+                .direct(),
+            act(
+                Some(Key::ch('s')),
+                format!("Squash {commits} together…"),
+                Cmd::SquashCommits(ids.clone()),
+            )
+            .hint()
+            .enabled(n > 1 && !merge),
+            act(
+                Some(Key::ch('f')),
+                format!("Fixup {commits} into the oldest"),
+                Cmd::FixupCommits(ids.clone()),
+            )
+            .enabled(n > 1 && !merge),
+            act(
+                Some(Key::ch('d')),
+                format!("Drop {commits}"),
+                Cmd::DropCommits(ids.clone()),
+            )
+            .hint()
+            .enabled(!merge),
+            act(
+                Some(Key::ch('C')),
+                format!("Cherry-pick {commits}"),
+                Cmd::CherryPickCommits(ids.clone()),
+            ),
+            act(
+                Some(Key::ch('V')),
+                format!("Revert {commits}"),
+                Cmd::RevertCommits(ids.clone()),
+            ),
+            act(
+                Some(Key::ch('y')),
+                "Copy commit hashes",
+                Cmd::CopyHashes(ids),
+            ),
         ]
     }
 
@@ -1123,6 +1192,11 @@ impl App {
             Cmd::Drop(id) => s(
                 "Drop commit?",
                 format!("Commit {} will be removed from the branch.", short(id)),
+                "Drop",
+            ),
+            Cmd::DropCommits(ids) => s(
+                &format!("Drop {}?", commits_noun(ids.len())),
+                format!("{} will be removed from the branch.", list_commits(ids)),
                 "Drop",
             ),
             Cmd::Reset(id, ResetMode::Hard) => s(
@@ -1477,12 +1551,12 @@ impl App {
             Cmd::CherryPick(id) => {
                 let s = id.to_string();
                 self.spawn_op("Cherry-pick", After::Nothing, move |r, _| async move {
-                    ops::cherry_pick(&r.git, &s).await.map(|()| "Cherry-picked".into())
+                    ops::cherry_pick(&r.git, &[s]).await.map(|()| "Cherry-picked".into())
                 });
             }
             Cmd::Revert(id) => {
                 let s = id.to_string();
-                self.spawn_op("Revert", After::Nothing, move |r, _| async move { ops::revert(&r.git, &s).await.map(|()| "Reverted".into()) });
+                self.spawn_op("Revert", After::Nothing, move |r, _| async move { ops::revert(&r.git, &[s]).await.map(|()| "Reverted".into()) });
             }
             Cmd::ResetMenu(id) => {
                 let items = vec![
@@ -1497,6 +1571,58 @@ impl App {
                 self.spawn_op("Reset", After::Nothing, move |r, _| async move { ops::reset(&r.git, &s, mode).await.map(|()| "Reset".into()) });
             }
             Cmd::CopyHash(id) => self.copy_to_clipboard(&id.to_string()),
+            Cmd::SelectCommits => {
+                if self.history.anchor.take().is_none() {
+                    self.start_marking();
+                }
+            }
+            Cmd::SquashCommits(ids) => {
+                self.spawn_read(
+                    {
+                        let ids = ids.clone();
+                        move |r| async move {
+                            let mut msgs = Vec::new();
+                            for id in ids.iter().rev() {
+                                msgs.push(ops::commit_message(&r.git, &id.to_string()).await.unwrap_or_default());
+                            }
+                            msgs.join("\n\n")
+                        }
+                    },
+                    move |app, msg| {
+                        if app.overlays.is_empty() {
+                            let title = format!("Squash {}", commits_noun(ids.len()));
+                            app.open_input(&title, "Message for the combined commit. Ctrl+Enter to save.", true, &msg, Purpose::SquashCommits(ids));
+                        }
+                    },
+                );
+            }
+            Cmd::FixupCommits(ids) => {
+                self.history.anchor = None;
+                self.rebase_op("Fixup", move |r| async move { rebase::several(&r.git, &exe, &ids, Action::Fixup).await });
+            }
+            Cmd::DropCommits(ids) => {
+                self.history.anchor = None;
+                self.rebase_op("Drop commits", move |r| async move { rebase::several(&r.git, &exe, &ids, Action::Drop).await });
+            }
+            Cmd::CherryPickCommits(ids) => {
+                self.history.anchor = None;
+                // Git applies them in the order given, so the oldest goes first.
+                let revs: Vec<String> = ids.iter().rev().map(ObjectId::to_string).collect();
+                self.spawn_op("Cherry-pick", After::Nothing, move |r, _| async move {
+                    ops::cherry_pick(&r.git, &revs).await.map(|()| "Cherry-picked".into())
+                });
+            }
+            Cmd::RevertCommits(ids) => {
+                self.history.anchor = None;
+                // Undo the newest first, as undoing them one by one would.
+                let revs: Vec<String> = ids.iter().map(ObjectId::to_string).collect();
+                self.spawn_op("Revert", After::Nothing, move |r, _| async move { ops::revert(&r.git, &revs).await.map(|()| "Reverted".into()) });
+            }
+            Cmd::CopyHashes(ids) => {
+                self.history.anchor = None;
+                let text: Vec<String> = ids.iter().map(ObjectId::to_string).collect();
+                self.copy_to_clipboard(&text.join("\n"));
+            }
             Cmd::AmendInto(id) => self.rebase_op("Amend into commit", move |r| async move { rebase::fixup_staged_into(&r.git, id).await }),
             Cmd::JumpTo(id) => {
                 if !self.jump_to(id) {
@@ -1823,6 +1949,12 @@ impl App {
             Purpose::Squash(id) => self.rebase_op("Squash", move |r| async move {
                 rebase::single(&r.git, &exe, id, Action::Squash(text)).await
             }),
+            Purpose::SquashCommits(ids) => {
+                self.history.anchor = None;
+                self.rebase_op("Squash", move |r| async move {
+                    rebase::several(&r.git, &exe, &ids, Action::Squash(text)).await
+                });
+            }
             Purpose::StashPush => self.spawn_op("Stash", After::Nothing, move |r, _| async move {
                 ops::stash_push(&r.git, &name, true, false)
                     .await
@@ -2094,6 +2226,33 @@ fn discard_what(sec: Section, paths: &[BString]) -> String {
         format!("{list} will be deleted")
     } else {
         format!("unstaged changes to {list} will be lost")
+    }
+}
+
+/// "1 commit" or "3 commits".
+fn commits_noun(n: usize) -> String {
+    if n == 1 {
+        "1 commit".to_string()
+    } else {
+        format!("{n} commits")
+    }
+}
+
+/// The commits that dropping `ids` removes, for the dialog that asks first.
+fn list_commits(ids: &[ObjectId]) -> String {
+    const SHOWN: usize = 5;
+    let ids: Vec<String> = ids.iter().map(short).collect();
+    match &ids[..] {
+        [] => String::new(),
+        [id] => format!("Commit {id}"),
+        [rest @ .., last] if ids.len() <= SHOWN => {
+            format!("Commits {} and {last}", rest.join(", "))
+        }
+        _ => format!(
+            "Commits {} and {} others",
+            ids[..SHOWN - 1].join(", "),
+            ids.len() - (SHOWN - 1)
+        ),
     }
 }
 

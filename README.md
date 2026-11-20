@@ -140,6 +140,22 @@ In the message box, Esc leaves the box instead, and Alt+A toggles amend.
 In the sidebar, Space folds a section, and `.` Space checks out the
 selected branch.
 
+### On several commits in the history
+
+Press `v` to start selecting commits, then move with `j` and `k`.
+Shift with the arrow keys, or Shift with a click, selects too. Esc or
+`v` ends the selection.
+
+| Key | What it does |
+| --- | --- |
+| `.s` | Squash them into one commit, with a new message |
+| `.f` | Fix them up into the oldest, keeping its message |
+| `.d` | Drop them |
+| `.C` / `.V` | Cherry-pick or revert them |
+| `.y` | Copy their hashes |
+
+Squash, fixup and drop only work on commits of the current branch.
+
 ## Rewriting history
 
 The single-commit actions above run `git rebase -i` for you, without

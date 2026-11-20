@@ -205,7 +205,15 @@ impl App {
             let target = target.min(len.saturating_sub(1));
             match self.focus {
                 Focus::Sidebar => self.sidebar_select(target),
-                Focus::History => self.select_history(target),
+                Focus::History => {
+                    // Shift with a letter, such as `G`, is just the letter.
+                    if k.modifiers.contains(KeyModifiers::SHIFT)
+                        && !matches!(k.code, KeyCode::Char(_))
+                    {
+                        self.start_marking();
+                    }
+                    self.select_history(target);
+                }
                 _ => self.detail_move_to(target, k.modifiers.contains(KeyModifiers::SHIFT)),
             }
             return true;
@@ -217,6 +225,10 @@ impl App {
             }
             (Focus::History, KeyCode::Char('h') | KeyCode::Left) if self.sidebar_shown() => {
                 self.focus = Focus::Sidebar;
+                true
+            }
+            (Focus::History, KeyCode::Esc) if self.history.anchor.is_some() => {
+                self.history.anchor = None;
                 true
             }
             (Focus::Sidebar, KeyCode::Char('l') | KeyCode::Right) => {
@@ -734,6 +746,11 @@ impl App {
             }
             Target::HistoryRow(i) => {
                 self.focus = Focus::History;
+                if shift {
+                    self.start_marking();
+                } else {
+                    self.history.anchor = None;
+                }
                 self.select_history(i);
                 if double {
                     self.focus = Focus::Detail;
@@ -862,7 +879,12 @@ impl App {
             }
             Some(&Target::HistoryRow(i)) => {
                 self.focus = Focus::History;
-                self.select_history(i);
+                // A click inside the selected commits is about those commits.
+                let marked = self.history.marked_rows();
+                if !marked.is_some_and(|(a, b)| (a..=b).contains(&i)) {
+                    self.history.anchor = None;
+                    self.select_history(i);
+                }
             }
             Some(&Target::DocRow(i)) if i >= self.detail.rows.len() => return,
             Some(&Target::DocRow(i)) => {

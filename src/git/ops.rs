@@ -364,14 +364,19 @@ pub async fn merge(git: &Git, rev: impl AsRef<[u8]>) -> Result<()> {
     Ok(())
 }
 
-pub async fn cherry_pick(git: &Git, rev: &str) -> Result<()> {
-    git.run(&["cherry-pick", "--end-of-options", rev]).await?;
+/// Cherry-pick commits in the order given.
+pub async fn cherry_pick(git: &Git, revs: &[String]) -> Result<()> {
+    let mut args = vec!["cherry-pick", "--end-of-options"];
+    args.extend(revs.iter().map(String::as_str));
+    git.run(&args).await?;
     Ok(())
 }
 
-pub async fn revert(git: &Git, rev: &str) -> Result<()> {
-    git.run(&["revert", "--no-edit", "--end-of-options", rev])
-        .await?;
+/// Revert commits in the order given.
+pub async fn revert(git: &Git, revs: &[String]) -> Result<()> {
+    let mut args = vec!["revert", "--no-edit", "--end-of-options"];
+    args.extend(revs.iter().map(String::as_str));
+    git.run(&args).await?;
     Ok(())
 }
 

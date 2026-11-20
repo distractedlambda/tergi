@@ -638,6 +638,7 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
         .unwrap_or(1)
         .min(usize::from(a.width / 3)) as u16;
     let selected = h.selected_row();
+    let marked = h.marked_rows();
 
     for i in start..end {
         // Either row of the entry may be outside the pane.
@@ -646,8 +647,18 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
             continue;
         };
         let rr = Rect::new(a.x, top, a.width, last + 1 - top);
-        let bg = row_bg(app, selected == Some(i), focused, rr, t.bg);
+        let is_marked = marked.is_some_and(|(lo, hi)| (lo..=hi).contains(&i));
+        let bg = if is_marked && selected != Some(i) {
+            t.line_sel
+        } else {
+            row_bg(app, selected == Some(i), focused, rr, t.bg)
+        };
         fill(buf, rr, bg);
+        if is_marked {
+            for y in rr.y..rr.bottom() {
+                put(buf, a.x, y, "▌", 1, Style::default().bg(bg).fg(t.accent));
+            }
+        }
         hits.push((rr, Target::HistoryRow(i)));
         let st = Style::default().bg(bg).fg(t.fg);
         let x = a.x + 1;

@@ -630,6 +630,110 @@ fn rewords_a_commit_and_runs_a_plan() {
     assert!(s.file("more.txt").exists());
 }
 
+/// Commits "one" to "four", each adding a file.
+fn four_commits() -> Scratch {
+    let s = Scratch::new();
+    for name in ["one", "two", "three", "four"] {
+        s.write(&format!("{name}.txt"), &format!("{name}\n"));
+        s.commit_all(name);
+    }
+    s
+}
+
+#[test]
+fn squashes_commits_selected_with_v() {
+    let s = four_commits();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(4);
+    ui.app.select_history(2);
+    ui.key(KeyCode::Char('v'));
+    ui.key(KeyCode::Char('j'));
+    assert_eq!(ui.app.history.marked_rows(), Some((2, 3)));
+    ui.dot('s');
+    ui.wait("the squash dialog", |u| {
+        matches!(u.app.overlays.last(), Some(Overlay::Input(_)))
+    });
+    let Some(Overlay::Input(b)) = ui.app.overlays.last() else {
+        unreachable!()
+    };
+    assert_eq!(b.text.text(), "two\n\nthree");
+    // Cancelling keeps the selection.
+    ui.key(KeyCode::Esc);
+    assert_eq!(ui.app.history.marked_rows(), Some((2, 3)));
+    ui.dot('s');
+    ui.wait("the squash dialog", |u| {
+        matches!(u.app.overlays.last(), Some(Overlay::Input(_)))
+    });
+    ui.type_text("!");
+    ui.key_with(KeyCode::Enter, KeyModifiers::CONTROL);
+    ui.settle();
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
+    assert_eq!(s.log(), ["four", "two", "one"]);
+    assert_eq!(
+        s.sh(&["log", "-1", "--format=%B", "HEAD~1"]).trim(),
+        "two\n\nthree!"
+    );
+    assert_eq!(ui.app.history.anchor, None);
+}
+
+#[test]
+fn selects_commits_with_shift_and_the_mouse() {
+    let s = four_commits();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(4);
+    ui.app.select_history(1);
+    // Shift with a letter is only the letter.
+    ui.key_with(KeyCode::Char('G'), KeyModifiers::SHIFT);
+    assert_eq!(ui.app.history.anchor, None);
+    ui.key(KeyCode::Char('g'));
+    ui.key(KeyCode::Char('j'));
+    ui.key_with(KeyCode::Down, KeyModifiers::SHIFT);
+    ui.key_with(KeyCode::Down, KeyModifiers::SHIFT);
+    assert_eq!(ui.app.history.marked_rows(), Some((1, 3)));
+    ui.key(KeyCode::Esc);
+    assert_eq!(ui.app.history.anchor, None);
+    assert!(ui.app.overlays.is_empty(), "Esc only ends the selection");
+
+    let row = |ui: &Ui, i: usize| ui.find_hit(|t| *t == Target::HistoryRow(i));
+    let r = row(&ui, 2);
+    ui.click(MouseButton::Left, r);
+    let r = row(&ui, 4);
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        let ev = MouseEvent {
+            kind,
+            column: r.x,
+            row: r.y,
+            modifiers: KeyModifiers::SHIFT,
+        };
+        ui.handle(AppEvent::Input(Event::Mouse(ev)));
+        ui.draw();
+    }
+    assert_eq!(ui.app.history.marked_rows(), Some((2, 4)));
+    // A right click inside the selection keeps it, so its menu is about
+    // all of them.
+    let r = row(&ui, 3);
+    ui.click(MouseButton::Right, r);
+    assert_eq!(ui.app.history.marked_rows(), Some((2, 4)));
+    assert!(ui.screen().contains("Drop 3 commits"), "{}", ui.screen());
+    ui.key(KeyCode::Char('d'));
+    ui.key(KeyCode::Char('y'));
+    ui.settle();
+    assert_eq!(s.log(), ["four"]);
+
+    // A plain click ends the selection.
+    ui.wait_loaded(1);
+    ui.app.select_history(1);
+    ui.key(KeyCode::Char('v'));
+    ui.key(KeyCode::Char('k'));
+    assert_eq!(ui.app.history.marked_rows(), Some((1, 1)));
+    let r = row(&ui, 1);
+    ui.click(MouseButton::Left, r);
+    assert_eq!(ui.app.history.anchor, None);
+}
+
 /// Open the planner on three commits. Its rows are newest first.
 fn open_planner(s: &Scratch) -> Ui {
     s.sh(&["stash", "-q"]);
