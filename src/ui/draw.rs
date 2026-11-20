@@ -928,7 +928,7 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                         a.x + 2,
                         y,
                         &ml.line,
-                        det.hscroll,
+                        det.hscroll(i),
                         a.width.saturating_sub(3),
                     );
                 }
@@ -1225,7 +1225,7 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                     y,
                     a.right().saturating_sub(tx + 1),
                     &l.text,
-                    det.hscroll,
+                    det.hscroll(i),
                     Style::default().bg(bg).fg(t.fg),
                     spans,
                     t.syntax,
@@ -1235,7 +1235,7 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 );
                 if l.no_eol {
                     let w = width(&l.text, app.cfg.tab_width) as u16;
-                    let x = tx + 2 + w.saturating_sub(det.hscroll as u16);
+                    let x = tx + 2 + w.saturating_sub(det.hscroll(i) as u16);
                     if x < a.right() {
                         put(buf, x, y, "⏎̸", 2, Style::default().bg(bg).fg(t.faint));
                     }
@@ -1310,7 +1310,7 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                         y,
                         w.saturating_sub(g + 3),
                         &l.text,
-                        det.hscroll,
+                        det.hscroll(i),
                         Style::default().bg(bg).fg(t.fg),
                         spans,
                         t.syntax,

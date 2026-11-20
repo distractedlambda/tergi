@@ -347,6 +347,29 @@ fn long_message_lines_scroll_sideways() {
 }
 
 #[test]
+fn each_file_scrolls_sideways_on_its_own() {
+    let s = Scratch::new();
+    s.write("a.txt", "a\n");
+    s.write("b.txt", "b\n");
+    s.commit_all("init");
+    let long = |end: &str| format!("{}{end}\n", "word ".repeat(40));
+    s.write("a.txt", &long("end of a"));
+    s.write("b.txt", &long("end of b"));
+    s.commit_all("long lines");
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    ui.select_commit(1);
+    ui.draw();
+    let r = ui.doc_row(|r| matches!(r, Row::Line { file: 0, .. }));
+    for _ in 0..40 {
+        ui.mouse(MouseEventKind::ScrollRight, r.x, r.y);
+    }
+    let screen = ui.screen();
+    assert!(screen.contains("end of a"), "{screen}");
+    assert!(!screen.contains("end of b"), "{screen}");
+}
+
+#[test]
 fn leaving_a_commit_while_it_loads_stops_loading() {
     let s = repo_with_change();
     let mut ui = Ui::open(&s);

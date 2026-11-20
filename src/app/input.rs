@@ -211,11 +211,11 @@ impl App {
                 true
             }
             (Focus::Detail, KeyCode::Left) => {
-                self.detail.hscroll = self.detail.hscroll.saturating_sub(8);
+                self.detail.hscroll_by(self.detail.cursor, -8);
                 true
             }
             (Focus::Detail, KeyCode::Right) => {
-                self.detail.hscroll += 8;
+                self.detail.hscroll_by(self.detail.cursor, 8);
                 true
             }
             (Focus::Detail, KeyCode::Esc) => {
@@ -477,22 +477,20 @@ impl App {
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                 let down = m.kind == MouseEventKind::ScrollDown;
                 if m.modifiers.contains(KeyModifiers::SHIFT) {
-                    self.hscroll(down);
+                    self.hscroll_at(x, y, down);
                 } else {
                     self.scroll_at(x, y, if down { 3 } else { -3 });
                 }
             }
-            MouseEventKind::ScrollRight => self.hscroll(true),
-            MouseEventKind::ScrollLeft => self.hscroll(false),
+            MouseEventKind::ScrollRight => self.hscroll_at(x, y, true),
+            MouseEventKind::ScrollLeft => self.hscroll_at(x, y, false),
             _ => {}
         }
     }
 
-    fn hscroll(&mut self, right: bool) {
-        if right {
-            self.detail.hscroll += 4;
-        } else {
-            self.detail.hscroll = self.detail.hscroll.saturating_sub(4);
+    fn hscroll_at(&mut self, x: u16, y: u16, right: bool) {
+        if let Some(Target::DocRow(i)) = self.target_at(x, y) {
+            self.detail.hscroll_by(i, if right { 4 } else { -4 });
         }
     }
 

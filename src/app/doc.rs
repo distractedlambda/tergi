@@ -132,6 +132,13 @@ pub struct MetaLine {
     pub click: Option<Cmd>,
 }
 
+/// The part of the pane that a row scrolls sideways with.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Scrolls {
+    Message,
+    File(Section, BString),
+}
+
 /// Identifies a row across rebuilds, so the cursor stays put.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RowKey {
@@ -158,7 +165,10 @@ pub struct Detail {
     pub cursor: usize,
     pub anchor: Option<usize>,
     pub scroll: usize,
-    pub hscroll: usize,
+    /// How far each file and the commit message are scrolled sideways.
+    /// Each has its own offset, so a long line in one file doesn't push
+    /// the others out of view.
+    hscroll: HashMap<Scrolls, usize>,
     pub collapsed: HashSet<(Section, BString)>,
     pub collapsed_sections: HashSet<Section>,
     seen: HashSet<(Section, BString)>,
@@ -185,7 +195,7 @@ impl Default for Detail {
             cursor: 0,
             anchor: None,
             scroll: 0,
-            hscroll: 0,
+            hscroll: HashMap::new(),
             collapsed: HashSet::new(),
             collapsed_sections: HashSet::new(),
             seen: HashSet::new(),
@@ -237,7 +247,7 @@ impl Detail {
         self.cursor = 0;
         self.anchor = None;
         self.scroll = 0;
-        self.hscroll = 0;
+        self.hscroll.clear();
         // Folds are remembered by path. That's right for the working
         // directory, where the same files stay around. In commits, a file
         // that was folded in one commit would stay folded in every other
@@ -264,6 +274,31 @@ impl Detail {
         self.generation.next();
         self.highlights.clear();
         self.requested.clear();
+    }
+
+    fn scrolls(&self, row: usize) -> Option<Scrolls> {
+        match self.rows.get(row)? {
+            Row::Meta(_) => Some(Scrolls::Message),
+            r => {
+                let (sec, file) = r.file()?;
+                Some(Scrolls::File(sec, path_at(&self.old_paths, sec, file)))
+            }
+        }
+    }
+
+    /// How far the given row is scrolled sideways.
+    pub fn hscroll(&self, row: usize) -> usize {
+        self.scrolls(row)
+            .and_then(|k| self.hscroll.get(&k).copied())
+            .unwrap_or(0)
+    }
+
+    /// Scroll the file or message that the given row belongs to sideways.
+    pub fn hscroll_by(&mut self, row: usize, delta: isize) {
+        if let Some(k) = self.scrolls(row) {
+            let v = self.hscroll.entry(k).or_default();
+            *v = v.saturating_add_signed(delta);
+        }
     }
 
     pub fn rebuild(
@@ -403,6 +438,11 @@ impl Detail {
             Some((_, key, _)) => find(&key, &self.rows),
             None => None,
         };
+        // Forget the offsets of files that went away.
+        self.hscroll.retain(|k, _| match k {
+            Scrolls::Message => true,
+            Scrolls::File(sec, p) => paths.get(sec).is_some_and(|v| v.contains(p)),
+        });
         self.old_paths = paths;
         self.cursor = pos
             .unwrap_or(old_cursor)
