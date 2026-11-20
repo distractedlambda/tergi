@@ -51,6 +51,7 @@ redundant_clone = "warn"
 semicolon_if_nothing_returned = "warn"
 
 [profile.dev]
+opt-level = 1
 panic = "abort"
 
 [profile.release]
