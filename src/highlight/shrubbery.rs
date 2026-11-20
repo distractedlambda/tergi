@@ -1873,6 +1873,25 @@ mod tests {
             ]
         );
         assert_eq!(
+            lex(Language::Rhombus, "#lang racket/base\n(x: 1)"),
+            [
+                ("#lang racket/base", Attribute),
+                ("(", Punctuation),
+                ("1", Number),
+                (")", Punctuation)
+            ]
+        );
+        // A language we don't know is read the way the file's name
+        // suggests.
+        assert_eq!(
+            lex(Language::Rhombus, "#lang my_lang\nx: 1"),
+            [
+                ("#lang my_lang", Attribute),
+                (":", Punctuation),
+                ("1", Number)
+            ]
+        );
+        assert_eq!(
             lex(
                 Language::Scribble,
                 "#lang rhombus/scribble/manual\n@title{x} (y)"

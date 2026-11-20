@@ -260,6 +260,13 @@ the middle of a document doesn't have one. A hunk from the middle of an
 `at-exp` file is lexed as plain Racket, but we almost always have the
 full text, which starts with the `#lang` line.
 
+`default_reader` in `racket.rs` lists languages that we know use the
+default reader, such as `racket/base` and `typed/racket`. A language
+that isn't on that list, and doesn't use shrubbery notation, Scribble or
+`at-exp`, could have a reader of its own. So we read the file the way
+its name suggests. A `.scrbl` file is Scribble text, a `.rhm` file is
+shrubbery, and anything else gets the default reader.
+
 The @-reader is `scribble/reader.rkt` in the `at-exp-lib` package, and
 the lexer follows its source. An @-form mixes Racket data and text,
 and each can hold the other, so the lexer keeps a stack of `Frame`s for
@@ -297,7 +304,8 @@ Rhombus and its relatives, such as Shplait, are written in shrubbery
 notation. `shrubbery.rs` follows the lexer that DrRacket colors them
 with, in `lex.rkt` from the `shrubbery-lib` package. A `#lang` line
 for one of these languages makes the Racket lexer hand the rest of the
-file to it, so the language decides and not the file's name. A `.rhm`
+file to it, so the language decides and not the file's name. So does a
+`#lang` line in a `.rhm` file for a language we don't know. A `.rhm`
 file without a `#lang` line is shrubbery, because it's a piece from the
 middle of a file. The Rhombus Scribble languages, such as
 `rhombus/scribble/manual`, read the whole file as text with @-forms in
@@ -817,8 +825,9 @@ leave that column blank.
 - A hunk from the middle of a Rhombus Scribble document that we don't
   have the full text for is lexed as Racket Scribble.
 - Other Racket languages with a reader of their own, such as
-  `#lang datalog`, are lexed with the default reader. So is
-  `#reader scribble/reader`.
+  `#lang datalog`, are lexed the way the file's name suggests. In a
+  `.rkt` file, that's the default reader. `#reader scribble/reader`
+  always gets the default reader.
 - A hunk from the middle of a `#lang at-exp` file that we don't have the
   full text for is lexed as plain Racket.
 - Word marks pair removed and added lines in order. When lines were

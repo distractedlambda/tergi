@@ -436,6 +436,7 @@ mod tests {
             "#lang scribble/manual",
             "#lang rhombus",
             "#lang rhombus/scribble/manual",
+            "#lang my/lang",
         ]);
         let piece = prop::sample::select(pieces);
         prop::collection::vec(piece, 0..8).prop_map(|p| p.concat())

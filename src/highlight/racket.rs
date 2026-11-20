@@ -305,6 +305,37 @@ fn lang(lex: &mut Lexer<Token>) -> bool {
     ok
 }
 
+/// Whether we know that a language reads its modules with Racket's
+/// default reader. A file in a language we don't know is read the way
+/// its name suggests.
+fn default_reader(name: &str) -> bool {
+    const LANGUAGES: &[&str] = &[
+        "deinprogramm",
+        "frtime",
+        "htdp",
+        "info",
+        "lazy",
+        "mzscheme",
+        "plai",
+        "plait",
+        "r5rs",
+        "r6rs",
+        "racket",
+        "rosette",
+        "s-exp",
+        "scheme",
+        "setup/infotab",
+        "slideshow",
+        "swindle",
+        "typed",
+        "web-server",
+    ];
+    LANGUAGES.iter().any(|base| {
+        name.strip_prefix(base)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    })
+}
+
 /// The name in a `#lang` or `#!` line.
 fn lang_name(token: &str) -> &str {
     token
@@ -727,6 +758,9 @@ struct Lex<'a> {
     /// Set when a `#lang` line chooses a language that uses shrubbery
     /// notation. It says whether the language reads text.
     shrubbery: Option<bool>,
+    /// The language that the file's name gives. It chooses the reader
+    /// when the `#lang` line names a language we don't know.
+    file: Language,
 }
 
 impl Lex<'_> {
@@ -1005,9 +1039,13 @@ impl Lex<'_> {
         self.at = self.at_exp;
         // Every language in `scribble-lib` and its friends reads the whole
         // module as text, with `read-syntax-inside`.
-        if name.starts_with("scribble/") {
+        let scribble = name.starts_with("scribble/");
+        let known = self.shrubbery.is_some() || self.at_exp || scribble || default_reader(name);
+        if scribble || !known && self.file == Language::Scribble {
             self.at = true;
             self.stack[0] = Frame::text(None, None, false);
+        } else if !known && self.file == Language::Rhombus {
+            self.shrubbery = Some(false);
         }
     }
 
@@ -1197,6 +1235,7 @@ pub fn lex(text: &str, lang: Language, out: &mut Tokens) {
         first: !text_first,
         comments: 0,
         shrubbery: None,
+        file: lang,
     };
     lex.run();
 }
@@ -1215,6 +1254,7 @@ pub fn lex_braced(text: &str, start: usize, out: &mut Tokens) -> usize {
         first: false,
         comments: 0,
         shrubbery: None,
+        file: Language::Racket,
     };
     lex.run();
     lex.pos
@@ -1582,6 +1622,21 @@ mod tests {
             scribble("#lang racket\n(1) @f"),
             [
                 ("#lang racket", Attribute),
+                ("(", Punctuation),
+                ("1", Number),
+                (")", Punctuation)
+            ]
+        );
+        // But a language we don't know is read the way the file's name
+        // suggests.
+        assert_eq!(
+            scribble("#lang my/lang\n(1) @f"),
+            [("#lang my/lang", Attribute), ("@f", Keyword)]
+        );
+        assert_eq!(
+            tokens("#lang my/lang\n(1) @f"),
+            [
+                ("#lang my/lang", Attribute),
                 ("(", Punctuation),
                 ("1", Number),
                 (")", Punctuation)
