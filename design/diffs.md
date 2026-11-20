@@ -562,6 +562,10 @@ colors, and the stronger background from the word marks. A trailing
 carriage return is left out, so CRLF files don't show a stray symbol.
 Selected lines get the selection background instead.
 
+In the unified view, a bar in the column between the line numbers and
+the code marks added and removed lines, in green or red. Context lines
+leave that column blank.
+
 ## Tests
 
 - `src/git/diff.rs` has examples for the parser, including content that

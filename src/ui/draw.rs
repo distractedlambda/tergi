@@ -1189,8 +1189,7 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                     gs,
                 );
                 let sign = match l.kind {
-                    LineKind::Add => "+",
-                    LineKind::Del => "-",
+                    LineKind::Add | LineKind::Del => "▎",
                     LineKind::Context => " ",
                 };
                 let tx = a.x + gw;
