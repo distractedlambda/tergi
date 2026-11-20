@@ -219,8 +219,8 @@ YAML, `markdown.rs` for Markdown, and `gitignore.rs` for `.gitignore`
 files. A lexer turns
 text into `Tokens`: byte ranges, each with a `Kind` such as `Comment`,
 `Keyword` or `Escape`. Plain text has no token. An identifier that gets
-no other color is an `Identifier` token, which is plain unless the user
-turns on rainbow identifiers (see below). The theme maps kinds to
+no other color is an `Identifier` token, which gets a color from its
+name unless the user turns off rainbow identifiers (see below). The theme maps kinds to
 colors when the line is drawn, so switching themes doesn't need to lex
 anything again.
 
@@ -640,7 +640,8 @@ The language is chosen by the file's extension, in
 
 ### Rainbow identifiers
 
-With `rainbow_identifiers` on, each `Identifier` token gets a color
+With `rainbow_identifiers` on, which is the default, each `Identifier`
+token gets a color
 picked from its name, so every use of a name has the same color and
 different names usually don't. Drawing hashes the token's text and
 uses the hash to pick one of the 16 colors in `Theme::identifiers`.

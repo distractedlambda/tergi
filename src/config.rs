@@ -5,7 +5,7 @@
 //! context_lines = 3       # lines of context around changes
 //! tab_width = 4
 //! relative_dates = true   # "3 days ago" instead of "2026-11-08"
-//! rainbow_identifiers = false # a color for each name in code
+//! rainbow_identifiers = true  # a color for each name in code
 //! ```
 //!
 //! Settings changed from inside tergi are written back to the file. We
@@ -46,7 +46,7 @@ impl Default for Config {
             context_lines: 3,
             tab_width: 4,
             relative_dates: true,
-            rainbow_identifiers: false,
+            rainbow_identifiers: true,
         }
     }
 }

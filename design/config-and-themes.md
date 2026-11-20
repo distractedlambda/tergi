@@ -20,7 +20,7 @@ theme = "one-half-dark"
 context_lines = 3
 tab_width = 4
 relative_dates = true
-rainbow_identifiers = false
+rainbow_identifiers = true
 ```
 
 Every setting is optional. A missing setting takes its default, and so

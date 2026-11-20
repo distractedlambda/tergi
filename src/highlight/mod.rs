@@ -5,7 +5,7 @@
 //! parser, so an identifier that a parser would know is a function or a
 //! type is only colored when its spelling or the next character gives it
 //! away. Other identifiers are marked as such, so that drawing can give
-//! each name a color of its own when the user asks for that.
+//! each name a color of its own, unless the user turns that off.
 //!
 //! When we have the full text of a file, we lex the whole file so that
 //! multi-line strings and comments come out right, then pick out the lines
@@ -49,9 +49,8 @@ pub enum Kind {
     Lifetime,
     Operator,
     Punctuation,
-    /// An identifier that gets no other color. It is plain text unless
-    /// the user turns on colors for identifiers. Then its color depends
-    /// on its name.
+    /// An identifier that gets no other color. Its color depends on its
+    /// name, or it is plain text if the user turns that off.
     Identifier,
 }
 

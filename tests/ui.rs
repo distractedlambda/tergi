@@ -1309,28 +1309,26 @@ fn identifiers_can_get_colors_by_name() {
             .color(Kind::Identifier, word)
             .expect("a color")
     };
-    // Identifiers are plain until they're turned on.
-    ui.wait("syntax highlighting", |u| {
-        drawn(u, "fn main").first().copied() == u.app.theme.syntax.color(Kind::Keyword)
-    });
-    let fg = ui.app.theme.fg;
-    assert_eq!(drawn(&ui, "count"), [fg, fg]);
-
-    ui.palette("color identifiers by name");
-    assert!(ui.app.cfg.rainbow_identifiers);
-    ui.wait("identifier colors", |u| {
+    // Identifiers get colors by default.
+    let rainbow = |u: &Ui| {
         let c = colors(u, "count");
         drawn(u, "count") == [c, c] && drawn(u, "total") == [colors(u, "total")]
-    });
+    };
+    ui.wait("identifier colors", rainbow);
+    let fg = ui.app.theme.fg;
     assert_ne!(colors(&ui, "count"), fg);
-    assert_eq!(
-        std::fs::read_to_string(&config).expect("config"),
-        "rainbow_identifiers = true\n"
-    );
 
     ui.palette("stop coloring identifiers");
     assert!(!ui.app.cfg.rainbow_identifiers);
     ui.wait("plain identifiers", |u| drawn(u, "count") == [fg, fg]);
+    assert_eq!(
+        std::fs::read_to_string(&config).expect("config"),
+        "rainbow_identifiers = false\n"
+    );
+
+    ui.palette("color identifiers by name");
+    assert!(ui.app.cfg.rainbow_identifiers);
+    ui.wait("identifier colors again", rainbow);
 }
 
 #[test]

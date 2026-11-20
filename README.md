@@ -197,7 +197,7 @@ theme = "one-half-dark" # see the list below
 context_lines = 3       # lines of context around each change
 tab_width = 4
 relative_dates = true   # "3 days ago" instead of a date in the history
-rainbow_identifiers = false # give each name in code a color of its own
+rainbow_identifiers = true  # give each name in code a color of its own
 ```
 
 You can also change each setting from the command palette (Ctrl+P).
@@ -223,11 +223,12 @@ theme…". The theme changes as you move through the list.
 Press Enter to keep one and save it to the config file, or Esc to go
 back.
 
-With `rainbow_identifiers` on, names in C, C++, CMake, Rust, Racket,
-Rhombus and Scribble code get a color picked from the name itself, so
-each use of a variable has the same color. Keywords, and names that
-already have a color, such as types and functions in Rust, keep theirs.
-Each theme has its own set of these colors.
+Names in C, C++, CMake, Rust, Racket, Rhombus and Scribble code get a
+color picked from the name itself, so each use of a variable has the
+same color. Keywords, and names that already have a color, such as
+types and functions in Rust, keep theirs. Each theme has its own set of
+these colors. To draw the other names in the text color instead, set
+`rainbow_identifiers = false`.
 
 | Name in the config | Theme |
 | --- | --- |
