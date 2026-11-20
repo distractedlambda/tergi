@@ -589,6 +589,18 @@ fn check_state(ui: &Ui) -> Result<(), TestCaseError> {
             screen()
         );
     }
+    // A comparison in the detail pane is between the ends of the selection.
+    if !h.loading
+        && h.error.is_none()
+        && let Source::Compare { from, to } = a.detail.source
+    {
+        prop_assert!(
+            h.compared() == Some((from, to)),
+            "the detail pane compares {from} with {to}, but the history selects {:?}\n{}",
+            h.compared(),
+            screen()
+        );
+    }
     if let Some((lo, hi)) = h.marked_rows() {
         prop_assert!(
             1 <= lo && lo <= hi && hi < h.row_count(),
@@ -679,8 +691,8 @@ fn check_state(ui: &Ui) -> Result<(), TestCaseError> {
     }
     if let Some(e) = &a.edit {
         prop_assert!(
-            a.detail.source.commit_id() == Some(e.commit) && a.detail.hide_message,
-            "the message editor is open on a commit the detail pane doesn't show\n{}",
+            a.detail.source == e.shown && a.detail.hide_message,
+            "the message editor is open on something the detail pane doesn't show\n{}",
             screen()
         );
         prop_assert!(

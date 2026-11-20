@@ -1,5 +1,6 @@
-//! Loading a commit's metadata and its diff against its first parent, using
-//! gitoxide for the tree diff and imara-diff for the text diff.
+//! Loading a commit's metadata and its diff against its first parent, or
+//! against another commit, using gitoxide for the tree diff and imara-diff
+//! for the text diff.
 
 use std::sync::Arc;
 
@@ -34,6 +35,15 @@ pub struct CommitDetail {
     pub committer: Person,
     pub files: Vec<Arc<FileDiff>>,
     pub texts: Vec<FileTexts>,
+    /// The commit that `files` start from, when it isn't the first parent.
+    /// This is set when the user compares two commits.
+    pub base: Option<Base>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Base {
+    pub id: ObjectId,
+    pub message: String,
 }
 
 /// Blobs bigger than this aren't diffed unless the user asks.
@@ -42,6 +52,30 @@ pub const MAX_BLOB: usize = 4 * 1024 * 1024;
 pub fn load(
     repo: &gix::Repository,
     id: ObjectId,
+    context: u32,
+    line_limit: usize,
+) -> Result<CommitDetail> {
+    load_against(repo, id, None, context, line_limit)
+}
+
+/// Load `to` with its diff against `from` instead of its parent. The two
+/// commits needn't be related.
+pub fn compare(
+    repo: &gix::Repository,
+    from: ObjectId,
+    to: ObjectId,
+    context: u32,
+    line_limit: usize,
+) -> Result<CommitDetail> {
+    load_against(repo, to, Some(from), context, line_limit)
+}
+
+/// Load `id` with its diff against `base`, or against its first parent if
+/// there is no base.
+pub fn load_against(
+    repo: &gix::Repository,
+    id: ObjectId,
+    base: Option<ObjectId>,
     context: u32,
     line_limit: usize,
 ) -> Result<CommitDetail> {
@@ -65,16 +99,30 @@ pub fn load(
         )
     };
     let new_tree = commit.tree().context("commit has no tree")?;
-    let old_tree = match parents.first() {
-        Some(p) => repo
-            .find_commit(*p)
-            .context("parent not found")?
-            .tree()
-            .context("parent has no tree")?,
-        None => repo.empty_tree(),
+    let (old_tree, base) = match base {
+        Some(b) => {
+            let c = repo.find_commit(b).context("commit not found")?;
+            let message = String::from_utf8_lossy(c.decode().context("bad commit")?.message);
+            let message = message.into_owned();
+            let base = Base { id: b, message };
+            (c.tree().context("commit has no tree")?, Some(base))
+        }
+        None => match parents.first() {
+            Some(p) => (
+                repo.find_commit(*p)
+                    .context("parent not found")?
+                    .tree()
+                    .context("parent has no tree")?,
+                None,
+            ),
+            None => (repo.empty_tree(), None),
+        },
     };
     let (mut files, mut texts) = diff_trees(repo, &old_tree, &new_tree, context, line_limit)?;
-    if let Some(untracked) = stash_untracked(repo, &parents)? {
+    // Only a stash's own diff shows its untracked files.
+    if base.is_none()
+        && let Some(untracked) = stash_untracked(repo, &parents)?
+    {
         let tree = untracked.tree().context("stash has no tree")?;
         let (more, more_texts) = diff_trees(repo, &repo.empty_tree(), &tree, context, line_limit)?;
         for mut f in more {
@@ -92,6 +140,7 @@ pub fn load(
         committer,
         files: files.into_iter().map(Arc::new).collect(),
         texts,
+        base,
     })
 }
 

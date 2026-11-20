@@ -75,6 +75,24 @@ that commit's files as untracked, with status `?`.
 Files are sorted by path. The full text of both sides is kept in
 `FileTexts`, for syntax highlighting.
 
+### Comparing two commits
+
+While several commits are selected in the history, the pane shows the
+changes between the two ends of the selection, from the commit lower
+down in the list to the one above it. The source is then
+`Source::Compare`. `commit::compare` loads the upper commit with `base`
+set to the lower one, and diffs their trees instead of diffing against
+the parent. The two commits needn't be related, so this is how the
+user compares branches. Sublime Merge does the same when two commits
+are selected. The lower commit's own changes aren't in the diff, which
+can surprise someone who selected a run of commits on one branch.
+
+`App::show_selected` works out what the pane should show from the
+history's selection. Everything that moves the selection or its anchor
+goes through it. `on_history` calls it again when a walk ends while the
+pane shows a comparison, because the ends may have gone or swapped
+places.
+
 ### Loading commits one at a time
 
 Moving quickly through the history asks for a lot of commits, and only
@@ -86,7 +104,7 @@ repository across loads, so the object cache carries over from one
 commit to the next.
 
 Each request has a number. When a result comes back, the app checks the
-number and the commit id against what the pane shows now, and drops the
+number and the source against what the pane shows now, and drops the
 result if either differs.
 
 ## Working directory diffs come from git

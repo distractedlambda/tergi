@@ -88,7 +88,7 @@ pub enum AppEvent {
     HistoryError(u64, String),
     Refs(Result<Refs>),
     Workdir(Box<Result<Workdir>>),
-    Commit(u64, ObjectId, Box<Result<CommitDetail>>),
+    Commit(u64, doc::Source, Box<Result<CommitDetail>>),
     Highlight(highlight::Key, FileHighlight),
     OpDone(OpResult),
     Progress(String),
@@ -204,6 +204,18 @@ impl History {
         let a = self.index.get(&self.anchor?)? + 1;
         let c = self.current_row();
         Some((a.min(c).max(1), a.max(c)))
+    }
+
+    /// The two ends of the selection of commits, older first, if they
+    /// differ. Only the row lower down in the list counts as older. The
+    /// commits may be on different branches.
+    pub fn compared(&self) -> Option<(ObjectId, ObjectId)> {
+        let Selected::Commit(id) = self.selected else {
+            return None;
+        };
+        let (a, c) = (*self.index.get(&self.anchor?)?, *self.index.get(&id)?);
+        let (newer, older) = (self.commits.get(a.min(c))?, self.commits.get(a.max(c))?);
+        (a != c).then_some((older.id, newer.id))
     }
 
     /// The commits selected with the anchor, newest first.
@@ -683,8 +695,8 @@ impl App {
                     self.load_workdir();
                 }
             }
-            AppEvent::Commit(generation, id, r) => {
-                if generation == self.detail.request && self.detail.source.commit_id() == Some(id) {
+            AppEvent::Commit(generation, source, r) => {
+                if generation == self.detail.request && self.detail.source == source {
                     self.detail.loading = false;
                     match *r {
                         Ok(c) => {
@@ -820,6 +832,10 @@ impl App {
                 self.select_history(row);
             }
         }
+        // The ends of the comparison may have gone, or swapped places.
+        if batch.done && matches!(self.detail.source, doc::Source::Compare { .. }) {
+            self.show_selected();
+        }
     }
 
     fn on_workdir(&mut self, w: Workdir) {
@@ -839,13 +855,24 @@ impl App {
         self.history.last_row = row;
         if row == 0 {
             self.history.selected = Selected::Workdir;
-            self.show_source(doc::Source::Workdir);
+            self.show_selected();
         } else if let Some(c) = self.history.commits.get(row - 1) {
-            let id = c.id;
-            self.history.selected = Selected::Commit(id);
-            self.show_source(doc::Source::Commit(id));
+            self.history.selected = Selected::Commit(c.id);
+            self.show_selected();
         }
         self.ensure_history_visible();
+    }
+
+    /// Show what the history selects in the detail pane. While several
+    /// commits are selected, that's the changes from one end of the
+    /// selection to the other.
+    pub fn show_selected(&mut self) {
+        let source = match (self.history.compared(), self.history.selected) {
+            (Some((from, to)), _) => doc::Source::Compare { from, to },
+            (None, Selected::Workdir) => doc::Source::Workdir,
+            (None, Selected::Commit(id)) => doc::Source::Commit(id),
+        };
+        self.show_source(source);
     }
 
     /// Start a selection of several commits at the selected one, unless
@@ -853,6 +880,13 @@ impl App {
     pub fn start_marking(&mut self) {
         if let (None, Selected::Commit(id)) = (self.history.anchor, self.history.selected) {
             self.history.anchor = Some(id);
+        }
+    }
+
+    /// End the selection of several commits, if there is one.
+    pub fn stop_marking(&mut self) {
+        if self.history.anchor.take().is_some() {
+            self.show_selected();
         }
     }
 
@@ -893,20 +927,20 @@ impl App {
                 Level::Warn,
             );
         }
-        let load = source.commit_id();
         self.detail.set_source(source);
-        if let Some(id) = load {
-            self.request_commit(id);
+        if source.is_commit() {
+            self.request_commit();
         }
         self.rebuild_doc();
     }
 
-    fn request_commit(&mut self, id: ObjectId) {
+    /// Load the commit, or the comparison, that the pane shows.
+    fn request_commit(&mut self) {
         self.detail.loading = true;
         self.detail.request += 1;
         self.detail_tx.send_replace(Some(DetailRequest {
             request: self.detail.request,
-            id,
+            source: self.detail.source,
             context: self.cfg.context_lines,
         }));
     }
@@ -943,8 +977,8 @@ impl App {
         }
         if old.context_lines != self.cfg.context_lines {
             self.refresh(REFRESH_WORKDIR);
-            if let Some(id) = self.detail.source.commit_id() {
-                self.request_commit(id);
+            if self.detail.source.is_commit() {
+                self.request_commit();
             }
         }
         if old.tab_width != self.cfg.tab_width {
@@ -1183,7 +1217,7 @@ fn check_task(done: Result<(), tokio::task::JoinError>) {
 #[derive(Debug, Clone, Copy)]
 struct DetailRequest {
     request: u64,
-    id: ObjectId,
+    source: doc::Source,
     context: u32,
 }
 
@@ -1201,19 +1235,27 @@ async fn detail_worker(
     while requests.changed().await.is_ok() {
         let Some(DetailRequest {
             request,
-            id,
+            source,
             context,
         }) = *requests.borrow_and_update()
         else {
             continue;
         };
+        let (id, base) = match source {
+            doc::Source::Commit(id) | doc::Source::Stash(id) => (id, None),
+            doc::Source::Compare { from, to } => (to, Some(from)),
+            doc::Source::None | doc::Source::Workdir => continue,
+        };
         let (back, r) = crate::util::blocking(move || {
-            let r = crate::git::commit::load(&local, id, context, DEFAULT_LINE_LIMIT);
+            let r = crate::git::commit::load_against(&local, id, base, context, DEFAULT_LINE_LIMIT);
             (local, r)
         })
         .await;
         local = back;
-        if tx.send(AppEvent::Commit(request, id, Box::new(r))).is_err() {
+        if tx
+            .send(AppEvent::Commit(request, source, Box::new(r)))
+            .is_err()
+        {
             break;
         }
     }

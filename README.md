@@ -34,7 +34,8 @@ tergi path/to/repo
 - The **detail pane** on the right shows the selected commit with its
   full diff. For the working directory, it shows the commit message box
   and your changes, grouped into conflicts, untracked, unstaged and
-  staged files.
+  staged files. While several commits are selected, it shows the
+  changes between the first and the last of them.
 - The **top bar** shows the repository, the current branch and its
   upstream, and what tergi is busy with.
 
@@ -159,6 +160,13 @@ Shift with the arrow keys, or Shift with a click, selects too. Esc or
 | `.y` | Copy their hashes |
 
 Squash, fixup and drop only work on commits of the current branch.
+
+While commits are selected, the detail pane shows the changes from the
+commit at the bottom of the selection to the one at the top. They can
+be on different branches, so this is how you compare any two commits.
+It compares the two snapshots, as `git diff A B` does. So the changes
+that the bottom commit made itself aren't part of it. Click the `From`
+or `To` line to copy that commit's hash.
 
 ## Rewriting history
 

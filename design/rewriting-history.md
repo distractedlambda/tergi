@@ -231,7 +231,9 @@ the selection ends. Otherwise it would come back if the commit came
 back, for example after an abort.
 
 While there is a selection, `marked_actions` replaces the actions for
-one commit. Each command carries the selected ids, newest first.
+one commit. Each command carries the selected ids, newest first. The
+detail pane shows the changes from one end of the selection to the
+other, which `diffs.md` describes.
 
 - Drop, fixup and squash go through `several`. It finds the oldest of
   the commits with `git merge-base --octopus`, which gives back one of

@@ -21,12 +21,17 @@ use crate::theme::Theme;
 use crate::ui::text::{line_width, width};
 use crate::util::{Generation, format_date};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     None,
     Workdir,
     Commit(ObjectId),
     Stash(ObjectId),
+    /// The changes from one commit to another.
+    Compare {
+        from: ObjectId,
+        to: ObjectId,
+    },
 }
 
 impl Source {
@@ -34,8 +39,16 @@ impl Source {
     pub fn commit_id(&self) -> Option<ObjectId> {
         match self {
             Source::Commit(id) | Source::Stash(id) => Some(*id),
-            Source::None | Source::Workdir => None,
+            Source::None | Source::Workdir | Source::Compare { .. } => None,
         }
+    }
+
+    /// Whether the pane loads this source as a commit.
+    pub fn is_commit(&self) -> bool {
+        matches!(
+            self,
+            Source::Commit(_) | Source::Stash(_) | Source::Compare { .. }
+        )
     }
 }
 
@@ -386,7 +399,7 @@ impl Detail {
 
         match &self.source {
             Source::None => {}
-            Source::Commit(_) | Source::Stash(..) => match &commit {
+            Source::Commit(_) | Source::Stash(..) | Source::Compare { .. } => match &commit {
                 Some(c) => {
                     self.build_meta(c, labels, theme, cfg);
                     self.build_files(Section::Commit, &c.files, split, false, cfg);
@@ -511,6 +524,37 @@ impl Detail {
             self.meta.push(MetaLine { line, click });
             self.rows.push(Row::Meta(self.meta.len() - 1));
         };
+        if let Some(base) = &c.base {
+            if !self.hide_message {
+                push(
+                    Line::from(Span::styled(
+                        "Changes between two commits",
+                        fg.add_modifier(Modifier::BOLD),
+                    )),
+                    None,
+                );
+                push(Line::default(), None);
+            }
+            for (title, id, message) in [("From", base.id, &base.message), ("To", c.id, &c.message)]
+            {
+                let subject = message.lines().next().unwrap_or("").to_string();
+                let mut spans = vec![
+                    Span::styled(format!("{title:<11}"), dim),
+                    Span::styled(
+                        id.to_hex_with_len(7).to_string(),
+                        Style::default().fg(theme.accent),
+                    ),
+                    Span::raw("  "),
+                ];
+                spans.extend(badges(labels.get(&id), theme));
+                spans.push(Span::styled(subject, fg));
+                push(Line::from(spans), Some(Cmd::CopyHash(id)));
+            }
+            push(changes_line(c, theme), None);
+            push(Line::default(), None);
+            self.widths.insert(Scrolls::Message, widest);
+            return;
+        }
         if !self.hide_message {
             let mut msg_lines = c.message.trim_end().lines();
             let subject = msg_lines.next().unwrap_or("").to_string();
@@ -531,21 +575,9 @@ impl Detail {
             }
             push(Line::default(), None);
         }
-        if let Some(ls) = labels.get(&c.id) {
+        if labels.contains_key(&c.id) {
             let mut spans = vec![Span::styled("Refs       ", dim)];
-            for l in ls {
-                let bg = match l.kind {
-                    LabelKind::Head => theme.badge_head,
-                    LabelKind::Local => theme.badge_local,
-                    LabelKind::Remote => theme.badge_remote,
-                    LabelKind::Tag => theme.badge_tag,
-                };
-                spans.push(Span::styled(
-                    format!(" {} ", l.name),
-                    Style::default().bg(bg).fg(theme.badge_fg),
-                ));
-                spans.push(Span::raw(" "));
-            }
+            spans.extend(badges(labels.get(&c.id), theme));
             push(Line::from(spans), None);
         }
         let person = |p: &crate::git::commit::Person| {
@@ -596,30 +628,7 @@ impl Detail {
                 Some(Cmd::JumpTo(*p)),
             );
         }
-        let (mut adds, mut dels) = (0, 0);
-        for f in &c.files {
-            let (a, d) = f.added_removed();
-            adds += a;
-            dels += d;
-        }
-        push(
-            Line::from(vec![
-                Span::styled("Changes    ", dim),
-                Span::styled(
-                    format!(
-                        "{} file{}",
-                        c.files.len(),
-                        if c.files.len() == 1 { "" } else { "s" }
-                    ),
-                    fg,
-                ),
-                Span::raw("  "),
-                Span::styled(format!("+{adds}"), Style::default().fg(theme.add_fg)),
-                Span::raw(" "),
-                Span::styled(format!("−{dels}"), Style::default().fg(theme.del_fg)),
-            ]),
-            None,
-        );
+        push(changes_line(c, theme), None);
         push(Line::default(), None);
         self.widths.insert(Scrolls::Message, widest);
     }
@@ -948,6 +957,47 @@ impl Detail {
     }
 }
 
+/// A badge for each ref that points at a commit, with a space after each.
+fn badges(labels: Option<&Vec<Label>>, theme: &Theme) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for l in labels.into_iter().flatten() {
+        let bg = match l.kind {
+            LabelKind::Head => theme.badge_head,
+            LabelKind::Local => theme.badge_local,
+            LabelKind::Remote => theme.badge_remote,
+            LabelKind::Tag => theme.badge_tag,
+        };
+        spans.push(Span::styled(
+            format!(" {} ", l.name),
+            Style::default().bg(bg).fg(theme.badge_fg),
+        ));
+        spans.push(Span::raw(" "));
+    }
+    spans
+}
+
+/// How many files changed, and how many lines were added and removed.
+fn changes_line(c: &CommitDetail, theme: &Theme) -> Line<'static> {
+    let (mut adds, mut dels) = (0, 0);
+    for f in &c.files {
+        let (a, d) = f.added_removed();
+        adds += a;
+        dels += d;
+    }
+    let n = c.files.len();
+    Line::from(vec![
+        Span::styled("Changes    ", Style::default().fg(theme.dim)),
+        Span::styled(
+            format!("{n} file{}", if n == 1 { "" } else { "s" }),
+            Style::default().fg(theme.fg),
+        ),
+        Span::raw("  "),
+        Span::styled(format!("+{adds}"), Style::default().fg(theme.add_fg)),
+        Span::raw(" "),
+        Span::styled(format!("−{dels}"), Style::default().fg(theme.del_fg)),
+    ])
+}
+
 fn path_at(paths: &HashMap<Section, Vec<BString>>, sec: Section, file: usize) -> BString {
     paths
         .get(&sec)
@@ -1213,6 +1263,7 @@ mod tests {
                 committer: person,
                 files,
                 texts,
+                base: None,
             };
             Data {
                 workdir: None,

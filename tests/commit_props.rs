@@ -7,6 +7,10 @@
 //! can be a file in one tree and a folder in the other. Some files move to
 //! another path, so that renames show up too.
 //!
+//! The same trees are also committed as two unrelated root commits, and
+//! `commit::compare` between those is checked against `git diff-tree` in
+//! both directions.
+//!
 //! Some cases make a stash with untracked files instead, from a working
 //! tree that holds the second tree.
 //!
@@ -593,11 +597,22 @@ fn git_diff(s: &Scratch, case: &Case, old: Option<&str>, new: &str) -> Vec<Chang
     raw(&git(s, &args))
 }
 
-fn load(s: &Scratch, case: &Case, rev: &str) -> CommitDetail {
+fn rev_parse(s: &Scratch, rev: &str) -> gix::ObjectId {
     let id = String::from_utf8(git(s, &["rev-parse", rev])).expect("utf-8");
-    let id = gix::ObjectId::from_hex(id.trim().as_bytes()).expect("id");
+    gix::ObjectId::from_hex(id.trim().as_bytes()).expect("id")
+}
+
+fn load(s: &Scratch, case: &Case, rev: &str) -> CommitDetail {
     let repo = gix::open(s.path()).expect("open");
-    commit::load(&repo, id, case.context, usize::MAX).expect("load")
+    commit::load(&repo, rev_parse(s, rev), case.context, usize::MAX).expect("load")
+}
+
+fn compare(s: &Scratch, case: &Case, from: &str, to: &str) -> CommitDetail {
+    let repo = gix::open(s.path()).expect("open");
+    let (from, to) = (rev_parse(s, from), rev_parse(s, to));
+    let c = commit::compare(&repo, from, to, case.context, usize::MAX).expect("compare");
+    assert_eq!((c.id, c.base.as_ref().map(|b| b.id)), (to, Some(from)));
+    c
 }
 
 fn check_commits(s: &Scratch, case: &Case) -> Result<(), TestCaseError> {
@@ -605,6 +620,7 @@ fn check_commits(s: &Scratch, case: &Case) -> Result<(), TestCaseError> {
     let mut stream = Vec::new();
     import(&mut stream, "old", None, &old);
     import(&mut stream, "new", Some("old"), &new);
+    import(&mut stream, "other", None, &new);
     git_out(s, &["fast-import", "--quiet"], &stream);
 
     check_detail(s, &load(s, case, "old"), &git_diff(s, case, None, "old"))?;
@@ -612,6 +628,16 @@ fn check_commits(s: &Scratch, case: &Case) -> Result<(), TestCaseError> {
         s,
         &load(s, case, "new"),
         &git_diff(s, case, Some("old"), "new"),
+    )?;
+    check_detail(
+        s,
+        &compare(s, case, "old", "other"),
+        &git_diff(s, case, Some("old"), "other"),
+    )?;
+    check_detail(
+        s,
+        &compare(s, case, "other", "old"),
+        &git_diff(s, case, Some("other"), "old"),
     )
 }
 

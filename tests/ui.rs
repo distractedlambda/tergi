@@ -14,7 +14,7 @@ use ratatui::style::Color;
 use common::Scratch;
 use common::ui::Ui;
 use tergi::app::cmd::{Cmd, Overlay, SideRow};
-use tergi::app::doc::{Row, Section};
+use tergi::app::doc::{Row, Section, Source};
 use tergi::app::input::{SCROLL_LOCK, Target};
 use tergi::app::planner::PlanAction;
 use tergi::app::{After, AppEvent, HISTORY_ROW_HEIGHT};
@@ -769,6 +769,94 @@ fn fixes_up_commits_selected_with_v() {
     assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
     assert_eq!(s.log(), ["four", "two", "one"]);
     assert_eq!(ui.app.history.anchor, None);
+}
+
+/// A branch "side" that changes `a.txt`, and a commit "main" next to it
+/// that adds `b.txt`. Returns their ids.
+fn two_branches(s: &Scratch) -> (gix::ObjectId, gix::ObjectId) {
+    s.write("a.txt", "base\n");
+    s.commit_all("base");
+    s.sh(&["checkout", "-q", "-b", "side"]);
+    s.write("a.txt", "side\n");
+    let side = s.commit_all("side");
+    s.sh(&["checkout", "-q", "main"]);
+    s.write("b.txt", "main\n");
+    let main = s.commit_all("main");
+    let id = |h: &str| gix::ObjectId::from_hex(h.trim().as_bytes()).expect("id");
+    (id(&side), id(&main))
+}
+
+#[test]
+fn compares_the_ends_of_a_selection() {
+    let s = Scratch::new();
+    let (side, main) = two_branches(&s);
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(3);
+    let row = |ui: &Ui, id| ui.app.history.index[&id] + 1;
+    let (a, b) = (row(&ui, side), row(&ui, main));
+    ui.select_commit(a);
+    ui.key(KeyCode::Char('v'));
+    // Selecting only one commit still shows that commit.
+    assert_eq!(ui.app.detail.source, Source::Commit(side));
+    ui.app.select_history(b);
+    // The diff goes from the commit lower down to the one above it.
+    let (from, to) = if a > b { (side, main) } else { (main, side) };
+    assert_eq!(ui.app.detail.source, Source::Compare { from, to });
+    ui.wait("the comparison to load", |u| u.app.detail.commit.is_some());
+    let detail = ui.app.detail.commit.clone().expect("a comparison");
+    assert_eq!(detail.id, to);
+    assert_eq!(detail.base.as_ref().map(|b| b.id), Some(from));
+    let files: Vec<String> = detail.files.iter().map(|f| f.path().to_string()).collect();
+    assert_eq!(files, ["a.txt", "b.txt"]);
+    let screen = ui.screen();
+    assert!(screen.contains("Changes between two commits"), "{screen}");
+    assert!(
+        screen.contains(&format!("From       {}", &from.to_string()[..7])),
+        "{screen}"
+    );
+    assert!(
+        screen.contains(&format!("To         {}", &to.to_string()[..7])),
+        "{screen}"
+    );
+
+    // Clicking a commit's line copies its hash.
+    let i = (0..ui.app.detail.meta.len())
+        .find(|&m| ui.app.detail.meta[m].line.to_string().starts_with("From"))
+        .expect("a From line");
+    let r = ui.doc_row(|r| *r == Row::Meta(i));
+    ui.click(MouseButton::Left, r);
+    assert_eq!(ui.app.clipboard, Some(from.to_string()));
+
+    // Ending the selection shows the selected commit again.
+    ui.app.focus = tergi::app::Focus::History;
+    ui.key(KeyCode::Esc);
+    assert_eq!(ui.app.detail.source, Source::Commit(main));
+}
+
+#[test]
+fn comparison_ends_when_a_rewrite_drops_its_commits() {
+    let s = four_commits();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(4);
+    ui.app.select_history(1);
+    ui.key(KeyCode::Char('v'));
+    ui.key(KeyCode::Char('j'));
+    assert!(matches!(ui.app.detail.source, Source::Compare { .. }));
+    s.sh(&["reset", "-q", "--hard", "HEAD~2"]);
+    s.write("five.txt", "five\n");
+    s.commit_all("five");
+    ui.run_cmd(Cmd::Refresh);
+    ui.wait("the new history", |u| {
+        !u.app.history.loading && u.app.history.commits.len() == 3
+    });
+    assert_eq!(ui.app.history.anchor, None);
+    let id = ui
+        .app
+        .history
+        .selected_commit()
+        .map(|c| c.id)
+        .expect("a commit");
+    assert_eq!(ui.app.detail.source, Source::Commit(id));
 }
 
 #[test]

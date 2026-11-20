@@ -406,9 +406,9 @@ pub struct InputBox {
 /// commit that the pane shows. While it is open, it gets all the keys.
 pub struct MessageEdit {
     pub input: InputBox,
-    /// The commit the detail pane showed when the edit started. If the pane
-    /// moves to another commit, the edit ends.
-    pub commit: ObjectId,
+    /// The commit, or the comparison, that the detail pane showed when the
+    /// edit started. If the pane moves to something else, the edit ends.
+    pub shown: Source,
     /// The pane that had focus before, to give it back afterwards.
     pub focus: Focus,
 }
@@ -934,7 +934,8 @@ impl App {
             act(Some(Key::ch('}')), "Next hunk", Cmd::NextHunk(true)).direct(),
             act(Some(Key::ch('{')), "Previous hunk", Cmd::NextHunk(false)).direct(),
         ]);
-        match self.detail.source.clone() {
+        let source = self.detail.source;
+        match source {
             Source::Workdir => {
                 let mut v = Vec::new();
                 let unit = self.detail.unit_at_cursor(|s| self.section_files(s));
@@ -1014,12 +1015,15 @@ impl App {
                 v.extend(nav);
                 v
             }
-            Source::Commit(id) | Source::Stash(id) => {
-                let mut v = vec![act(
-                    Some(Key::ch('y')),
-                    "Copy commit hash",
-                    Cmd::CopyHash(id),
-                )];
+            Source::Commit(_) | Source::Stash(_) | Source::Compare { .. } => {
+                let mut v = Vec::new();
+                if let Some(id) = source.commit_id() {
+                    v.push(act(
+                        Some(Key::ch('y')),
+                        "Copy commit hash",
+                        Cmd::CopyHash(id),
+                    ));
+                }
                 if let Some((sec, fi)) =
                     self.detail.rows.get(self.detail.cursor).and_then(Row::file)
                     && let Some(f) = self.section_files(sec).get(fi)
@@ -1526,14 +1530,14 @@ impl App {
             // detail pane shows another commit by then, or a dialog opened,
             // the user has moved on, so we don't.
             Cmd::Reword(id) => {
-                let shown = self.detail.source.commit_id();
+                let shown = self.detail.source;
                 self.spawn_read(
                     move |r| async move { ops::commit_message(&r.git, &id.to_string()).await.unwrap_or_default() },
                     move |app, msg| app.open_edit(shown, "Reword commit", "", &msg, Purpose::Reword(id)),
                 );
             }
             Cmd::Squash(id) => {
-                let shown = self.detail.source.commit_id();
+                let shown = self.detail.source;
                 self.spawn_read(
                     move |r| async move {
                         let this = ops::commit_message(&r.git, &id.to_string()).await.unwrap_or_default();
@@ -1594,12 +1598,14 @@ impl App {
             }
             Cmd::CopyHash(id) => self.copy_to_clipboard(&id.to_string()),
             Cmd::SelectCommits => {
-                if self.history.anchor.take().is_none() {
+                if self.history.anchor.is_some() {
+                    self.stop_marking();
+                } else {
                     self.start_marking();
                 }
             }
             Cmd::SquashCommits(ids) => {
-                let shown = self.detail.source.commit_id();
+                let shown = self.detail.source;
                 self.spawn_read(
                     {
                         let ids = ids.clone();
@@ -1618,15 +1624,15 @@ impl App {
                 );
             }
             Cmd::FixupCommits(ids) => {
-                self.history.anchor = None;
+                self.stop_marking();
                 self.rebase_op("Fixup", move |r| async move { rebase::several(&r.git, &exe, &ids, Action::Fixup).await });
             }
             Cmd::DropCommits(ids) => {
-                self.history.anchor = None;
+                self.stop_marking();
                 self.rebase_op("Drop commits", move |r| async move { rebase::several(&r.git, &exe, &ids, Action::Drop).await });
             }
             Cmd::CherryPickCommits(ids) => {
-                self.history.anchor = None;
+                self.stop_marking();
                 // Git applies them in the order given, so the oldest goes first.
                 let revs: Vec<String> = ids.iter().rev().map(ObjectId::to_string).collect();
                 self.spawn_op("Cherry-pick", After::Nothing, move |r, _| async move {
@@ -1634,13 +1640,13 @@ impl App {
                 });
             }
             Cmd::RevertCommits(ids) => {
-                self.history.anchor = None;
+                self.stop_marking();
                 // Undo the newest first, as undoing them one by one would.
                 let revs: Vec<String> = ids.iter().map(ObjectId::to_string).collect();
                 self.spawn_op("Revert", After::Nothing, move |r, _| async move { ops::revert(&r.git, &revs).await.map(|()| "Reverted".into()) });
             }
             Cmd::CopyHashes(ids) => {
-                self.history.anchor = None;
+                self.stop_marking();
                 let text: Vec<String> = ids.iter().map(ObjectId::to_string).collect();
                 self.copy_to_clipboard(&text.join("\n"));
             }
@@ -1927,20 +1933,20 @@ impl App {
         }));
     }
 
-    /// Start editing a commit message in the detail pane. `shown` is the
-    /// commit the pane showed when the command ran. If it shows another
-    /// one now, or something else has taken over the screen, the user has
-    /// moved on and we do nothing.
+    /// Start editing a commit message in the detail pane. `shown` is what
+    /// the pane showed when the command ran, a commit or a comparison. If
+    /// it shows something else now, or something else has taken over the
+    /// screen, the user has moved on and we do nothing.
     fn open_edit(
         &mut self,
-        shown: Option<ObjectId>,
+        shown: Source,
         title: &str,
         hint: &str,
         initial: &str,
         purpose: Purpose,
     ) {
-        let Some(commit) = shown else { return };
-        if self.detail.source.commit_id() != Some(commit)
+        if !shown.is_commit()
+            || self.detail.source != shown
             || !self.overlays.is_empty()
             || self.planner.is_some()
             || self.edit.is_some()
@@ -1954,7 +1960,7 @@ impl App {
                 text: TextArea::with_text(true, initial),
                 purpose,
             },
-            commit,
+            shown,
             focus: self.focus,
         });
         self.detail.hide_message = true;
@@ -2026,7 +2032,7 @@ impl App {
                 rebase::single(&r.git, &exe, id, Action::Squash(text)).await
             }),
             Purpose::SquashCommits(ids) => {
-                self.history.anchor = None;
+                self.stop_marking();
                 self.rebase_op("Squash", move |r| async move {
                     rebase::several(&r.git, &exe, &ids, Action::Squash(text)).await
                 });
@@ -2224,17 +2230,31 @@ impl App {
                 );
             }
             Section::Commit => {
-                let Some(id) = self.detail.commit.as_ref().map(|c| c.id) else {
+                let Some((id, base)) = self
+                    .detail
+                    .commit
+                    .as_ref()
+                    .map(|c| (c.id, c.base.as_ref().map(|b| b.id)))
+                else {
                     return;
                 };
+                let source = self.detail.source;
                 self.spawn_read(
                     move |r| {
                         crate::util::blocking(move || {
-                            crate::git::commit::load(&r.gix.to_thread_local(), id, ctx, usize::MAX)
+                            crate::git::commit::load_against(
+                                &r.gix.to_thread_local(),
+                                id,
+                                base,
+                                ctx,
+                                usize::MAX,
+                            )
                         })
                     },
                     move |app, full| {
-                        if app.detail.commit.as_ref().is_none_or(|c| c.id != id) {
+                        if app.detail.source != source
+                            || app.detail.commit.as_ref().is_none_or(|c| c.id != id)
+                        {
                             return;
                         }
                         match full {

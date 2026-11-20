@@ -241,7 +241,7 @@ impl App {
                 true
             }
             (Focus::History, KeyCode::Esc) if self.history.anchor.is_some() => {
-                self.history.anchor = None;
+                self.stop_marking();
                 true
             }
             (Focus::Sidebar, KeyCode::Char('l') | KeyCode::Right) => {
