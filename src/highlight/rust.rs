@@ -4,10 +4,8 @@
 //! strings and other tokens start and end, but it doesn't check that
 //! they're valid.
 //!
-//! Without a parser we can't know what most identifiers name, so they
-//! get colors from their names (see `Kind::Identifier`). Only two kinds
-//! of name get colors of their own. A name followed by `!` is a macro,
-//! and an all-caps one is a constant, as Rust's conventions have it.
+//! Without a parser we can't know what an identifier names, so every
+//! identifier gets a color from its name (see `Kind::Identifier`).
 
 use logos::{Lexer, Logos};
 
@@ -157,24 +155,6 @@ fn raw_string(lex: &mut Lexer<Token>) {
     lex.bump(rest.find(&close).map_or(rest.len(), |i| i + close.len()));
 }
 
-/// The kind of an identifier that isn't a keyword, from how it's
-/// spelled and what comes right after it.
-fn ident(word: &str, after: &str) -> Kind {
-    if after.starts_with('!') && !after.starts_with("!=") {
-        return Kind::Macro;
-    }
-    // `MAX` and `MAX_LEN` are constants, but `T` is a type parameter.
-    let word = word.strip_prefix("r#").unwrap_or(word);
-    let mut chars = word.chars();
-    if chars.next().is_some_and(char::is_uppercase)
-        && chars.next().is_some()
-        && !word.chars().any(char::is_lowercase)
-    {
-        return Kind::Constant;
-    }
-    Kind::Identifier
-}
-
 /// What comes next in the path at the start of an attribute.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AttrPath {
@@ -218,7 +198,7 @@ pub fn lex(text: &str, out: &mut Tokens) {
                 attr = Some(AttrPath::Name);
                 Kind::Attribute
             }
-            Ok(Token::Ident) => ident(slice, lex.remainder()),
+            Ok(Token::Ident) => Kind::Identifier,
             Ok(Token::Str) => {
                 for (part, r) in Part::lexer(slice).spanned() {
                     let kind = match part {
@@ -417,7 +397,6 @@ mod tests {
             [
                 ("self", Kind::Keyword),
                 ("Self", Kind::Keyword),
-                ("MAX", Kind::Constant),
                 ("true", Kind::Constant),
                 ("false", Kind::Constant),
             ]
@@ -429,34 +408,6 @@ mod tests {
         assert_eq!(
             kinds_of("🦀fn x→fn \u{301}fn", Kind::Keyword),
             ["fn", "fn", "fn"]
-        );
-        assert_eq!(
-            tokens("println!(x)"),
-            [
-                ("println", Kind::Macro),
-                ("!", Kind::Operator),
-                ("(", Kind::Punctuation),
-                (")", Kind::Punctuation)
-            ]
-        );
-    }
-
-    #[test]
-    fn constants_and_macros() {
-        use Kind::*;
-        let text = "T MAX_LEN X1 Größe ÉTAT r#ABC _x x _ Some";
-        assert_eq!(
-            tokens(text),
-            [
-                ("MAX_LEN", Constant),
-                ("X1", Constant),
-                ("ÉTAT", Constant),
-                ("r#ABC", Constant)
-            ]
-        );
-        assert_eq!(
-            kinds_of("vec![x] r#try!(y) x != y z!= w", Macro),
-            ["vec", "r#try"]
         );
     }
 
@@ -490,18 +441,28 @@ mod tests {
         );
     }
 
-    /// Names that get no other color are identifiers, one token each.
+    /// Every name that isn't a keyword or in an attribute's path is an
+    /// identifier, one token each. That includes functions, types,
+    /// macros and constants.
     #[test]
     fn marks_plain_identifiers() {
-        let text = "fn f<T>(x: &str) -> Vec<u8> { foo.len(y) + r#type; Vec::<T>::new(); println!(z) } #[rustfmt::skip]";
+        let text = "fn f<T>(x: &str) -> Vec<u8> { foo.len(y) + r#type; Vec::<T>::new(); println!(MAX) } #[rustfmt::skip]";
         let mut out = Tokens::default();
         lex(text, &mut out);
         assert_eq!(
             out.identifiers(text),
             [
                 "f", "T", "x", "str", "Vec", "u8", "foo", "len", "y", "r#type", "Vec", "T", "new",
-                "z"
+                "println", "MAX"
             ]
+        );
+        assert_eq!(
+            out.colored(text)
+                .into_iter()
+                .filter(|&(_, k)| k == Kind::Operator)
+                .map(|(t, _)| t)
+                .collect::<Vec<_>>(),
+            ["<", ">", "&", "->", "<", ">", "+", "<", ">", "!"]
         );
     }
 }

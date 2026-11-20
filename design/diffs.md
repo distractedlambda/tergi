@@ -225,12 +225,9 @@ colors when the line is drawn, so switching themes doesn't need to lex
 anything again.
 
 Colors come from lexing alone. There is no parser, so the lexers can't
-tell which names are functions or types, and those get colors from
-their names like any other identifier. The Rust lexer gives two kinds
-of name colors of their own. A name followed by `!` is a macro, and an
-all-caps one with more than one character, such as `MAX_LEN`, is a
-constant. Constants follow Rust's naming conventions, so a constant
-named some other way is an ordinary identifier.
+tell which names are functions, types, macros or constants. In Rust,
+every name that isn't a keyword or part of an attribute's path is an
+identifier, and gets a color from its name.
 
 An attribute is colored from `#[` up to the end of its path, such as
 `#[rustfmt::skip`. Finding where the attribute itself ends would take a
@@ -644,7 +641,7 @@ picked from its name, so every use of a name has the same color and
 different names usually don't. Drawing hashes the token's text and
 uses the hash to pick one of the 16 colors in `Theme::identifiers`.
 The lexers only mark identifiers that get no other color, so keywords,
-and Rust's macros and constants, keep their usual colors.
+and words such as `AND` in a CMake `if`, keep their usual colors.
 
 The C, C++, CMake, Rust, Racket, Scribble and Rhombus lexers mark
 identifiers. TOML, YAML, Markdown and gitignore have nothing that is
