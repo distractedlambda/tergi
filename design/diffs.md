@@ -168,6 +168,29 @@ The other end of a line selection, `Detail::anchor`, is a row index too.
 the selection is dropped, because keeping the index would select other
 lines than the ones the user picked.
 
+### Levels
+
+The keyboard moves through the pane at one of three levels, which
+`Depth` names. At the top, j and k stop on files, section headers, the
+commit's subject and the lines of its details that do something on
+Enter. One level in, they stop on hunks and on the notices of files
+without hunks. At the bottom, they stop on the lines of one hunk and
+don't leave it.
+
+The level isn't stored anywhere. `Detail::depth` works it out from the
+kind of row the cursor is on. So a click on any row puts the keyboard
+at that row's level, and a rebuild that moves the cursor to a nearby
+row keeps the level that row has. `level_target` finds where a move
+ends up at the cursor's level, and `first_inside` and `parent_row`
+find the rows that `l` and `h` go to.
+
+Moving by hunks with j and k unfolds folded files on the way, so that
+it can read a whole diff hunk by hunk. `App::step_hunk` does this. When
+the search for the next hunk meets a folded file, it unfolds it and
+rebuilds the rows. The rebuild keeps the cursor on its row, so the next
+search starts from the same place and finds the hunks that just
+appeared.
+
 ## Word marks
 
 Inside a changed line, the words that changed get a stronger background.

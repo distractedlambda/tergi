@@ -26,34 +26,62 @@ instead. `background-work.md` explains why.
 Each pane builds a list of `ActionDef`s from its current selection:
 `history_actions`, `detail_actions`, `sidebar_actions`, plus fixed lists
 for the message box and the planner. `App::actions` picks the list for
-the focused pane, and `global_actions` adds the ones that work
-everywhere, such as fetch, the palette and quit.
+the focused pane. `global_actions` adds the ones that work everywhere,
+such as the palette and quit. `repo_actions` lists the git operations on
+the whole repository, such as fetch, push and stage all.
 
-An `ActionDef` has an optional key, a label, a command and three flags:
+An `ActionDef` has an optional key, a label, a command, the `via` that
+says what comes before its key, and three flags:
 
 - `enabled`: whether it can run now. Disabled actions are shown greyed
   out in menus.
 - `menu`: whether it appears in the right-click menu.
 - `hint`: whether it appears in the hint bar at the bottom.
 
-That one list is used in five places:
+`via` is one of three things. The keys of `Direct` actions work by
+themselves. These are movement keys like `l` and `h`, Space for
+folding, and the global keys. `Dot` actions act on the selection. Their
+keys only work in the menu that `.` and the right mouse button open, so
+that letters like `d` can't clash with movement. `Esc` actions are the
+ones in `repo_actions`. Their keys work in the git menu that Esc opens.
+The planner is the exception. Its actions are `Direct` and also in its
+right-click menu, because setting actions on its rows is all it does.
+
+That one list is used in six places:
 
 - **Keys.** `handle_key` looks the key up in the focused pane's list,
-  then in the global list, and runs the first enabled match.
+  then in the global list. It runs the first enabled match whose `via`
+  is `Direct`.
 - **The right-click menu.** `open_context_menu` shows the pane's actions
   that have `menu` set. The `.` key opens the same menu near the
   selected row.
+- **The git menu.** Esc runs `Cmd::RepoMenu`, which shows
+  `repo_actions`.
 - **The hint bar.** `draw_bottom` shows the actions with `hint` set, as
-  many as fit, and each one can be clicked.
+  many as fit, and each one can be clicked. Each key is shown with what
+  comes before it, such as `.r` or `esc F` (`ActionDef::keys_label`).
+  The global hints go at the right end, so that a pane with many hints
+  can't push them off.
 - **The help menu.** `?` shows `all_actions`, which is the pane's list
-  plus the global one. A command that is in both appears once, with its
-  key.
+  plus the global one and the git menu. A command that is in more than
+  one appears once if its key is the same. The help menu shows each key
+  with what comes before it. Pressing a key there runs nothing, because
+  a key can mean one thing after `.` and another after Esc.
 - **The command palette.** Ctrl+P shows the enabled actions from
   `all_actions` and filters them with `util::fuzzy_score`.
 
 Because the lists are built from the selection, the labels can say what
 an action will do. The detail pane says "Stage hunk" or "Discard lines"
 depending on what the cursor is on.
+
+## Esc
+
+Esc opens the git menu only when nothing else uses it. In a text box
+it cancels or leaves the box, and in a menu or dialog it closes it. In
+the planner it cancels the plan. In the detail pane, it first ends a
+line selection and then backs out one level, like `h`. It opens the git
+menu once the cursor is at the file level. `diffs.md` explains the
+levels.
 
 To add a feature, add a `Cmd` variant, put an `ActionDef` for it in the
 right pane's list, and handle it in `run_cmd`. Its key, menu entry, help
@@ -89,7 +117,7 @@ Only the top one gets keys and clicks. The kinds are:
 - `Message`: an error or other long message.
 
 A menu that the mouse opens appears at the pointer, or below the button
-that opened it. A menu that the keyboard opens appears in the middle of
+that opened it, if there is one. A menu that the keyboard opens appears in the middle of
 the screen, like the dialogs do. `App::by_mouse` says whether the input
 being handled came from the mouse. The one exception is the right-click
 menu. The `.` key opens it next to the selected row, because the menu
@@ -119,7 +147,8 @@ Then everything is drawn. Each thing that reacts to the mouse is
 recorded in `App::hits` as a rectangle and an `input::Target`, while it
 is drawn. Targets are rows (`HistoryRow(i)`, `DocRow(i)` and so on),
 buttons that carry a `Cmd`, the dividers between panes, menu items, and
-text boxes.
+text boxes. The only buttons are in dialogs, the hint bar and the banner
+for an operation that stopped. Everything else is done from a menu.
 
 `target_at` looks up a click in that list, from the end, so whatever was
 drawn last wins. Drawing a dialog clears the list first, so while a
@@ -183,6 +212,11 @@ above:
 
 - `clicks_behind_a_dialog_are_ignored` and
   `buttons_under_a_dialog_do_not_light_up`.
+- `actions_on_the_selection_need_a_dot_first`,
+  `esc_backs_out_before_it_opens_the_git_menu` and
+  `menus_from_the_keyboard_open_in_the_middle`.
+- `the_detail_pane_moves_by_file_then_hunk_then_line` and
+  `moving_by_hunks_opens_folded_files`, for the levels.
 - `right_click_selects_without_activating` and
   `right_click_in_the_planner_opens_one_menu`.
 - `the_theme_menu_previews_themes` and

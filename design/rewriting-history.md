@@ -164,7 +164,8 @@ small files, so the app reads them while it handles an event, on every
 refresh.
 
 When the state isn't `Clean`, the banner shows it, with Continue, Skip
-and Abort buttons. A merge has no Skip. Each button runs `continue_op`,
+and Abort buttons. The git menu that Esc opens has the same three. A
+merge has no Skip. Each button runs `continue_op`,
 `skip_op` or `abort_op`, which call the matching git command. Continue
 and Skip for a rebase go through `finish` again, so they can stop once
 more.

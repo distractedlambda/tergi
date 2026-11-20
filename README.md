@@ -35,8 +35,8 @@ tergi path/to/repo
   full diff. For the working directory, it shows the commit message box
   and your changes, grouped into conflicts, untracked, unstaged and
   staged files.
-- The **top bar** has Fetch, Pull, Push and Stash buttons, and a command
-  palette.
+- The **top bar** shows the repository, the current branch and its
+  upstream, and what tergi is busy with.
 
 Drag the dividers between panes to resize them. When a rebase, merge,
 cherry-pick or revert stops partway, a banner appears with Continue,
@@ -46,82 +46,118 @@ Skip and Abort buttons.
 
 - Click to select, and double-click to open or check out.
 - Right-click anything for a menu of what you can do with it.
-- Drag over diff lines to select them, then click "Stage lines" or
-  "Unstage lines".
+- Drag over diff lines to select them, then right-click them to stage,
+  unstage or discard them.
 - Scroll with the wheel. Hold Shift to scroll the file or commit message
   under the pointer sideways. Each one keeps its own position, and it
   stops once the end of its longest line is in view.
 - In the rebase planner, drag commits to reorder them.
+- Click a key in the bottom bar to run it.
 
 ## Keys
 
+The keys work like vim's. Movement keys work by themselves. Actions on
+the selected item come after `.`, which opens the menu for it. Git
+operations on the whole repository come after Esc, which opens a menu
+of them. Both menus list their keys, and a second Esc closes them.
+
 The bottom bar shows the most useful keys for the focused pane. Press
 `?` for the full list, or Ctrl+P to search for any command by name.
-Right-click menus show keys too.
 
 | Key | What it does |
 | --- | --- |
+| `h` / `l`, arrows | Move to the pane on the left or right |
 | `j` / `k`, arrows | Move down and up |
 | `g` / `G` | Go to the top or bottom |
 | Ctrl+D / Ctrl+U | Move by half a page |
 | Tab, `1` `2` `3` | Switch panes |
 | `.` | Open the menu for the selected item |
+| Esc | Open the git menu |
 | `?` | Show all keys |
 | Ctrl+P | Command palette |
-| `w` | Show the working directory |
 | `t` | Switch between unified and side-by-side diffs |
-| `F` / `p` / `P` | Fetch, pull, push |
-| `S` | Stash your changes |
 | `@` | Show the git commands tergi has run |
+| Ctrl+B | Show or hide the sidebar |
 | `q` | Quit |
+
+### The detail pane
+
+The detail pane has three levels. At first, `j` and `k` move between
+files, and the commit's details at the top. `l` or Enter goes into the
+selected file's hunks, where `j` and `k` move from hunk to hunk, on into
+the next file. Another `l` or Enter goes into the hunk's lines. `h` or
+Esc goes back out one level, and `h` from the files goes back to the
+history.
+
+| Key | What it does |
+| --- | --- |
+| Space | Fold or unfold the file |
+| `Z` | Fold or unfold all files |
+| `v` | Start selecting lines. Esc ends the selection. |
+| Shift+arrows | Select lines |
+| `]` `[` / `}` `{` | Next and previous file or hunk |
+| Enter | On a parent commit, jump to it. On a large diff, show it. |
 
 In the working directory:
 
 | Key | What it does |
 | --- | --- |
-| Space | Stage or unstage the file, hunk or selected lines |
-| `v` | Start selecting lines |
-| `d` | Discard (asks first) |
-| `a` / `u` | Stage all, unstage all |
-| `c` | Write a commit message. Ctrl+Enter or Ctrl+S commits. |
-| `A` | Toggle amend |
-| `z` / `Z` | Fold a file, or all files |
-| `]` `[` / `}` `{` | Next and previous file or hunk |
-| `o` | Open the file in your editor |
+| `.` Space | Stage or unstage the file, hunk or selected lines |
+| `.d` | Discard (asks first) |
+| `.o` | Open the file in your editor |
 
-On a commit in the history:
+### The git menu
 
 | Key | What it does |
 | --- | --- |
-| `r` | Reword |
-| `s` / `f` | Squash or fix up into the parent |
-| `d` | Drop |
-| `e` | Stop at the commit so you can edit it |
-| Ctrl+K / Ctrl+J | Move the commit up or down |
-| `A` | Amend the staged changes into this commit |
-| `i` | Open the rebase planner from this commit |
-| `b` / `T` | New branch or tag here |
-| `C` / `V` | Cherry-pick or revert |
-| `X` | Reset the current branch to here |
-| `y` | Copy the hash |
+| Esc `F` / `p` / `P` | Fetch, pull, push |
+| Esc `S` | Stash your changes |
+| Esc `a` / `u` | Stage all, unstage all |
+| Esc `c` | Write a commit message. Ctrl+Enter or Ctrl+S commits. |
+| Esc `A` | Toggle amend |
+| Esc `w` | Show the working directory |
+| Esc `r` | Refresh |
+| Esc `C` / `s` / `X` | Continue, skip or abort a rebase, merge, cherry-pick or revert that stopped |
+
+In the message box, Esc leaves the box instead, and Alt+A toggles amend.
+
+### On a commit in the history
+
+| Key | What it does |
+| --- | --- |
+| `.r` | Reword |
+| `.s` / `.f` | Squash or fix up into the parent |
+| `.d` | Drop |
+| `.e` | Stop at the commit so you can edit it |
+| `.` Ctrl+K / Ctrl+J | Move the commit up or down |
+| `.A` | Amend the staged changes into this commit |
+| `.i` | Open the rebase planner from this commit |
+| `.b` / `.T` | New branch or tag here |
+| `.C` / `.V` | Cherry-pick or revert |
+| `.X` | Reset the current branch to here |
+| `.y` | Copy the hash |
+
+In the sidebar, Space folds a section, and `.` Space checks out the
+selected branch.
 
 ## Rewriting history
 
 The single-commit actions above run `git rebase -i` for you, without
-opening an editor. The rebase planner (`i`) lets you plan several
+opening an editor. The rebase planner (`.i`) lets you plan several
 changes at once. Set an action for each commit with `p`, `r`, `s`, `f`,
 `d` or `e`, reorder with Ctrl+J and Ctrl+K or the mouse, and press
-Enter to run it. tergi asks for the new messages for rewords and
-squashes before it starts.
+Enter to run it. Esc cancels the plan. tergi asks for the new messages
+for rewords and squashes before it starts.
 
 Local changes are stashed during a rebase and restored at the end.
 Ranges that contain merge commits are refused, because tergi doesn't
 try to recreate merges.
 
 If a rebase stops on a conflict, the conflicted files appear at the top
-of the working directory. Resolve each one with Ours, Theirs, or by
-editing it and clicking Resolved. Then press Alt+C to continue, or
-Alt+A to abort.
+of the working directory. Resolve each one from its menu with `.O`
+(ours) or `.T` (theirs), or edit it and mark it resolved with `.M`.
+Then press Esc `C` to continue, or Esc `X` to abort. The banner's
+buttons do the same.
 
 ## Remotes and passwords
 
