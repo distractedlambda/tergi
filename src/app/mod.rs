@@ -296,6 +296,9 @@ pub struct App {
     pub by_mouse: bool,
     pub drag: Option<Drag>,
     last_click: Option<(Instant, u16, u16)>,
+    /// Whether the last scroll step that went through was sideways, and
+    /// when it came.
+    last_scroll: Option<(bool, Instant)>,
     pub size: (u16, u16),
 
     /// Something the event loop has to do outside of `handle`, such as
@@ -428,6 +431,7 @@ impl App {
             by_mouse: false,
             drag: None,
             last_click: None,
+            last_scroll: None,
             size: (80, 24),
             suspend: None,
             clipboard: None,

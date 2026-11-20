@@ -14,7 +14,7 @@ use common::Scratch;
 use common::ui::Ui;
 use tergi::app::cmd::{Cmd, Overlay, SideRow, Unit};
 use tergi::app::doc::{Row, Section};
-use tergi::app::input::Target;
+use tergi::app::input::{SCROLL_LOCK, Target};
 use tergi::app::planner::PlanAction;
 use tergi::app::{After, AppEvent, HISTORY_ROW_HEIGHT};
 use tergi::highlight::Kind;
@@ -397,6 +397,36 @@ fn sideways_scrolling_stops_at_the_end_of_the_longest_line() {
     let screen = ui.screen();
     assert!(!screen.contains("the end"), "{screen}");
     assert!(screen.contains("word the"), "{screen}");
+}
+
+#[test]
+fn scrolling_one_way_blocks_the_other_for_a_moment() {
+    let s = Scratch::new();
+    s.write("a.txt", "a\n");
+    s.commit_all("init");
+    s.write("a.txt", &format!("{}the end\n", "word ".repeat(40)));
+    s.commit_all("long line");
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    ui.select_commit(1);
+    ui.draw();
+    let r = ui.doc_row(|r| matches!(r, Row::Line { file: 0, .. }));
+    // A slow machine could pause long enough between the two steps for
+    // the second one to count, so try until both come in time.
+    loop {
+        let start = Instant::now();
+        ui.mouse(MouseEventKind::ScrollDown, r.x, r.y);
+        let before = ui.screen();
+        ui.mouse(MouseEventKind::ScrollRight, r.x, r.y);
+        if start.elapsed() < SCROLL_LOCK {
+            assert_eq!(ui.screen(), before);
+            break;
+        }
+    }
+    std::thread::sleep(SCROLL_LOCK);
+    let before = ui.screen();
+    ui.mouse(MouseEventKind::ScrollRight, r.x, r.y);
+    assert_ne!(ui.screen(), before);
 }
 
 #[test]

@@ -33,6 +33,10 @@ pub enum Target {
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
+/// How long a scroll on one axis blocks scrolling on the other. See
+/// `scroll_axis_free`.
+pub const SCROLL_LOCK: Duration = Duration::from_millis(200);
+
 impl App {
     pub fn handle_input(&mut self, ev: Event) {
         self.by_mouse = matches!(ev, Event::Mouse(_));
@@ -478,16 +482,41 @@ impl App {
             MouseEventKind::Up(_) => self.drag = None,
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                 let down = m.kind == MouseEventKind::ScrollDown;
-                if m.modifiers.contains(KeyModifiers::SHIFT) {
+                let sideways = m.modifiers.contains(KeyModifiers::SHIFT);
+                if !self.scroll_axis_free(sideways) {
+                    return;
+                }
+                if sideways {
                     self.hscroll_at(x, y, down);
                 } else {
                     self.scroll_at(x, y, if down { 1 } else { -1 });
                 }
             }
-            MouseEventKind::ScrollRight => self.hscroll_at(x, y, true),
-            MouseEventKind::ScrollLeft => self.hscroll_at(x, y, false),
+            MouseEventKind::ScrollRight | MouseEventKind::ScrollLeft
+                if self.scroll_axis_free(true) =>
+            {
+                self.hscroll_at(x, y, m.kind == MouseEventKind::ScrollRight);
+            }
             _ => {}
         }
+    }
+
+    /// Whether a scroll step on one axis should move anything. A diagonal
+    /// swipe on a trackpad sends steps on both axes, but the user almost
+    /// always means to scroll only one way. So we drop steps on one axis
+    /// while the other axis has scrolled within `SCROLL_LOCK`. Dropped
+    /// steps don't restart the clock. That lets the other axis take over
+    /// soon after the first one stops.
+    fn scroll_axis_free(&mut self, sideways: bool) -> bool {
+        let now = Instant::now();
+        if let Some((axis, t)) = self.last_scroll
+            && axis != sideways
+            && now.duration_since(t) < SCROLL_LOCK
+        {
+            return false;
+        }
+        self.last_scroll = Some((sideways, now));
+        true
     }
 
     fn hscroll_at(&mut self, x: u16, y: u16, right: bool) {

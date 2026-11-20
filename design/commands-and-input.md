@@ -151,6 +151,9 @@ it changes.
   handles every queued event before it draws again, so a click can
   name a row that an earlier event in the same batch removed. Clicks
   on detail rows that are gone do nothing.
+- A diagonal swipe on a trackpad scrolls both ways at once. So after a
+  scroll step on one axis, steps on the other axis are ignored for
+  200 ms (`SCROLL_LOCK`). Shift with the wheel counts as sideways.
 - Clicking outside a menu, the palette or the command log closes it.
   Clicking outside a dialog that asks something, such as a confirmation
   or a text box, does nothing. Then the question isn't lost by
