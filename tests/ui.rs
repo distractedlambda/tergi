@@ -677,6 +677,21 @@ fn squashes_commits_selected_with_v() {
 }
 
 #[test]
+fn fixes_up_commits_selected_with_v() {
+    let s = four_commits();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(4);
+    ui.app.select_history(2);
+    ui.key(KeyCode::Char('v'));
+    ui.key(KeyCode::Char('j'));
+    ui.dot('f');
+    ui.settle();
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
+    assert_eq!(s.log(), ["four", "two", "one"]);
+    assert_eq!(ui.app.history.anchor, None);
+}
+
+#[test]
 fn selects_commits_with_shift_and_the_mouse() {
     let s = four_commits();
     let mut ui = Ui::open(&s);
