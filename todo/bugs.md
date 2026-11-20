@@ -37,3 +37,17 @@ a file that the first added. Then move the second commit down with
 Ctrl+J, take either side and continue. This is git's behavior. The
 command line does the same, and tergi doesn't work around it.
 `tests/rebase_stop_props.rs` expects it.
+
+## `G` starts a line selection in the detail pane
+
+At the line level of the detail pane, `G` selects every line from the
+cursor to where it moves, instead of only moving there.
+
+To see it, select a commit or the working directory, go into the lines
+of a hunk with `l` twice, and press `G`. The lines are marked as
+selected, as with Shift+Down.
+
+The cause is in `nav_key` in `src/app/input.rs`. It treats Shift with
+any movement key as extending the selection. Crossterm reports an
+uppercase letter with the Shift modifier, so `G` counts too. The
+history only extends with Shift for keys that aren't letters.
