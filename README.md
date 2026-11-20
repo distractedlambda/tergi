@@ -137,6 +137,10 @@ In the message box, Esc leaves the box instead, and Alt+A toggles amend.
 | `.X` | Reset the current branch to here |
 | `.y` | Copy the hash |
 
+Reword and squash open the message for editing at the top of the detail
+pane, where the commit's message is normally shown. Ctrl+Enter saves it
+and Esc cancels.
+
 In the sidebar, Space folds a section, and `.` Space checks out the
 selected branch.
 

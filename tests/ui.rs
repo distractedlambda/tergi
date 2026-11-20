@@ -544,6 +544,10 @@ fn draws_at_any_size() {
     );
     draw_all(&mut ui, "an error");
     ui.key(KeyCode::Esc);
+    ui.dot('r');
+    ui.wait("the message editor", |u| u.app.edit.is_some());
+    draw_all(&mut ui, "the message editor");
+    ui.key(KeyCode::Esc);
 
     ui.key(KeyCode::Char('2'));
     ui.dot('i');
@@ -596,12 +600,11 @@ fn rewords_a_commit_and_runs_a_plan() {
     // Reword the oldest commit.
     ui.app.select_history(3);
     ui.dot('r');
-    ui.wait("the reword dialog", |u| {
-        matches!(u.app.overlays.last(), Some(Overlay::Input(_)))
-    });
+    ui.wait("the message editor", |u| u.app.edit.is_some());
     ui.type_text(" file");
     ui.key_with(KeyCode::Enter, KeyModifiers::CONTROL);
     ui.settle();
+    assert!(ui.app.edit.is_none());
     assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
     assert_eq!(s.log(), ["Add more", "Add a fourth note", "Add notes file"]);
     ui.wait("the rewritten history", |u| {
@@ -630,6 +633,88 @@ fn rewords_a_commit_and_runs_a_plan() {
     assert!(s.file("more.txt").exists());
 }
 
+/// The message editor takes the place of the commit message in the
+/// detail pane, rather than opening a dialog.
+#[test]
+fn edits_the_message_where_the_commit_shows_it() {
+    let s = Scratch::new();
+    s.write("a.txt", "a\n");
+    s.commit_all("Add a");
+    s.write("b.txt", "b\n");
+    s.commit_all("Add b\n\nThe body of the message.");
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    ui.select_commit(1);
+    let shows = |ui: &Ui, text: &str| ui.screen().matches(text).count();
+    assert_eq!(shows(&ui, "The body of the message."), 1, "{}", ui.screen());
+
+    ui.dot('r');
+    ui.wait("the message editor", |u| u.app.edit.is_some());
+    assert!(ui.app.overlays.is_empty());
+    let editor = ui.find_hit(|t| *t == Target::Edit);
+    let detail = ui.app.areas.detail;
+    assert!(
+        editor.y > detail.y && editor.x > detail.x && editor.right() <= detail.right(),
+        "{editor:?} isn't in the detail pane {detail:?}"
+    );
+    assert!(ui.screen().contains("Reword commit"), "{}", ui.screen());
+    // The editor holds the message, and the header leaves it out.
+    assert_eq!(shows(&ui, "The body of the message."), 1, "{}", ui.screen());
+    assert!(!ui.app.detail.rows.is_empty());
+    assert!(ui.screen().contains("Author"), "{}", ui.screen());
+
+    // The rest of the screen can't be clicked while the editor is open.
+    let other = ui.find_hit(|t| *t == Target::HistoryRow(2));
+    ui.click(MouseButton::Left, other);
+    assert!(ui.app.edit.is_some());
+    assert_eq!(ui.app.history.current_row(), 1);
+
+    // Esc cancels, and the message comes back.
+    ui.type_text("!");
+    ui.key(KeyCode::Esc);
+    ui.draw();
+    assert!(ui.app.edit.is_none());
+    assert_eq!(shows(&ui, "The body of the message."), 1, "{}", ui.screen());
+    assert!(!ui.screen().contains("message.!"), "{}", ui.screen());
+    assert_eq!(s.log(), ["Add b", "Add a"]);
+
+    // The Save hint saves.
+    ui.dot('r');
+    ui.wait("the message editor", |u| u.app.edit.is_some());
+    ui.type_text("!");
+    let save = ui.find_hit(|t| *t == Target::Button(Cmd::SubmitInput));
+    ui.click(MouseButton::Left, save);
+    ui.settle();
+    assert!(ui.app.edit.is_none());
+    assert_eq!(
+        s.sh(&["log", "-1", "--format=%B"]).trim(),
+        "Add b\n\nThe body of the message.!"
+    );
+}
+
+#[test]
+fn the_message_editor_closes_when_its_commit_goes_away() {
+    let s = four_commits();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(4);
+    ui.select_commit(2);
+    ui.dot('r');
+    ui.wait("the message editor", |u| u.app.edit.is_some());
+    // Rewrite the branch behind the app's back.
+    s.sh(&["reset", "-q", "--hard", "HEAD~2"]);
+    ui.run_cmd(Cmd::Refresh);
+    ui.wait("the editor to close", |u| u.app.edit.is_none());
+    ui.wait("the new history", |u| u.app.history.commits.len() == 2);
+    assert!(!ui.app.detail.hide_message);
+    let status = ui.app.status.as_ref().map(|s| s.0.clone());
+    assert!(
+        status
+            .as_deref()
+            .is_some_and(|s| s.contains("no longer selected")),
+        "{status:?}"
+    );
+}
+
 /// Commits "one" to "four", each adding a file.
 fn four_commits() -> Scratch {
     let s = Scratch::new();
@@ -650,20 +735,15 @@ fn squashes_commits_selected_with_v() {
     ui.key(KeyCode::Char('j'));
     assert_eq!(ui.app.history.marked_rows(), Some((2, 3)));
     ui.dot('s');
-    ui.wait("the squash dialog", |u| {
-        matches!(u.app.overlays.last(), Some(Overlay::Input(_)))
-    });
-    let Some(Overlay::Input(b)) = ui.app.overlays.last() else {
-        unreachable!()
-    };
-    assert_eq!(b.text.text(), "two\n\nthree");
+    ui.wait("the message editor", |u| u.app.edit.is_some());
+    let text = ui.app.edit.as_ref().map(|e| e.input.text.text());
+    assert_eq!(text.as_deref(), Some("two\n\nthree"));
     // Cancelling keeps the selection.
     ui.key(KeyCode::Esc);
+    assert!(ui.app.edit.is_none());
     assert_eq!(ui.app.history.marked_rows(), Some((2, 3)));
     ui.dot('s');
-    ui.wait("the squash dialog", |u| {
-        matches!(u.app.overlays.last(), Some(Overlay::Input(_)))
-    });
+    ui.wait("the message editor", |u| u.app.edit.is_some());
     ui.type_text("!");
     ui.key_with(KeyCode::Enter, KeyModifiers::CONTROL);
     ui.settle();

@@ -187,6 +187,9 @@ pub struct Detail {
     split: bool,
     pub collapsed: HashSet<(Section, BString)>,
     pub collapsed_sections: HashSet<Section>,
+    /// Leave the commit message out of the header, because the message
+    /// editor is drawn in its place.
+    pub hide_message: bool,
     seen: HashSet<(Section, BString)>,
     pub highlights: HashMap<(u8, usize), Arc<FileHighlight>>,
     pub requested: HashSet<(u8, usize)>,
@@ -216,6 +219,7 @@ impl Default for Detail {
             split: false,
             collapsed: HashSet::new(),
             collapsed_sections: HashSet::new(),
+            hide_message: false,
             seen: HashSet::new(),
             highlights: HashMap::new(),
             requested: HashSet::new(),
@@ -507,24 +511,26 @@ impl Detail {
             self.meta.push(MetaLine { line, click });
             self.rows.push(Row::Meta(self.meta.len() - 1));
         };
-        let mut msg_lines = c.message.trim_end().lines();
-        let subject = msg_lines.next().unwrap_or("").to_string();
-        push(
-            Line::from(Span::styled(subject, fg.add_modifier(Modifier::BOLD))),
-            None,
-        );
-        let body: Vec<String> = msg_lines.map(str::to_string).collect();
-        let body_start = body
-            .iter()
-            .position(|l| !l.trim().is_empty())
-            .unwrap_or(body.len());
-        if body_start < body.len() {
-            push(Line::default(), None);
-            for l in &body[body_start..] {
-                push(Line::from(Span::styled(l.clone(), fg)), None);
+        if !self.hide_message {
+            let mut msg_lines = c.message.trim_end().lines();
+            let subject = msg_lines.next().unwrap_or("").to_string();
+            push(
+                Line::from(Span::styled(subject, fg.add_modifier(Modifier::BOLD))),
+                None,
+            );
+            let body: Vec<String> = msg_lines.map(str::to_string).collect();
+            let body_start = body
+                .iter()
+                .position(|l| !l.trim().is_empty())
+                .unwrap_or(body.len());
+            if body_start < body.len() {
+                push(Line::default(), None);
+                for l in &body[body_start..] {
+                    push(Line::from(Span::styled(l.clone(), fg)), None);
+                }
             }
+            push(Line::default(), None);
         }
-        push(Line::default(), None);
         if let Some(ls) = labels.get(&c.id) {
             let mut spans = vec![Span::styled("Refs       ", dim)];
             for l in ls {

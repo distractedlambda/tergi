@@ -289,6 +289,8 @@ pub struct App {
 
     pub overlays: Vec<cmd::Overlay>,
     pub planner: Option<Planner>,
+    /// A reword or squash message being edited in the detail pane.
+    pub edit: Option<cmd::MessageEdit>,
     pub message: TextArea,
     pub amend: bool,
     /// The message the box had before amend filled in HEAD's message.
@@ -433,6 +435,7 @@ impl App {
             highlighter,
             overlays: Vec::new(),
             planner: None,
+            edit: None,
             message,
             amend: false,
             message_before_amend: None,
@@ -879,6 +882,16 @@ impl App {
     pub fn show_source(&mut self, source: doc::Source) {
         if self.detail.source == source {
             return;
+        }
+        // The message editor belongs to the commit it was opened on. This
+        // happens when that commit leaves the history, for example because
+        // something outside tergi rewrote the branch.
+        if self.edit.is_some() {
+            self.cancel_edit();
+            self.set_status(
+                "The commit whose message you were editing is no longer selected",
+                Level::Warn,
+            );
         }
         let load = source.commit_id();
         self.detail.set_source(source);

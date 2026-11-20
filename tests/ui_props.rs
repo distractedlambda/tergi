@@ -510,8 +510,9 @@ fn run_step(ui: &mut Ui, s: &Scratch, step: &Step) -> Result<(), TestCaseError> 
             ui.handle(AppEvent::Input(Event::Resize(*w, *h)));
         }
         Step::Palette(i) => {
-            // The palette opens from anywhere but a dialog.
-            if !ui.app.overlays.is_empty() {
+            // The palette opens from anywhere but a dialog or the message
+            // editor, which takes every key.
+            if !ui.app.overlays.is_empty() || ui.app.edit.is_some() {
                 return Ok(());
             }
             ui.run_cmd(Cmd::Palette);
@@ -675,6 +676,23 @@ fn check_state(ui: &Ui) -> Result<(), TestCaseError> {
                 screen()
             );
         }
+    }
+    if let Some(e) = &a.edit {
+        prop_assert!(
+            a.detail.source.commit_id() == Some(e.commit) && a.detail.hide_message,
+            "the message editor is open on a commit the detail pane doesn't show\n{}",
+            screen()
+        );
+        prop_assert!(
+            a.planner.is_none(),
+            "the message editor is open in the planner"
+        );
+    } else {
+        prop_assert!(
+            !a.detail.hide_message,
+            "the commit message is hidden without the editor\n{}",
+            screen()
+        );
     }
     if a.focus == Focus::Message {
         prop_assert!(

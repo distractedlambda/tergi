@@ -401,6 +401,18 @@ pub struct InputBox {
     pub purpose: Purpose,
 }
 
+/// A commit message that the user is editing for a reword or a squash. It
+/// is drawn at the top of the detail pane, in place of the message of the
+/// commit that the pane shows. While it is open, it gets all the keys.
+pub struct MessageEdit {
+    pub input: InputBox,
+    /// The commit the detail pane showed when the edit started. If the pane
+    /// moves to another commit, the edit ends.
+    pub commit: ObjectId,
+    /// The pane that had focus before, to give it back afterwards.
+    pub focus: Focus,
+}
+
 pub enum Overlay {
     Menu(Menu),
     Confirm {
@@ -524,11 +536,16 @@ pub enum Context {
     History,
     Detail,
     Message,
+    /// The commit message editor in the detail pane.
+    Edit,
     Planner,
 }
 
 impl App {
     pub fn context(&self) -> Context {
+        if self.edit.is_some() {
+            return Context::Edit;
+        }
         if self.planner.is_some() {
             return Context::Planner;
         }
@@ -691,6 +708,22 @@ impl App {
                 )
                 .hint()
                 .direct(),
+            ],
+            Context::Edit => vec![
+                act(
+                    Some(Key {
+                        code: KeyCode::Enter,
+                        ctrl: true,
+                        alt: false,
+                    }),
+                    "Save",
+                    Cmd::SubmitInput,
+                )
+                .hint()
+                .direct(),
+                act(Some(Key::code(KeyCode::Esc)), "Cancel", Cmd::CloseOverlay)
+                    .hint()
+                    .direct(),
             ],
             Context::Planner => vec![
                 act(Some(Key::ch('p')), "Pick", Cmd::PlanSet(PlanAction::Pick))
@@ -1399,6 +1432,10 @@ impl App {
                 }
                 self.focus = Focus::Message;
             }
+            // Dialogs handle these themselves. Without one, they come from
+            // the hint bar of the message editor.
+            Cmd::SubmitInput if self.overlays.is_empty() => self.submit_edit(),
+            Cmd::CloseOverlay if self.overlays.is_empty() => self.cancel_edit(),
             Cmd::Confirmed(_) | Cmd::CloseOverlay | Cmd::SubmitInput => {}
 
             Cmd::Fetch => {
@@ -1485,34 +1522,29 @@ impl App {
                 });
             }
 
-            // The dialogs below open once git has answered. If another one
-            // opened in the meantime, the user has moved on, so we don't.
-            Cmd::Reword(id) => self.spawn_read(
-                move |r| async move { ops::commit_message(&r.git, &id.to_string()).await.unwrap_or_default() },
-                move |app, msg| {
-                    if app.overlays.is_empty() {
-                        app.open_input("Reword commit", "Ctrl+Enter to save", true, &msg, Purpose::Reword(id));
-                    }
-                },
-            ),
-            Cmd::Squash(id) => self.spawn_read(
-                move |r| async move {
-                    let this = ops::commit_message(&r.git, &id.to_string()).await.unwrap_or_default();
-                    let parent = ops::commit_message(&r.git, &format!("{id}^")).await.unwrap_or_default();
-                    format!("{parent}\n\n{this}")
-                },
-                move |app, msg| {
-                    if app.overlays.is_empty() {
-                        app.open_input(
-                            "Squash into parent",
-                            "Message for the combined commit. Ctrl+Enter to save.",
-                            true,
-                            &msg,
-                            Purpose::Squash(id),
-                        );
-                    }
-                },
-            ),
+            // The message editors below open once git has answered. If the
+            // detail pane shows another commit by then, or a dialog opened,
+            // the user has moved on, so we don't.
+            Cmd::Reword(id) => {
+                let shown = self.detail.source.commit_id();
+                self.spawn_read(
+                    move |r| async move { ops::commit_message(&r.git, &id.to_string()).await.unwrap_or_default() },
+                    move |app, msg| app.open_edit(shown, "Reword commit", "", &msg, Purpose::Reword(id)),
+                );
+            }
+            Cmd::Squash(id) => {
+                let shown = self.detail.source.commit_id();
+                self.spawn_read(
+                    move |r| async move {
+                        let this = ops::commit_message(&r.git, &id.to_string()).await.unwrap_or_default();
+                        let parent = ops::commit_message(&r.git, &format!("{id}^")).await.unwrap_or_default();
+                        format!("{parent}\n\n{this}")
+                    },
+                    move |app, msg| {
+                        app.open_edit(shown, "Squash into parent", "Message for the combined commit", &msg, Purpose::Squash(id));
+                    },
+                );
+            }
             Cmd::Fixup(id) => self.rebase_op("Fixup", move |r| async move { rebase::single(&r.git, &exe, id, Action::Fixup).await }),
             Cmd::Drop(id) => self.rebase_op("Drop commit", move |r| async move { rebase::single(&r.git, &exe, id, Action::Drop).await }),
             Cmd::Edit(id) => self.rebase_op("Edit commit", move |r| async move { rebase::single(&r.git, &exe, id, Action::Edit).await }),
@@ -1521,7 +1553,7 @@ impl App {
                 move |r| async move { rebase::plan_from(&r.git, id).await },
                 |app, plan| match plan {
                     Ok(plan) => {
-                        if app.planner.is_none() && app.overlays.is_empty() {
+                        if app.planner.is_none() && app.overlays.is_empty() && app.edit.is_none() {
                             app.planner = Some(Planner::new(plan));
                         }
                     }
@@ -1567,6 +1599,7 @@ impl App {
                 }
             }
             Cmd::SquashCommits(ids) => {
+                let shown = self.detail.source.commit_id();
                 self.spawn_read(
                     {
                         let ids = ids.clone();
@@ -1579,10 +1612,8 @@ impl App {
                         }
                     },
                     move |app, msg| {
-                        if app.overlays.is_empty() {
-                            let title = format!("Squash {}", commits_noun(ids.len()));
-                            app.open_input(&title, "Message for the combined commit. Ctrl+Enter to save.", true, &msg, Purpose::SquashCommits(ids));
-                        }
+                        let title = format!("Squash {}", commits_noun(ids.len()));
+                        app.open_edit(shown, &title, "Message for the combined commit", &msg, Purpose::SquashCommits(ids));
                     },
                 );
             }
@@ -1894,6 +1925,61 @@ impl App {
             text: TextArea::with_text(multiline, initial),
             purpose,
         }));
+    }
+
+    /// Start editing a commit message in the detail pane. `shown` is the
+    /// commit the pane showed when the command ran. If it shows another
+    /// one now, or something else has taken over the screen, the user has
+    /// moved on and we do nothing.
+    fn open_edit(
+        &mut self,
+        shown: Option<ObjectId>,
+        title: &str,
+        hint: &str,
+        initial: &str,
+        purpose: Purpose,
+    ) {
+        let Some(commit) = shown else { return };
+        if self.detail.source.commit_id() != Some(commit)
+            || !self.overlays.is_empty()
+            || self.planner.is_some()
+            || self.edit.is_some()
+        {
+            return;
+        }
+        self.edit = Some(MessageEdit {
+            input: InputBox {
+                title: title.into(),
+                hint: hint.into(),
+                text: TextArea::with_text(true, initial),
+                purpose,
+            },
+            commit,
+            focus: self.focus,
+        });
+        self.detail.hide_message = true;
+        self.rebuild_doc();
+    }
+
+    /// Close the message editor and give back what it took over.
+    fn close_edit(&mut self) -> Option<InputBox> {
+        let e = self.edit.take()?;
+        self.focus = e.focus;
+        self.detail.hide_message = false;
+        self.rebuild_doc();
+        Some(e.input)
+    }
+
+    pub fn submit_edit(&mut self) {
+        if let Some(b) = self.close_edit() {
+            self.submit_input(b);
+        }
+    }
+
+    pub fn cancel_edit(&mut self) {
+        if let Some(b) = self.close_edit() {
+            self.cancel_input(&b);
+        }
     }
 
     pub fn submit_input(&mut self, b: InputBox) {

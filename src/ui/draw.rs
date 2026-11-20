@@ -41,25 +41,25 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         let buf = f.buffer_mut();
         buf.set_style(area, Style::default().bg(app.theme.bg).fg(app.theme.fg));
 
-        // The text boxes need mutable access, so draw them first.
-        if app.detail.source == Source::Workdir
-            && app.planner.is_none()
-            && app.areas.message.height > 0
-        {
+        // The text boxes need mutable access, so draw them first. Layout
+        // only gives the message box room in the staging view or while a
+        // commit message is being edited.
+        if app.planner.is_none() && app.areas.message.height > 0 {
             let theme = app.theme.clone();
             let r = app.areas.message;
-            let bg = if app.focus == Focus::Message {
-                theme.panel
-            } else {
-                theme.bg
+            let focused = app.edit.is_some() || app.focus == Focus::Message;
+            let bg = if focused { theme.panel } else { theme.bg };
+            let text = match &mut app.edit {
+                Some(e) => &mut e.input.text,
+                None => &mut app.message,
             };
-            let pos = app.message.render(
+            let pos = text.render(
                 buf,
                 r,
                 Style::default().bg(bg).fg(theme.fg),
                 Style::default().fg(theme.faint).bg(bg),
             );
-            if app.focus == Focus::Message && app.overlays.is_empty() {
+            if focused && app.overlays.is_empty() {
                 cursor = Some(pos);
             }
         }
@@ -145,7 +145,17 @@ fn layout(app: &mut App, area: Rect) {
     app.areas.detail = Rect::new(dx, body.y, body.right().saturating_sub(dx), body.height);
 
     let d = app.areas.detail;
-    if app.detail.source == Source::Workdir && d.height > 8 {
+    if let Some(e) = &app.edit
+        && d.height >= 3
+    {
+        // The editor stands in for the commit message, so give it more room
+        // than the staging box, but leave some of the commit in view.
+        let max = (d.height * 2 / 3).min(d.height - 2).max(1);
+        let lines = (e.input.text.line_count().max(2) as u16).min(max);
+        app.areas.message = Rect::new(d.x + 1, d.y + 1, d.width.saturating_sub(2), lines);
+        let used = (lines + 2).min(d.height);
+        app.areas.doc = Rect::new(d.x, d.y + used, d.width, d.height - used);
+    } else if app.edit.is_none() && app.detail.source == Source::Workdir && d.height > 8 {
         let lines = app.message.line_count().clamp(2, 8) as u16;
         app.areas.message = Rect::new(d.x + 1, d.y + 1, d.width.saturating_sub(2), lines);
         let used = lines + 2;
@@ -828,23 +838,34 @@ fn draw_detail(app: &App, buf: &mut Buffer, hits: &mut Hits) {
     if d.width == 0 {
         return;
     }
-    if app.detail.source == Source::Workdir && app.areas.message.height > 0 {
+    if app.areas.message.height > 0 {
         let label_y = d.y;
-        let focused = app.focus == Focus::Message;
-        put(
+        let focused = app.edit.is_some() || app.focus == Focus::Message;
+        let (label, hint, text) = match &app.edit {
+            Some(e) => (e.input.title.as_str(), e.input.hint.as_str(), &e.input.text),
+            None if app.amend => ("Amend last commit", "", &app.message),
+            None => ("Commit message", "", &app.message),
+        };
+        let x = put(
             buf,
             d.x + 1,
             label_y,
-            if app.amend {
-                "Amend last commit"
-            } else {
-                "Commit message"
-            },
-            d.width / 2,
+            label,
+            d.width.saturating_sub(2),
             Style::default()
                 .fg(if focused { t.accent } else { t.dim })
                 .add_modifier(Modifier::BOLD),
         );
+        if !hint.is_empty() {
+            put(
+                buf,
+                x + 2,
+                label_y,
+                hint,
+                d.right().saturating_sub(x + 3),
+                Style::default().fg(t.dim),
+            );
+        }
         let m = app.areas.message;
         if !focused {
             // The text was drawn earlier. Give the box a subtle edge.
@@ -856,12 +877,7 @@ fn draw_detail(app: &App, buf: &mut Buffer, hits: &mut Hits) {
             }
         }
         // Summary length hint, like most git tools.
-        let summary_len = app
-            .message
-            .text()
-            .lines()
-            .next()
-            .map_or(0, |l| l.chars().count());
+        let summary_len = text.text().lines().next().map_or(0, |l| l.chars().count());
         if summary_len > 0 {
             let s = format!("{summary_len}");
             let color = if summary_len > 72 {
@@ -880,7 +896,12 @@ fn draw_detail(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 Style::default().fg(color),
             );
         }
-        hits.push((m, Target::Message));
+        let target = if app.edit.is_some() {
+            Target::Edit
+        } else {
+            Target::Message
+        };
+        hits.push((m, target));
     }
     draw_doc(app, buf, hits);
 }
@@ -1419,18 +1440,21 @@ fn draw_bottom(app: &App, buf: &mut Buffer, r: Rect, hits: &mut Hits) {
         .into_iter()
         .filter(|a| a.hint && a.enabled)
         .collect();
-    actions.extend(app.repo_actions().into_iter().filter(|a| a.hint));
-    // The keys that work everywhere go at the right end, so that the
-    // pane's hints can't push them off. In the message box these keys type
-    // text, and in the planner Esc cancels it.
     let ctx = app.context();
+    // While a commit message is being edited, nothing else can run.
+    if ctx != Context::Edit {
+        actions.extend(app.repo_actions().into_iter().filter(|a| a.hint));
+    }
+    // The keys that work everywhere go at the right end, so that the
+    // pane's hints can't push them off. In the message boxes these keys
+    // type text, and in the planner Esc cancels it.
     let global: Vec<ActionDef> = app
         .global_actions()
         .into_iter()
         .filter(|a| {
             a.hint
                 && match ctx {
-                    Context::Message => false,
+                    Context::Message | Context::Edit => false,
                     Context::Planner => a.cmd == Cmd::Help,
                     _ => true,
                 }

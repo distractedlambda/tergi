@@ -201,10 +201,24 @@ The actions in the history menu each build a plan and change one step:
   can't outlive the rebase it belongs to.
 
 Reword and squash need a message first. `run_cmd` reads the current
-message in the background and opens a dialog with it. For a squash, the
-dialog starts with the parent's message followed by this one. The dialog
-only opens if no other dialog opened in the meantime, because then the
-user has moved on.
+message in the background and opens it in an editor, `App::edit`. For
+a squash, the editor starts with the parent's message followed by this
+one.
+
+The editor isn't a dialog. It is drawn at the top of the detail pane,
+where the commit's message would be, and `Detail::hide_message` leaves
+the message out of the header below it. The rest of the commit stays in
+view. While the editor is open it gets every key, and clicks outside it
+do nothing, as they do around a dialog. Ctrl+Enter saves and Esc
+cancels. The hint bar shows both, and they can be clicked.
+
+The editor belongs to the commit that the detail pane showed when the
+command ran, which `MessageEdit::commit` remembers. It only opens if the
+pane still shows that commit when git answers, and no dialog or planner
+has opened, because otherwise the user has moved on. If the pane moves
+to another commit while the editor is open, `show_source` closes it and
+says so. That happens when the commit leaves the history, for example
+because something outside tergi rewrote the branch.
 
 ## Several commits
 
@@ -232,14 +246,14 @@ one commit. Each command carries the selected ids, newest first.
   A selection in the history can't have gaps on the current branch,
   since the history is in topological order, but `several` doesn't rely
   on that.
-- The squash dialog starts with the messages of all the commits, oldest
-  first.
+- The message editor for a squash starts with the messages of all the
+  commits, oldest first.
 - Cherry-pick and revert pass all the commits to one git command, which
   applies them in the order given. Cherry-picks go oldest first, and
   reverts newest first.
 
 The selection ends when one of these commands runs. Cancelling the
-squash dialog or the question before a drop keeps it.
+squash message or the question before a drop keeps it.
 
 ## The planner
 
@@ -248,7 +262,9 @@ The planner (`i` in the history) edits a whole plan before running it.
 first, like the history. `to_plan` turns them back, oldest first.
 
 Each row has a `PlanAction` and, for reword and squash, a message.
-Choosing reword or squash asks for the message right away. `planner_set`
+Choosing reword or squash asks for the message right away. The planner
+fills the screen, so there is no detail pane to edit the message in, and
+it asks in a dialog instead. `planner_set`
 reads the commit's message in the background. For a squash, it puts the
 message of the row below first, using the message already written for
 that row if there is one. When the read comes back, the row may have
@@ -314,7 +330,10 @@ that `--autostash` put away.
 commit check. Its property test checks that moves only reorder the
 rows, and that `build_todo` accepts every plan that `to_plan` accepts. In `tests/ui.rs`,
 `the_planner_asks_for_a_message_after_its_row_moves` and
-`a_reword_without_its_dialog_goes_back_to_pick` cover the dialogs, and
+`a_reword_without_its_dialog_goes_back_to_pick` cover the planner's
+dialogs. `edits_the_message_where_the_commit_shows_it` and
+`the_message_editor_closes_when_its_commit_goes_away` cover the message
+editor in the detail pane, and
 `rewords_a_commit_and_runs_a_plan` runs the whole flow from the keyboard.
 `squashes_commits_selected_with_v` and
 `selects_commits_with_shift_and_the_mouse` cover selecting several

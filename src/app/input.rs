@@ -22,6 +22,8 @@ pub enum Target {
     DocRow(usize),
     Button(Cmd),
     Message,
+    /// The commit message editor in the detail pane.
+    Edit,
     MenuItem(usize),
     PaletteItem(usize),
     PlannerRow(usize),
@@ -60,14 +62,25 @@ impl App {
                 *selected = 0;
             }
             Some(_) => {}
-            None if self.focus == Focus::Message => self.message.insert_str(s),
-            None => {}
+            None => match &mut self.edit {
+                Some(e) => e.input.text.insert_str(s),
+                None if self.focus == Focus::Message => self.message.insert_str(s),
+                None => {}
+            },
         }
     }
 
     fn handle_key(&mut self, k: KeyEvent) {
         if !self.overlays.is_empty() {
             self.overlay_key(k);
+            return;
+        }
+        if let Some(e) = &mut self.edit {
+            match e.input.text.handle_key(k) {
+                Outcome::Submit => self.submit_edit(),
+                Outcome::Cancel => self.cancel_edit(),
+                Outcome::Handled | Outcome::Ignored => {}
+            }
             return;
         }
         if self.planner.is_some() {
@@ -611,7 +624,7 @@ impl App {
                 | Target::PaletteItem(_)
                 | Target::PlannerAction(_),
             ) => "pointer",
-            Some(Target::InputText | Target::Message) => "text",
+            Some(Target::InputText | Target::Message | Target::Edit) => "text",
             _ => "default",
         }
     }
@@ -707,6 +720,20 @@ impl App {
             }
             return;
         };
+        // While a commit message is being edited, the rest of the screen
+        // only shows what it is about. Clicks there do nothing, as they do
+        // around a dialog.
+        if self.overlays.is_empty()
+            && self.edit.is_some()
+            && !matches!(
+                target,
+                Target::Edit
+                    | Target::Splitter(_)
+                    | Target::Button(Cmd::SubmitInput | Cmd::CloseOverlay)
+            )
+        {
+            return;
+        }
         match target {
             Target::Splitter(s) => self.drag = Some(Drag::Splitter(s)),
             Target::SidebarRow(i) => {
@@ -788,6 +815,8 @@ impl App {
                     }
                 }
             }
+            Target::Button(Cmd::CloseOverlay) if self.overlays.is_empty() => self.cancel_edit(),
+            Target::Button(Cmd::SubmitInput) if self.overlays.is_empty() => self.submit_edit(),
             Target::Button(Cmd::CloseOverlay) => {
                 if let Some(Overlay::Input(b)) = self.overlays.pop() {
                     self.cancel_input(&b);
@@ -812,6 +841,14 @@ impl App {
                 let a = self.areas.message;
                 self.message
                     .click(x.saturating_sub(a.x), y.saturating_sub(a.y));
+            }
+            Target::Edit => {
+                let a = self.areas.message;
+                if let Some(e) = &mut self.edit {
+                    e.input
+                        .text
+                        .click(x.saturating_sub(a.x), y.saturating_sub(a.y));
+                }
             }
             Target::MenuItem(i) => {
                 if let Some(Overlay::Menu(m)) = self.overlays.last() {
@@ -861,6 +898,9 @@ impl App {
             if target.is_none() {
                 self.click(None, x, y, false, false);
             }
+            return;
+        }
+        if self.edit.is_some() {
             return;
         }
         match target {

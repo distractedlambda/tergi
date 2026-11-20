@@ -25,7 +25,8 @@ instead. `background-work.md` explains why.
 
 Each pane builds a list of `ActionDef`s from its current selection:
 `history_actions`, `detail_actions`, `sidebar_actions`, plus fixed lists
-for the message box and the planner. `App::actions` picks the list for
+for the message box, the editor for reword and squash messages, and the
+planner. `App::actions` picks the list for
 the focused pane. `global_actions` adds the ones that work everywhere,
 such as the palette and quit. `repo_actions` lists the git operations on
 the whole repository, such as fetch, push and stage all.
@@ -190,7 +191,8 @@ it changes.
 - Clicking outside a menu, the palette or the command log closes it.
   Clicking outside a dialog that asks something, such as a confirmation
   or a text box, does nothing. Then the question isn't lost by
-  accident.
+  accident. The same goes for the reword and squash message editor in
+  the detail pane (see `rewriting-history.md`).
 
 ## The terminal
 

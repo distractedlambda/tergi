@@ -90,7 +90,7 @@ keeps the newest request (see `diffs.md`).
 runs a closure on the event loop with the result, through
 `AppEvent::ReadDone`. It is how a handler that needs an answer from git
 gets one without waiting, for example reading a commit message before
-opening the reword dialog. By the time the closure runs, the user may
+opening the editor for a reword. By the time the closure runs, the user may
 have moved on. So it has to check that what it is about to change is
 still there, and that the user isn't doing something else. Most of them
 check that no dialog has opened in the meantime.
