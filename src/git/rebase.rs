@@ -121,6 +121,12 @@ pub async fn plan_from(git: &Git, oldest: ObjectId) -> Result<Plan> {
             action: Action::Pick,
         });
     }
+    // The range starts with `oldest` unless the branch moved after we
+    // checked that `oldest` is on it, for example because a reset ran
+    // at the same time.
+    if steps.first().map(|s| s.id) != Some(oldest) {
+        bail!("The branch changed while tergi was reading it. Try again.");
+    }
     Ok(Plan { base, steps })
 }
 
