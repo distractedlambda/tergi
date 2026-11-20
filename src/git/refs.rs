@@ -3,7 +3,7 @@
 //! Git allows ref names and remote names that aren't UTF-8, so they are
 //! kept as bytes. They only turn into text when they are drawn.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use gix::ObjectId;
@@ -23,6 +23,19 @@ pub struct Branch {
     pub is_head: bool,
 }
 
+impl Branch {
+    /// The full name, under `refs/heads/`.
+    pub fn refname(&self) -> BString {
+        [b"refs/heads/".as_slice(), &self.name].concat().into()
+    }
+
+    /// Whether the branch shows in the history. The checked out branch
+    /// always does, because HEAD brings its commits in anyway.
+    pub fn shown(&self, hidden: &HashSet<BString>) -> bool {
+        self.is_head || hidden.is_empty() || !hidden.contains(&self.refname())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteBranch {
     pub remote: BString,
@@ -36,6 +49,17 @@ impl RemoteBranch {
         [self.remote.as_slice(), b"/", self.name.as_slice()]
             .concat()
             .into()
+    }
+
+    /// The full name, under `refs/remotes/`.
+    pub fn refname(&self) -> BString {
+        [b"refs/remotes/".as_slice(), &self.full_name()]
+            .concat()
+            .into()
+    }
+
+    pub fn shown(&self, hidden: &HashSet<BString>) -> bool {
+        hidden.is_empty() || !hidden.contains(&self.refname())
     }
 }
 
@@ -165,8 +189,9 @@ impl Refs {
         Ok(refs)
     }
 
-    /// Labels to draw next to each commit in the history.
-    pub fn labels(&self) -> HashMap<ObjectId, Vec<Label>> {
+    /// Labels to draw next to each commit in the history. Branches whose
+    /// full names are in `hidden` get none.
+    pub fn labels(&self, hidden: &HashSet<BString>) -> HashMap<ObjectId, Vec<Label>> {
         let mut map: HashMap<ObjectId, Vec<Label>> = HashMap::new();
         if let (Some(head), None) = (self.head, &self.head_branch) {
             map.entry(head).or_default().push(Label {
@@ -174,7 +199,7 @@ impl Refs {
                 name: "HEAD".into(),
             });
         }
-        for b in &self.branches {
+        for b in self.branches.iter().filter(|b| b.shown(hidden)) {
             map.entry(b.target).or_default().push(Label {
                 kind: if b.is_head {
                     LabelKind::Head
@@ -184,7 +209,7 @@ impl Refs {
                 name: b.name.clone(),
             });
         }
-        for r in &self.remote_branches {
+        for r in self.remote_branches.iter().filter(|r| r.shown(hidden)) {
             map.entry(r.target).or_default().push(Label {
                 kind: LabelKind::Remote,
                 name: r.full_name(),
@@ -199,14 +224,25 @@ impl Refs {
         map
     }
 
-    /// Commits the history walk starts from.
-    pub fn tips(&self) -> Vec<ObjectId> {
+    /// Commits the history walk starts from. Branches whose full names are
+    /// in `hidden` are left out, but HEAD never is.
+    pub fn tips(&self, hidden: &HashSet<BString>) -> Vec<ObjectId> {
         let mut v: Vec<ObjectId> = Vec::new();
         v.extend(self.head);
-        v.extend(self.branches.iter().map(|b| b.target));
-        v.extend(self.remote_branches.iter().map(|b| b.target));
+        v.extend(
+            self.branches
+                .iter()
+                .filter(|b| b.shown(hidden))
+                .map(|b| b.target),
+        );
+        v.extend(
+            self.remote_branches
+                .iter()
+                .filter(|b| b.shown(hidden))
+                .map(|b| b.target),
+        );
         v.extend(self.tags.iter().map(|t| t.target));
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         v.retain(|id| seen.insert(*id));
         v
     }
@@ -292,6 +328,58 @@ mod tests {
         assert_eq!(split("origin/x/y"), Some(("origin".into(), "x/y".into())));
         assert_eq!(split("gone/x/y"), Some(("gone".into(), "x/y".into())));
         assert_eq!(split("lonely"), None);
+    }
+
+    #[test]
+    fn hidden_branches_give_no_tips_or_labels() {
+        let id = |n: u8| ObjectId::from_bytes_or_panic(&[n; 20]);
+        let branch = |name: &str, n: u8, is_head: bool| Branch {
+            name: name.into(),
+            target: id(n),
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            upstream_gone: false,
+            is_head,
+        };
+        let refs = Refs {
+            head: Some(id(1)),
+            head_branch: Some("main".into()),
+            branches: vec![branch("main", 1, true), branch("side", 2, false)],
+            remotes: vec!["origin".into()],
+            remote_branches: vec![RemoteBranch {
+                remote: "origin".into(),
+                name: "side".into(),
+                target: id(3),
+            }],
+            tags: vec![Tag {
+                name: "v1".into(),
+                target: id(2),
+            }],
+            stashes: Vec::new(),
+        };
+        let hidden: HashSet<BString> = [
+            "refs/heads/main",
+            "refs/heads/side",
+            "refs/remotes/origin/side",
+        ]
+        .into_iter()
+        .map(BString::from)
+        .collect();
+        // The checked out branch shows anyway, and so does the tag on the
+        // hidden branch.
+        assert_eq!(refs.tips(&hidden), [id(1), id(2)]);
+        let labels = refs.labels(&hidden);
+        let names = |n| {
+            labels[&id(n)]
+                .iter()
+                .map(|l| l.name.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(1), ["main"]);
+        assert_eq!(names(2), ["v1"]);
+        assert!(!labels.contains_key(&id(3)));
+        assert_eq!(refs.tips(&HashSet::new()), [id(1), id(2), id(3)]);
     }
 
     #[test]

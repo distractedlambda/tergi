@@ -8,7 +8,8 @@ reload.
 The refs are read in `src/git/refs.rs`. The walk is in `src/git/log.rs`
 and the graph layout in `src/git/graph.rs`. The app's side is
 `start_history_walk` and `on_history` in `src/app/mod.rs`, and
-`draw_history` in `src/ui/draw.rs`.
+`draw_history` in `src/ui/draw.rs`. Hidden branches are saved by
+`src/state.rs`.
 
 ## Refs
 
@@ -43,10 +44,52 @@ From the refs the app makes two things:
   branch, every remote branch and every tag, without duplicates.
   Stashes aren't tips. They show up in the sidebar instead.
 
-`on_refs` only starts a new walk when the set of tips changed, or when
-there hasn't been a walk yet. For example, creating a branch where
+Both leave out the branches the user has hidden, as the next section
+explains.
+
+`update_tips` only starts a new walk when the set of tips changed, or
+when there hasn't been a walk yet. For example, creating a branch where
 another ref already points changes no tips. Then the history stays as it
 is and only the labels change.
+
+## Hidden branches
+
+The user can hide local and remote branches from the history.
+`App::hidden` holds their full names, such as `refs/heads/side` or
+`refs/remotes/origin/side`. Full names keep a local branch apart from a
+remote branch with the same short name. `Refs::tips` and `Refs::labels`
+skip the hidden ones, so their commits only show up if something else
+leads to them. HEAD is always a tip, and the checked out branch always
+shows, even if its name is in the set. Hiding or showing a branch runs
+`update_tips`, which walks the history again if the tips changed.
+
+Names stay in the set after their branch is gone. A remote branch that
+`fetch --prune` removes and a later fetch brings back should still be
+hidden.
+
+### Saving them
+
+The set is saved per repository in a redb database, in
+`state.redb` under the user's data folder (`src/state.rs`). The
+repository is known by the canonical path of its common git folder, so
+linked worktrees share one set.
+
+redb lets only one process open a database file at a time, and the user
+may run several copies of tergi. So we open the file for each read or
+write and close it right after. If another process has it open, we try
+again for up to two seconds.
+
+The app reads the set once, in `App::start`, before the first refs load.
+The first walk then leaves the hidden branches out from the start, and
+the history doesn't fill in and then shrink.
+
+Changes go to a background task over a channel, in order, and the task
+writes each batch in one transaction. It writes only the change, a
+single insert or removal, rather than the whole set. Two copies of
+tergi on the same repository then keep each other's changes, although
+each only sees the other's on its next start. Before the program exits,
+`App::finish_saving` waits up to three seconds for the task to finish, so
+a branch hidden just before quitting stays hidden.
 
 ## The walk
 
@@ -197,6 +240,12 @@ how many whole entries fit in the pane, which is how far paging moves.
   from git and from `Refs::load` against a model.
 - `tests/ui.rs` has `selection_follows_its_commit_through_a_reload` and
   `first_load_starts_at_the_top`.
+- `hidden_branches_give_no_tips_or_labels` in `src/git/refs.rs` checks
+  the filtering, and the tests in `src/state.rs` check saving and
+  reading the database, and waiting while another handle holds it.
+  `hidden_branches_leave_the_history_and_stay_hidden` in `tests/ui.rs`
+  hides a branch and its remote branch from the sidebar, then opens the
+  app again to see that they stay hidden.
 
 ## Known gaps
 
@@ -205,3 +254,7 @@ how many whole entries fit in the pane, which is how far paging moves.
   missing rather than squeezed.
 - A commit outside the loaded part of the history can be shown, but not
   selected in the list, until the walk reaches it.
+- Tags and whole remotes can't be hidden, only single branches.
+- Renaming a hidden branch shows it again, because the set keeps the old
+  name. Moving the repository to another folder loses its hidden
+  branches.

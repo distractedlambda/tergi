@@ -3,6 +3,7 @@
 
 use crate::common;
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -13,11 +14,12 @@ use ratatui::style::Color;
 
 use common::Scratch;
 use common::ui::Ui;
-use tergi::app::cmd::{Cmd, Overlay, SideRow};
+use gix::bstr::BString;
+use tergi::app::cmd::{Cmd, Context, Overlay, SideRow};
 use tergi::app::doc::{Row, Section, Source};
 use tergi::app::input::{SCROLL_LOCK, Target};
 use tergi::app::planner::PlanAction;
-use tergi::app::{After, AppEvent, HISTORY_ROW_HEIGHT};
+use tergi::app::{After, AppEvent, Focus, HISTORY_ROW_HEIGHT};
 use tergi::highlight::Kind;
 use tergi::ui::draw::draw;
 use tergi::util::fs_path;
@@ -1392,6 +1394,96 @@ fn sidebar_selection_follows_its_branch_through_a_reload() {
     ui.run_cmd(Cmd::Refresh);
     ui.wait("the new branch", |u| row_of(u, "c").is_some());
     assert_eq!(Some(ui.app.sidebar.selected), row_of(&ui, "d"));
+}
+
+#[test]
+fn hidden_branches_leave_the_history_and_stay_hidden() {
+    let s = Scratch::new();
+    let (side, _) = two_branches(&s);
+    s.sh(&["update-ref", "refs/remotes/origin/side", "side"]);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = dir.path().join("tergi").join("state.redb");
+    let mut ui = Ui::open_with_store(&s, &store);
+    ui.wait_loaded(3);
+    let row_of = |u: &Ui, f: &dyn Fn(&Ui, &SideRow) -> bool| {
+        u.app
+            .sidebar
+            .rows
+            .iter()
+            .position(|r| f(u, r))
+            .expect("a row in the sidebar")
+    };
+    let side_row = |u: &Ui, r: &SideRow| matches!(r, SideRow::Branch(i) if u.app.refs.branches[*i].name == "side");
+    let remote_row = |u: &Ui, r: &SideRow| matches!(r, SideRow::RemoteBranch(i) if u.app.refs.remote_branches[*i].name == "side");
+    let hide = |ui: &mut Ui, f: &dyn Fn(&Ui, &SideRow) -> bool| {
+        let row = row_of(ui, f);
+        ui.app.focus = Focus::Sidebar;
+        ui.app.sidebar_select(row);
+        ui.dot('H');
+    };
+
+    // The remote branch still brings the commit in.
+    hide(&mut ui, &side_row);
+    ui.wait("the walk", |u| !u.app.history.loading);
+    assert_eq!(ui.app.history.commits.len(), 3);
+    let labels: Vec<_> = ui.app.labels[&side]
+        .iter()
+        .map(|l| l.name.clone())
+        .collect();
+    assert_eq!(labels, ["origin/side"]);
+
+    hide(&mut ui, &remote_row);
+    ui.wait("the walk without side", |u| {
+        !u.app.history.loading && u.app.history.commits.len() == 2
+    });
+    assert!(!ui.app.history.index.contains_key(&side));
+    assert!(!ui.app.labels.contains_key(&side));
+    assert!(ui.screen().contains("⊘"), "{}", ui.screen());
+
+    // The checked out branch can't be hidden.
+    let main_row = row_of(
+        &ui,
+        &|u, r| matches!(r, SideRow::Branch(i) if u.app.refs.branches[*i].name == "main"),
+    );
+    ui.app.sidebar_select(main_row);
+    let hide_main = ui
+        .app
+        .actions(Context::Sidebar)
+        .into_iter()
+        .find(|a| a.label == "Hide from history")
+        .expect("the action");
+    assert!(!hide_main.enabled);
+
+    // The next run reads them back.
+    ui.finish_saving();
+    drop(ui);
+    let mut ui = Ui::open_with_store(&s, &store);
+    ui.wait_loaded(2);
+    let want: HashSet<BString> = ["refs/heads/side", "refs/remotes/origin/side"]
+        .into_iter()
+        .map(BString::from)
+        .collect();
+    assert_eq!(ui.app.hidden, want);
+
+    // Showing one brings the commit back.
+    hide(&mut ui, &side_row);
+    ui.wait("the walk with side", |u| {
+        !u.app.history.loading && u.app.history.commits.len() == 3
+    });
+    hide(&mut ui, &side_row);
+    ui.wait("the walk without side", |u| {
+        !u.app.history.loading && u.app.history.commits.len() == 2
+    });
+
+    ui.palette("show all hidden");
+    ui.wait("the walk with everything", |u| {
+        !u.app.history.loading && u.app.history.commits.len() == 3
+    });
+    assert!(ui.app.hidden.is_empty());
+    ui.finish_saving();
+    drop(ui);
+    let ui = Ui::open_with_store(&s, &store);
+    assert!(ui.app.hidden.is_empty());
 }
 
 /// "caf\xe9" and "caf\xff" both show up as "caf\u{fffd}", so the sidebar

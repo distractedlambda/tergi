@@ -18,6 +18,7 @@ gix = { version = "0.90", default-features = false, features = ["max-performance
 imara-diff = "0.2"
 logos = "0.16"
 notify = "8"
+redb = "5"
 ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
 shlex = "2"

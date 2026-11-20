@@ -188,6 +188,10 @@ pub enum Cmd {
     StashDrop(ObjectId),
     /// Fold or unfold a header or a remote in the sidebar.
     ToggleSideSection(SideKey),
+    /// Hide a branch from the history, or show it again. This holds its
+    /// full name, such as `refs/heads/main`.
+    SetHidden(BString, bool),
+    ShowAllBranches,
 
     ContinueOp,
     AbortOp,
@@ -600,6 +604,9 @@ impl App {
                 Cmd::ToggleRainbowIdentifiers,
             )
             .direct(),
+            act(None, "Show all hidden branches", Cmd::ShowAllBranches)
+                .enabled(!self.hidden.is_empty())
+                .direct(),
             act(Some(Key::ch('@')), "Command log", Cmd::CommandLog).direct(),
             act(Some(Key::ctrl('b')), "Toggle sidebar", Cmd::ToggleSidebar).direct(),
             act(Some(Key::code(KeyCode::Tab)), "Next pane", Cmd::FocusNext).direct(),
@@ -1105,6 +1112,11 @@ impl App {
                         "Set upstream…",
                         Cmd::SetUpstream(name.clone()),
                     ),
+                    // The checked out branch always shows, so it can't be
+                    // hidden. If it was hidden before it was checked out,
+                    // it can still be shown again.
+                    self.hide_action(b.refname())
+                        .enabled(!is_current || self.hidden.contains(&b.refname())),
                 ];
                 if let Some(cur) = &current
                     && !is_current
@@ -1143,6 +1155,7 @@ impl App {
                         "Delete on remote",
                         Cmd::DeleteRemoteBranch(rb.remote.clone(), rb.name.clone()),
                     ),
+                    self.hide_action(rb.refname()),
                 ];
                 if let Some(cur) = &current {
                     v.push(act(
@@ -1184,6 +1197,24 @@ impl App {
                 ]
             }
             SideRow::Empty(_) => Vec::new(),
+        }
+    }
+
+    /// Hide the branch with this full name from the history, or show it
+    /// again if it is hidden.
+    fn hide_action(&self, refname: BString) -> ActionDef {
+        if self.hidden.contains(&refname) {
+            act(
+                Some(Key::ch('H')),
+                "Show in history",
+                Cmd::SetHidden(refname, false),
+            )
+        } else {
+            act(
+                Some(Key::ch('H')),
+                "Hide from history",
+                Cmd::SetHidden(refname, true),
+            )
         }
     }
 
@@ -1651,6 +1682,8 @@ impl App {
                 self.copy_to_clipboard(&text.join("\n"));
             }
             Cmd::AmendInto(id) => self.rebase_op("Amend into commit", move |r| async move { rebase::fixup_staged_into(&r.git, id).await }),
+            Cmd::SetHidden(name, hide) => self.set_hidden(name, hide),
+            Cmd::ShowAllBranches => self.show_all_branches(),
             Cmd::JumpTo(id) => {
                 if !self.jump_to(id) {
                     self.set_status("That commit isn't loaded in the history yet", Level::Info);

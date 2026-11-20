@@ -143,7 +143,8 @@ pane, where the commit's message is normally shown. Ctrl+Enter saves it
 and Esc cancels.
 
 In the sidebar, Space folds a section, and `.` Space checks out the
-selected branch.
+selected branch. `.H` hides the selected branch or remote branch from the
+history, or shows it again.
 
 ### On several commits in the history
 
@@ -167,6 +168,21 @@ be on different branches, so this is how you compare any two commits.
 It compares the two snapshots, as `git diff A B` does. So the changes
 that the bottom commit made itself aren't part of it. Click the `From`
 or `To` line to copy that commit's hash.
+
+## Hiding branches
+
+Hide a branch with `.H` in the sidebar when its commits get in the way.
+Its commits leave the history, unless another ref you can see leads to
+them, and its label goes away. The sidebar still lists it, with a `⊘` in
+front. Press `.H` on it again to bring it back, or run "Show all hidden
+branches" from the command palette.
+
+The checked out branch can't be hidden, since HEAD shows its commits
+anyway. tergi remembers hidden branches for each repository, even when
+the branch is deleted, so a remote branch you hid stays hidden when a
+fetch brings it back. They are saved in
+`~/.local/share/tergi/state.redb`, or under `XDG_DATA_HOME` if you set
+it, and not in the repository.
 
 ## Rewriting history
 

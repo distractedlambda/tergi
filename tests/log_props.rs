@@ -423,7 +423,14 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
     let walks = Generation::default();
     let generation = walks.next();
     let mut batches = Vec::new();
-    log::walk(&repo, refs.tips(), generation, &walks, |b| batches.push(b)).expect("walk");
+    log::walk(
+        &repo,
+        refs.tips(&Default::default()),
+        generation,
+        &walks,
+        |b| batches.push(b),
+    )
+    .expect("walk");
 
     let last = batches.len().checked_sub(1);
     prop_assert!(last.is_some(), "no batches");

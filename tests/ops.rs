@@ -339,7 +339,10 @@ async fn ref_names_that_are_not_utf8() {
     );
     assert_eq!(refs.remotes, [b"r\xe9"]);
     assert_eq!(refs.remote_branches[0].full_name(), b"r\xe9/caf\xe9");
-    assert_eq!(refs.labels().values().flatten().count(), 5);
+    assert_eq!(
+        refs.labels(&Default::default()).values().flatten().count(),
+        5
+    );
 
     let head_ref = || s.sh_bytes(&[b"symbolic-ref", b"HEAD"]);
     ops::checkout(&s.git, &refs.branches[1].name)

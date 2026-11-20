@@ -2655,6 +2655,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "redb"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11175cc688ba1b9d3cec4fe582fd82cb97e2a82e28ccc8101b7b8030a8003280"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3026,6 +3035,7 @@ dependencies = [
  "proptest",
  "pulldown-cmark",
  "ratatui",
+ "redb",
  "saphyr-parser",
  "serde",
  "shlex",

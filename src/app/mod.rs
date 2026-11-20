@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use gix::ObjectId;
-use gix::bstr::ByteSlice as _;
+use gix::bstr::{BString, ByteSlice as _};
 use ratatui::layout::Rect;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -29,6 +29,7 @@ use crate::git::rebase::{self, RepoState};
 use crate::git::refs::{Label, Refs};
 use crate::git::workdir::Workdir;
 use crate::highlight::{self, FileHighlight, Highlighter};
+use crate::state::{self, Store};
 use crate::theme::Theme;
 use crate::ui::textarea::TextArea;
 use crate::util::Generation;
@@ -99,6 +100,8 @@ pub enum AppEvent {
     /// A read started by `App::spawn_read` finished. This applies its
     /// result.
     ReadDone(Box<dyn FnOnce(&mut App) + Send>),
+    /// Saving a change to the hidden branches failed.
+    SaveFailed(String),
     Tick,
 }
 
@@ -286,6 +289,16 @@ pub struct App {
     pub refs: Refs,
     pub labels: HashMap<ObjectId, Vec<Label>>,
     refs_load: Reload,
+    /// The full names of the branches hidden from the history. These stay
+    /// here when the branch is gone, so that it stays hidden if it comes
+    /// back, for example after a fetch.
+    pub hidden: HashSet<BString>,
+    /// Where the hidden branches are saved. Without it, they aren't.
+    pub store: Option<Store>,
+    /// Sends changes to the hidden branches to the task that saves them.
+    save_tx: Option<UnboundedSender<state::Change>>,
+    /// Closes once that task has saved everything it was sent.
+    saved: Option<tokio::sync::oneshot::Receiver<()>>,
 
     pub history: History,
 
@@ -433,6 +446,10 @@ impl App {
             refs: Refs::default(),
             labels: HashMap::new(),
             refs_load: Reload::default(),
+            hidden: HashSet::new(),
+            store: None,
+            save_tx: None,
+            saved: None,
             history: History::default(),
             workdir: None,
             workdir_load: Reload::default(),
@@ -499,6 +516,7 @@ impl App {
         }
         self.spawn_ticker();
         self.watch_config();
+        self.open_store();
         self.repo_state = rebase::state_in(&self.repo.git_dir);
         self.refresh(REFRESH_ALL);
         self.select_history(0);
@@ -547,6 +565,87 @@ impl App {
                 format!("Changes to the config file won't be picked up: {e:#}"),
                 Level::Warn,
             ),
+        }
+    }
+
+    /// Read the hidden branches and start the task that saves changes to
+    /// them. The first history walk needs to know which branches to leave
+    /// out, so this reads them right away rather than in the background.
+    /// The database is small and the read is quick.
+    fn open_store(&mut self) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        match store.hidden() {
+            Ok(h) => self.hidden = h,
+            Err(e) => self.set_status(
+                format!("Couldn't read the hidden branches: {e:#}"),
+                Level::Warn,
+            ),
+        }
+        let (tx, mut rx) = unbounded_channel();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let events = self.tx.clone();
+        self.spawn(async move {
+            while let Some(first) = rx.recv().await {
+                // Save everything that is waiting in one transaction.
+                let mut changes = vec![first];
+                while let Ok(c) = rx.try_recv() {
+                    changes.push(c);
+                }
+                let store = store.clone();
+                let r = crate::util::blocking(move || store.apply(&changes)).await;
+                if let Err(e) = r {
+                    let _ = events.send(AppEvent::SaveFailed(format!("{e:#}")));
+                }
+            }
+            let _ = done_tx.send(());
+        });
+        self.save_tx = Some(tx);
+        self.saved = Some(done_rx);
+    }
+
+    /// Wait until the hidden branches are saved, but not for long. The
+    /// event loop calls this before it exits, since a change made just
+    /// before quitting could still be on its way.
+    pub async fn finish_saving(&mut self) {
+        self.save_tx = None;
+        if let Some(done) = self.saved.take() {
+            let _ = tokio::time::timeout(Duration::from_secs(3), done).await;
+        }
+    }
+
+    /// Hide a branch from the history, or show it again. `name` is its full
+    /// name, such as `refs/heads/main`.
+    pub fn set_hidden(&mut self, name: BString, hide: bool) {
+        let changed = if hide {
+            self.hidden.insert(name.clone())
+        } else {
+            self.hidden.remove(&name)
+        };
+        if !changed {
+            return;
+        }
+        self.save(if hide {
+            state::Change::Hide(name)
+        } else {
+            state::Change::Show(name)
+        });
+        self.update_tips();
+    }
+
+    pub fn show_all_branches(&mut self) {
+        if self.hidden.is_empty() {
+            return;
+        }
+        self.hidden.clear();
+        self.save(state::Change::ShowAll);
+        self.update_tips();
+    }
+
+    fn save(&mut self, change: state::Change) {
+        if let Some(tx) = &self.save_tx {
+            let _ = tx.send(change);
         }
     }
 
@@ -668,6 +767,12 @@ impl App {
         match ev {
             AppEvent::Input(e) => self.handle_input(e),
             AppEvent::ReadDone(apply) => apply(self),
+            AppEvent::SaveFailed(e) => {
+                self.set_status(
+                    format!("Couldn't save the hidden branches: {e}"),
+                    Level::Error,
+                );
+            }
             AppEvent::History(batch) => self.on_history(batch),
             AppEvent::HistoryError(generation, e) => {
                 if self.history.generation.is_current(generation) {
@@ -778,8 +883,21 @@ impl App {
     }
 
     fn on_refs(&mut self, refs: Refs) {
-        let tips = refs.tips();
-        self.labels = refs.labels();
+        self.rebuild_sidebar(Some(refs));
+        self.update_tips();
+    }
+
+    /// Work out the labels and the tips of the history from the refs and
+    /// the hidden branches. Walk the history again if the tips changed.
+    fn update_tips(&mut self) {
+        let tips = self.refs.tips(&self.hidden);
+        let labels = self.refs.labels(&self.hidden);
+        let changed_labels = labels != self.labels;
+        self.labels = labels;
+        // The commit details list the labels too.
+        if changed_labels && self.detail.source.is_commit() {
+            self.rebuild_doc();
+        }
         let changed_tips = {
             let mut a = tips.clone();
             let mut b = self.history.tips.clone();
@@ -787,7 +905,6 @@ impl App {
             b.sort();
             a != b
         };
-        self.rebuild_sidebar(Some(refs));
         if changed_tips || self.history.generation.current() == 0 {
             self.start_history_walk(tips);
         }

@@ -9,8 +9,8 @@ with the known gaps.
   tasks, and how state survives reloads. Start here.
 - [running-git.md](running-git.md): how tergi runs git, fetch, pull and
   push, and why git never prompts.
-- [history.md](history.md): reading the refs, walking the history, and
-  laying out the commit graph.
+- [history.md](history.md): reading the refs, hiding branches, walking
+  the history, and laying out the commit graph.
 - [diffs.md](diffs.md): commit and working directory diffs, the rows of
   the detail pane, word marks and syntax highlighting.
 - [staging.md](staging.md): loading the working directory, and staging,

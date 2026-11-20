@@ -11,6 +11,7 @@ use tokio_stream::StreamExt as _;
 
 use tergi::app::{App, AppEvent, REFRESH_ALL, Repo, Suspend};
 use tergi::config::Config;
+use tergi::state::Store;
 use tergi::terminal;
 
 /// A terminal git client inspired by Sublime Merge.
@@ -64,6 +65,7 @@ async fn run(path: &Path) -> Result<()> {
     let mut term = terminal::setup().context("could not set up the terminal")?;
     let mut app = App::new(repo, cfg, config_error);
     app.config_path = config_path;
+    app.store = Store::default_path().map(|p| Store::new(p, &app.repo.common_dir));
     app.start();
 
     let result = async {
@@ -128,6 +130,7 @@ async fn run(path: &Path) -> Result<()> {
     .await;
 
     terminal::restore();
+    app.finish_saving().await;
     result
 }
 

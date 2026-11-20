@@ -458,6 +458,9 @@ fn row_bg(app: &App, selected: bool, focused: bool, r: Rect, base: Color) -> Col
     }
 }
 
+/// Drawn in front of a branch that is hidden from the history.
+const HIDDEN_MARK: &str = "⊘";
+
 fn draw_sidebar(app: &App, buf: &mut Buffer, hits: &mut Hits) {
     let a = app.areas.sidebar;
     let t = &app.theme;
@@ -510,6 +513,8 @@ fn draw_sidebar(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 let br = &refs.branches[*b];
                 let (mark, style) = if br.is_head {
                     ("●", st.fg(t.accent).add_modifier(Modifier::BOLD))
+                } else if !br.shown(&app.hidden) {
+                    (HIDDEN_MARK, st.fg(t.faint))
                 } else {
                     (" ", st)
                 };
@@ -567,13 +572,19 @@ fn draw_sidebar(app: &App, buf: &mut Buffer, hits: &mut Hits) {
             }
             SideRow::RemoteBranch(b) => {
                 let rb = &refs.remote_branches[*b];
+                let style = if rb.shown(&app.hidden) {
+                    st
+                } else {
+                    put(buf, a.x + 4, y, HIDDEN_MARK, 1, st.fg(t.faint));
+                    st.fg(t.faint)
+                };
                 put(
                     buf,
                     a.x + 6,
                     y,
                     &truncate(&rb.name.to_str_lossy(), usize::from(w.saturating_sub(6))),
                     w.saturating_sub(6),
-                    st,
+                    style,
                 );
             }
             SideRow::Tag(i) => {

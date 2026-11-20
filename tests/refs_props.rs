@@ -759,7 +759,7 @@ fn check_labels(s: &Scratch, refs: &Refs) -> Result<(), TestCaseError> {
         let at = peel(&cat(&[b"refs/tags/", &t.name]));
         want.push((at, format!("{:?}", LabelKind::Tag), t.name.clone()));
     }
-    let labels: HashMap<ObjectId, Vec<tergi::git::refs::Label>> = refs.labels();
+    let labels: HashMap<ObjectId, Vec<tergi::git::refs::Label>> = refs.labels(&Default::default());
     let mut got: Vec<(ObjectId, String, BString)> = labels
         .iter()
         .flat_map(|(at, ls)| {

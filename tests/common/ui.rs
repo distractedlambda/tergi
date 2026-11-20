@@ -16,6 +16,7 @@ use tergi::app::doc::Row;
 use tergi::app::input::Target;
 use tergi::app::{App, AppEvent, Repo};
 use tergi::config::Config;
+use tergi::state::Store;
 use tergi::ui::draw::draw;
 
 use super::Scratch;
@@ -35,6 +36,15 @@ impl Ui {
     /// Open the app with a config file, which it saves settings to and
     /// watches.
     pub fn open_with_config(s: &Scratch, config: Option<&Path>) -> Ui {
+        Ui::open_with(s, config, None)
+    }
+
+    /// Open the app with a database that it saves the hidden branches to.
+    pub fn open_with_store(s: &Scratch, store: &Path) -> Ui {
+        Ui::open_with(s, None, Some(store))
+    }
+
+    fn open_with(s: &Scratch, config: Option<&Path>, store: Option<&Path>) -> Ui {
         let mut repo = Repo::open(s.path()).expect("open repo");
         // Git calls back into tergi during a rebase. Here the current
         // executable is the test runner, so point it at the real one.
@@ -47,6 +57,7 @@ impl Ui {
             let cfg = config.map(|p| Config::load(p).0).unwrap_or_default();
             let mut app = App::new(repo, cfg, None);
             app.config_path = config.map(Path::to_path_buf);
+            app.store = store.map(|p| Store::new(p.to_path_buf(), &app.repo.common_dir));
             app.start();
             app
         };
@@ -215,6 +226,13 @@ impl Ui {
 
     /// Wait until the running operation is done. The reloads it causes
     /// may still be on their way.
+    /// Wait for the app to save what it was asked to, as it does before it
+    /// exits.
+    pub fn finish_saving(&mut self) {
+        let app = &mut self.app;
+        self.rt.block_on(app.finish_saving());
+    }
+
     pub fn settle(&mut self) {
         self.wait("the operation to finish", |u| u.app.busy.is_none());
     }
