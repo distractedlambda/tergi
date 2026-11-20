@@ -214,8 +214,9 @@ in the background, in a worker that `Highlighter::new` returns.
 Each language has its own lexer, written with Logos and kept in
 `src/highlight/`, one file per language: `c.rs` for C and C++,
 `cmake.rs` for CMake, `rust.rs` for Rust, `racket.rs` for Racket and
-Scribble, `shrubbery.rs` for Rhombus, `toml.rs` for TOML, `markdown.rs`
-for Markdown, and `gitignore.rs` for `.gitignore` files. A lexer turns
+Scribble, `shrubbery.rs` for Rhombus, `toml.rs` for TOML, `yaml.rs` for
+YAML, `markdown.rs` for Markdown, and `gitignore.rs` for `.gitignore`
+files. A lexer turns
 text into `Tokens`: byte ranges, each with a `Kind` such as `Comment`,
 `Keyword` or `Escape`. Plain text, such as most identifiers, has no
 token. The theme maps kinds to colors when the
@@ -499,6 +500,54 @@ reference or generator expression only gets a color when it ends on
 the line it starts on. CMake allows a line break inside a reference in
 a quoted argument, but nobody writes one.
 
+### YAML
+
+`yaml.rs` follows YAML 1.2.2. It reads a file the way the scanner of
+saphyr-parser does. That scanner is a port of libyaml's, fixed to pass
+the YAML test suite. Files ending in `.yaml` or `.yml` are YAML, and so
+are `.clang-format` and `.clang-tidy`.
+
+Like the scanner, the lexer keeps a stack of the block collections it's
+inside of, each with the column it starts in, and a stack of the flow
+collections. It needs the block columns for two things. A plain scalar
+goes on to the next line only if that line is indented more than the
+collection the scalar is in. And a block scalar such as `run: |` holds
+the lines that are indented more than its parent. Its first line that
+isn't empty sets how far, unless the header gives a number, as in `|2`.
+At the top level, saphyr-parser and libyaml count that number from
+column 0, and so do we. The spec counts it from column -1.
+
+A plain scalar or a quoted one is a key when a `:` follows it on the
+same line. The scanner finds keys the same way. It remembers where a
+key could start, and when a `:` comes, it marks what came after that
+place as a key. A `:` is only a value indicator when a space or the
+end of the line follows it, except inside a flow collection, where a
+flow indicator can follow it too. There, a `:` can also come right
+after a quoted scalar or a closing bracket, as in `{"a":1}`. The first
+node of each entry in a flow mapping is a key even without a `:`, and
+so is the node after a `?`.
+
+Keys are plain, like bare keys in TOML, and quoted keys get the string
+color. Values get the color of their type in YAML 1.2's core schema. So
+`1.5`, `0x1F` and `.inf` get the number color, `true`, `null` and `~`
+get the constant color, and other plain scalars get the string color.
+Quoted scalars and the lines of block scalars get the string color,
+and escapes such as `\n` in double quotes and `''` in single quotes get
+the escape color. Indicators such as `-`, `:`, brackets, block scalar
+headers and the document markers `---` and `...` get the punctuation
+color. Anchors and aliases get the attribute color, tags get the type
+color, and the names of directives such as `%YAML` get the keyword
+color.
+
+The colors of a line never depend on the lines after it. A key has to
+end on the line it starts on, so that rule mostly holds by itself. The
+exception is a plain scalar that goes on over several lines. Its value
+joins the lines with spaces, so it's always a string, but we can't
+know that on its first line. So the first line gets the color of its
+own text, and the other lines get the string color. A quoted scalar
+that never closes goes on to the end of the file, or to the next
+document marker.
+
 ### Markdown
 
 `markdown.rs` follows CommonMark 0.31.2, along with the tables and task
@@ -685,6 +734,23 @@ leave that column blank.
   parses them with `toml_edit`, which already reads the config file,
   and checks that each value has the color of its type and that each
   key is plain, or a string if it's quoted.
+- `src/highlight/yaml.rs` has examples for each kind of YAML token,
+  such as keys that look like values, plain scalars over several
+  lines, escapes, block scalars with indicators, and tags. Its property
+  test builds random streams of documents from nested block
+  collections, flow collections, scalars of every style, block
+  scalars, anchors, aliases, comments and directives. It reads them
+  with `saphyr-parser`, which passes the YAML test suite, and checks
+  each scalar against the parser's events. Plain keys must be plain,
+  other plain scalars must have the color of their type, other scalars
+  the string or escape color, aliases the attribute color, and nothing
+  outside of a scalar may be a string, a number or a constant. It
+  agreed on a million streams while we wrote the lexer. We also ran
+  the same check on the inputs of the YAML test suite and on the YAML
+  files of Ansible, the Kubernetes examples and the OpenAPI
+  specification, 5,438 files that saphyr-parser reads, and they agreed
+  on all of them. On those files, cutting the text after a line never
+  changed the colors of the lines before it.
 - `src/highlight/markdown.rs` has examples for each kind of Markdown
   block and inline construct. Its property test builds random documents
   from nested block quotes, lists, tables, code blocks, HTML and text
@@ -717,8 +783,8 @@ leave that column blank.
 ## Known gaps
 
 - A merge commit is diffed against its first parent only.
-- Only C, C++, CMake, Rust, Racket, Rhombus, Scribble, TOML, Markdown
-  and `.gitignore` files are highlighted.
+- Only C, C++, CMake, Rust, Racket, Rhombus, Scribble, TOML, YAML,
+  Markdown and `.gitignore` files are highlighted.
 - A hunk from the middle of a CMake `if` whose arguments go on over
   several lines doesn't know it's in an `if`, so `AND` and the other
   operators there are plain.
@@ -733,6 +799,16 @@ leave that column blank.
   color, but numbers, `true` and `false` are plain. A
   nested array that starts a line there, as in `[1, 2],`, gets the
   color of a table header.
+- A YAML plain scalar that goes on over several lines gets the color of
+  its first line's text there. So in `a: 1` followed by an indented
+  `b`, the `1` is a number, although the value is the string `1 b`.
+- YAML 1.1 readers, such as PyYAML and older versions of go-yaml, read
+  `yes`, `no`, `on` and `off` as booleans. YAML 1.2 doesn't, and we
+  follow it, so they get the string color.
+- A hunk from the middle of a YAML block scalar or a quoted scalar
+  over several lines that we don't have the full text for is read as
+  ordinary YAML. So `a: b` in a shell script under `run: |` reads as a
+  key and a value.
 - In C and C++, a splice in the middle of a token, as in `L\` at the
   end of a line followed by `'x'`, splits the token in two. The
   compiler joins them.

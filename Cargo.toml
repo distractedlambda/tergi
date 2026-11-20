@@ -37,6 +37,7 @@ path = "tests/main.rs"
 insta = "1"
 proptest = "1"
 pulldown-cmark = { version = "0.13", default-features = false }
+saphyr-parser = "0.3"
 tempfile = "3"
 
 [lints.rust]

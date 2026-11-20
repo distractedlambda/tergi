@@ -19,6 +19,7 @@ mod racket;
 mod rust;
 mod shrubbery;
 mod toml;
+mod yaml;
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -97,6 +98,7 @@ pub enum Language {
     Rust,
     Scribble,
     Toml,
+    Yaml,
 }
 
 impl Language {
@@ -111,6 +113,9 @@ impl Language {
         // mostly CMake too.
         if name == "CMakeLists.txt" || name.ends_with(".cmake.in") {
             return Some(Language::Cmake);
+        }
+        if matches!(name, ".clang-format" | ".clang-tidy") {
+            return Some(Language::Yaml);
         }
         match name.rsplit_once('.')?.1 {
             "c" => Some(Language::C),
@@ -130,6 +135,7 @@ impl Language {
             "rs" => Some(Language::Rust),
             "scrbl" => Some(Language::Scribble),
             "toml" => Some(Language::Toml),
+            "yaml" | "yml" => Some(Language::Yaml),
             _ => None,
         }
     }
@@ -146,6 +152,7 @@ impl Language {
             }
             Language::Rust => rust::lex(text, &mut out),
             Language::Toml => toml::lex(text, &mut out),
+            Language::Yaml => yaml::lex(text, &mut out),
         }
         out
     }
@@ -347,6 +354,7 @@ mod tests {
         "a.rs",
         "a.scrbl",
         "a.toml",
+        "a.yaml",
     ];
 
     /// A line made of pieces that start or end strings, comments and
@@ -413,6 +421,12 @@ mod tests {
         pieces.extend([
             "if(", "endif()", "AND", "#[[", "]]", "[=[", "]=]", "${", "$ENV{", "$<", ">", "\\;",
             "$(x)", "a\"b c\"",
+        ]);
+        // Pieces of YAML, such as indicators, block scalar headers and
+        // document markers.
+        pieces.extend([
+            "a: ", "- ", "? ", ": ", "|", ">-", "|2+", "---", "...", "&a", "*a", "!!str", "!<x>",
+            "%YAML", "''", "{a: b}", "[a, b]", ".inf", "~", "  ", "    ",
         ]);
         // Pieces of gitignore patterns.
         pieces.extend(["!", "**/", "?", "[!a-]", "[[:alpha:]]", "\\#"]);
@@ -508,6 +522,8 @@ mod tests {
             Language::for_path("FooConfig.cmake.in"),
             Some(Language::Cmake)
         );
+        assert_eq!(Language::for_path("a/b.yml"), Some(Language::Yaml));
+        assert_eq!(Language::for_path(".clang-format"), Some(Language::Yaml));
         assert_eq!(Language::for_path("a.lock"), None);
         assert_eq!(Language::for_path("a.b/c"), None);
         assert_eq!(Language::for_path("rs"), None);
