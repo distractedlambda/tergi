@@ -18,6 +18,7 @@ use crate::app::planner::PlanAction;
 use crate::app::{App, Drag, Focus, HISTORY_ROW_HEIGHT, Level, Splitter};
 use crate::git::diff::{FileStatus, LineKind};
 use crate::git::graph::DOWN;
+use crate::git::log::CommitInfo;
 use crate::git::rebase::RepoState;
 use crate::git::refs::LabelKind;
 use crate::highlight::LineSpans;
@@ -162,8 +163,8 @@ fn layout(app: &mut App, area: Rect) {
         }
     };
     let (hlen, slen) = (app.history.row_count(), app.sidebar.rows.len());
-    let hpage = app.history_page() as u16;
-    clamp(&mut app.history.scroll, hlen, hpage);
+    let hlines = hlen * usize::from(HISTORY_ROW_HEIGHT);
+    clamp(&mut app.history.scroll, hlines, app.areas.history.height);
     clamp(&mut app.sidebar.scroll, slen, app.areas.sidebar.height);
     let doc_len = app.detail.rows.len() + usize::from(app.areas.doc.height / 2);
     let doc_h = app.areas.doc.height;
@@ -629,9 +630,18 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
     }
     let focused = app.focus == Focus::History;
     let h = &app.history;
-    let start = h.scroll;
-    // An entry that only half fits at the bottom is still drawn.
-    let end = (start + usize::from(a.height.div_ceil(HISTORY_ROW_HEIGHT))).min(h.row_count());
+    let row_h = usize::from(HISTORY_ROW_HEIGHT);
+    let height = usize::from(a.height);
+    // The scroll offset counts screen rows, so the entries at the top and
+    // the bottom can be cut off.
+    let start = h.scroll / row_h;
+    let end = (h.scroll + height).div_ceil(row_h).min(h.row_count());
+    // The screen row of the given row of the list, if it's in the pane.
+    let screen_y = |line: usize| {
+        line.checked_sub(h.scroll)
+            .filter(|&l| l < height)
+            .map(|l| a.y + l as u16)
+    };
     let now = crate::util::now();
 
     // Fit the graph to the widest visible row, within limits.
@@ -645,9 +655,12 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
     let selected = h.selected_row();
 
     for i in start..end {
-        let y = a.y + (i - start) as u16 * HISTORY_ROW_HEIGHT;
-        let y2 = y + 1;
-        let rr = Rect::new(a.x, y, a.width, HISTORY_ROW_HEIGHT.min(a.bottom() - y));
+        // Either row of the entry may be outside the pane.
+        let (y1, y2) = (screen_y(i * row_h), screen_y(i * row_h + 1));
+        let (Some(top), Some(last)) = (y1.or(y2), y2.or(y1)) else {
+            continue;
+        };
+        let rr = Rect::new(a.x, top, a.width, last + 1 - top);
         let bg = row_bg(app, selected == Some(i), focused, rr, t.bg);
         fill(buf, rr, bg);
         hits.push((rr, Target::HistoryRow(i)));
@@ -655,27 +668,30 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
         let x = a.x + 1;
         let text_x = x + graph_w + 1;
         let text_w = a.right().saturating_sub(text_x + 1);
-        let second_row = y2 < a.bottom();
         if i == 0 {
             let n = app.workdir.as_ref().map_or(0, |w| w.change_count());
-            put(
-                buf,
-                x,
-                y,
-                "◌",
-                1,
-                st.fg(if n > 0 { t.warn } else { t.faint }),
-            );
-            put(
-                buf,
-                text_x,
-                y,
-                "Working directory",
-                text_w,
-                st.fg(if n > 0 { t.fg } else { t.dim })
-                    .add_modifier(Modifier::ITALIC),
-            );
-            if second_row && app.workdir.is_some() {
+            if let Some(y) = y1 {
+                put(
+                    buf,
+                    x,
+                    y,
+                    "◌",
+                    1,
+                    st.fg(if n > 0 { t.warn } else { t.faint }),
+                );
+                put(
+                    buf,
+                    text_x,
+                    y,
+                    "Working directory",
+                    text_w,
+                    st.fg(if n > 0 { t.fg } else { t.dim })
+                        .add_modifier(Modifier::ITALIC),
+                );
+            }
+            if let Some(y2) = y2
+                && app.workdir.is_some()
+            {
                 let changes = match n {
                     0 => "No changes".to_string(),
                     1 => "1 change".to_string(),
@@ -696,14 +712,16 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                     ch = '◉';
                 }
                 let fg = t.lane(cell.color());
-                if let Some(bc) = buf.cell_mut((cx, y)) {
+                if let Some(y) = y1
+                    && let Some(bc) = buf.cell_mut((cx, y))
+                {
                     bc.set_char(ch).set_fg(fg).set_bg(bg);
                 }
                 // Lanes that go on down to the next commit carry on
                 // through the second row.
-                if second_row
-                    && k % 2 == 0
+                if k % 2 == 0
                     && cell.bits() & DOWN != 0
+                    && let Some(y2) = y2
                     && let Some(bc) = buf.cell_mut((cx, y2))
                 {
                     bc.set_char('│').set_fg(fg).set_bg(bg);
@@ -712,46 +730,12 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
         }
 
         let right = text_x + text_w;
-        let mut lx = text_x;
-        if let Some(labels) = app.labels.get(&c.id) {
-            for l in labels {
-                if lx + 4 >= right {
-                    break;
-                }
-                let lbg = match l.kind {
-                    LabelKind::Head => t.badge_head,
-                    LabelKind::Local => t.badge_local,
-                    LabelKind::Remote => t.badge_remote,
-                    LabelKind::Tag => t.badge_tag,
-                };
-                let name = truncate(&l.name.to_str_lossy(), 24);
-                let mut s = Style::default().bg(lbg).fg(t.badge_fg);
-                if l.kind == LabelKind::Head {
-                    s = s.add_modifier(Modifier::BOLD);
-                }
-                lx = put(
-                    buf,
-                    lx,
-                    y,
-                    &format!(" {name} "),
-                    right.saturating_sub(lx),
-                    s,
-                ) + 1;
-            }
+        if let Some(y) = y1 {
+            draw_history_summary(app, buf, c, text_x, y, right, st);
         }
-        let summary_w = right.saturating_sub(lx);
-        put(
-            buf,
-            lx,
-            y,
-            &truncate(&c.summary, usize::from(summary_w)),
-            summary_w,
-            st,
-        );
-
-        if !second_row {
+        let Some(y2) = y2 else {
             continue;
-        }
+        };
         // The short id goes on the right, if there's room for it after
         // the author and the date.
         let id = c.id.to_hex_with_len(7).to_string();
@@ -778,8 +762,11 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
         );
     }
     if let Some(err) = &h.error {
-        let y = a.y + (end - start) as u16 * HISTORY_ROW_HEIGHT + 1;
-        if y < a.bottom() {
+        let below = (end * row_h + 1)
+            .checked_sub(h.scroll)
+            .filter(|&l| l < height);
+        if let Some(l) = below {
+            let y = a.y + l as u16;
             let w = a.width.saturating_sub(2);
             let msg = format!("Couldn't read the history: {err}");
             for (line, y) in wrap(&msg, usize::from(w)).iter().zip(y..a.bottom()) {
@@ -787,6 +774,56 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
             }
         }
     }
+}
+
+/// Draws the first row of a commit's entry after the graph: its ref
+/// labels, then as much of the summary as fits.
+fn draw_history_summary(
+    app: &App,
+    buf: &mut Buffer,
+    c: &CommitInfo,
+    text_x: u16,
+    y: u16,
+    right: u16,
+    st: Style,
+) {
+    let t = &app.theme;
+    let mut lx = text_x;
+    if let Some(labels) = app.labels.get(&c.id) {
+        for l in labels {
+            if lx + 4 >= right {
+                break;
+            }
+            let lbg = match l.kind {
+                LabelKind::Head => t.badge_head,
+                LabelKind::Local => t.badge_local,
+                LabelKind::Remote => t.badge_remote,
+                LabelKind::Tag => t.badge_tag,
+            };
+            let name = truncate(&l.name.to_str_lossy(), 24);
+            let mut s = Style::default().bg(lbg).fg(t.badge_fg);
+            if l.kind == LabelKind::Head {
+                s = s.add_modifier(Modifier::BOLD);
+            }
+            lx = put(
+                buf,
+                lx,
+                y,
+                &format!(" {name} "),
+                right.saturating_sub(lx),
+                s,
+            ) + 1;
+        }
+    }
+    let summary_w = right.saturating_sub(lx);
+    put(
+        buf,
+        lx,
+        y,
+        &truncate(&c.summary, usize::from(summary_w)),
+        summary_w,
+        st,
+    );
 }
 
 fn draw_detail(app: &App, buf: &mut Buffer, hits: &mut Hits) {

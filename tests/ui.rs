@@ -16,7 +16,7 @@ use tergi::app::cmd::{Cmd, Overlay, SideRow, Unit};
 use tergi::app::doc::{Row, Section};
 use tergi::app::input::Target;
 use tergi::app::planner::PlanAction;
-use tergi::app::{After, AppEvent};
+use tergi::app::{After, AppEvent, HISTORY_ROW_HEIGHT};
 use tergi::highlight::Kind;
 use tergi::ui::draw::draw;
 use tergi::util::fs_path;
@@ -917,9 +917,10 @@ fn moving_the_selection_keeps_it_on_screen() {
     let mut ui = Ui::open(&s);
     ui.wait_loaded(60);
     let visible = |u: &Ui| {
-        let row = u.app.history.current_row();
+        let top = u.app.history.current_row() * usize::from(HISTORY_ROW_HEIGHT);
+        let bottom = top + usize::from(HISTORY_ROW_HEIGHT);
         let scroll = u.app.history.scroll;
-        (scroll..scroll + u.app.history_page()).contains(&row)
+        top >= scroll && bottom <= scroll + usize::from(u.app.areas.history.height)
     };
     for key in [KeyCode::Char('G'), KeyCode::Char('g'), KeyCode::PageDown] {
         ui.key(key);
@@ -937,6 +938,36 @@ fn moving_the_selection_keeps_it_on_screen() {
             ui.app.history.current_row()
         );
     }
+}
+
+#[test]
+fn the_wheel_scrolls_the_history_one_row_at_a_time() {
+    let s = Scratch::new();
+    many_commits(&s, 60);
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(60);
+    let a = ui.app.areas.history;
+    ui.mouse(MouseEventKind::ScrollDown, a.x + 1, a.y + 1);
+    assert_eq!(ui.app.history.scroll, 1);
+    // Only the second row of the working directory entry is left, and the
+    // newest commit starts right below it.
+    let line = |u: &Ui, y: u16| {
+        u.screen()
+            .lines()
+            .nth(usize::from(y))
+            .unwrap_or("")
+            .to_string()
+    };
+    assert!(line(&ui, a.y).contains("No changes"), "{}", ui.screen());
+    assert!(line(&ui, a.y + 1).contains("Commit 60"), "{}", ui.screen());
+    assert_eq!(ui.find_hit(|t| *t == Target::HistoryRow(0)).height, 1);
+    ui.mouse(MouseEventKind::ScrollUp, a.x + 1, a.y + 1);
+    assert_eq!(ui.app.history.scroll, 0);
+    assert!(
+        line(&ui, a.y).contains("Working directory"),
+        "{}",
+        ui.screen()
+    );
 }
 
 #[test]

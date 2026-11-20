@@ -158,10 +158,12 @@ next commit are drawn through the second row as well. Dates are
 relative ("3 days ago") unless `relative_dates` is off. Then they are
 the day, in the commit's own time zone.
 
-The selection, the scroll offset and `Target::HistoryRow` all count
-entries, not screen rows. `App::history_page` says how many whole
-entries fit in the pane. Keeping the selection in view, paging and
-scrolling with the wheel all use it.
+The selection and `Target::HistoryRow` count entries, but the scroll
+offset counts screen rows, so the wheel moves the list one row at a
+time. That means the entry at the top of the pane can be cut off, just
+like the one at the bottom. Keeping the selection in view scrolls
+until both rows of the selected entry show. `App::history_page` says
+how many whole entries fit in the pane, which is how far paging moves.
 
 ## Tests
 

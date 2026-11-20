@@ -1605,11 +1605,8 @@ impl App {
                 Focus::History => (
                     self.areas.history,
                     // The menu goes below the second row of the entry.
-                    self.history
-                        .current_row()
-                        .saturating_sub(self.history.scroll)
-                        * usize::from(HISTORY_ROW_HEIGHT)
-                        + usize::from(HISTORY_ROW_HEIGHT - 1),
+                    ((self.history.current_row() + 1) * usize::from(HISTORY_ROW_HEIGHT))
+                        .saturating_sub(self.history.scroll + 1),
                 ),
                 _ => (
                     self.areas.doc,

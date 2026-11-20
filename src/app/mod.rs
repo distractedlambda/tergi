@@ -165,6 +165,8 @@ pub struct History {
     /// isn't loaded, moving with the keys starts from here. If the commit
     /// is gone after a reload, the row stays selected instead.
     pub last_row: usize,
+    /// How far the list is scrolled, in screen rows rather than entries.
+    /// The top entry can be cut off.
     pub scroll: usize,
     /// The new walk replaces the list when its first batch arrives, so the
     /// old list stays on screen until then.
@@ -822,15 +824,20 @@ impl App {
     }
 
     pub fn ensure_history_visible(&mut self) {
-        let h = self.history_page();
+        let row_h = usize::from(HISTORY_ROW_HEIGHT);
+        let height = usize::from(self.areas.history.height);
         let sel = self
             .history
             .current_row()
             .min(self.history.row_count().saturating_sub(1));
-        if sel < self.history.scroll {
-            self.history.scroll = sel;
-        } else if sel >= self.history.scroll + h {
-            self.history.scroll = sel + 1 - h;
+        let (top, bottom) = (sel * row_h, (sel + 1) * row_h);
+        let scroll = &mut self.history.scroll;
+        if bottom > *scroll + height {
+            *scroll = bottom.saturating_sub(height);
+        }
+        // In a pane too short for a whole entry, its first row wins.
+        if top < *scroll {
+            *scroll = top;
         }
     }
 

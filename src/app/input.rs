@@ -10,7 +10,7 @@ use ratatui::layout::Rect;
 use super::cmd::{ActionDef, Cmd, Overlay, SideKey, SideRow};
 use super::doc::{Row, Source};
 use super::planner::PlanAction;
-use super::{App, Drag, Focus, Splitter};
+use super::{App, Drag, Focus, HISTORY_ROW_HEIGHT, Splitter};
 use crate::ui::textarea::Outcome;
 
 /// Something on screen that reacts to the mouse.
@@ -798,7 +798,8 @@ impl App {
                 .saturating_sub(usize::from(self.areas.sidebar.height));
             apply(&mut self.sidebar.scroll, max);
         } else if inside(self.areas.history) {
-            let max = self.history.row_count().saturating_sub(self.history_page());
+            let max = (self.history.row_count() * usize::from(HISTORY_ROW_HEIGHT))
+                .saturating_sub(usize::from(self.areas.history.height));
             apply(&mut self.history.scroll, max);
         } else if inside(self.areas.detail) {
             let max = self
