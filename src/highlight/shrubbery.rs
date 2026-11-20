@@ -324,7 +324,7 @@ impl<'a> Lex<'a> {
             Continue => simple(self, Name::Continue, punctuation, false),
             Comma => simple(self, Name::Comma, punctuation, false),
             Semicolon => simple(self, Name::Semicolon, punctuation, false),
-            Identifier => simple(self, Name::Identifier, Color::Plain, true),
+            Identifier => simple(self, Name::Identifier, Color::Kind(Kind::Identifier), true),
             Operator => {
                 // A `/` after an operator is part of it, unless it starts
                 // a comment.
@@ -1583,19 +1583,19 @@ pub fn lex(text: &str, start: usize, text_mode: bool, out: &mut Tokens) {
 mod tests {
     use super::*;
 
-    /// Each token as its text and kind. Tokens of the same kind with
-    /// nothing between them come out as one.
+    /// Each token but the identifiers, as its text and kind. Tokens of
+    /// the same kind with nothing between them come out as one.
     fn tokens(text: &str) -> Vec<(&str, Kind)> {
         let mut out = Tokens::default();
         lex(text, 0, false, &mut out);
-        out.0.iter().map(|(r, k)| (&text[r.clone()], *k)).collect()
+        out.colored(text)
     }
 
     /// Like `tokens`, for a Rhombus Scribble document.
     fn text(text: &str) -> Vec<(&str, Kind)> {
         let mut out = Tokens::default();
         lex(text, 0, true, &mut out);
-        out.0.iter().map(|(r, k)| (&text[r.clone()], *k)).collect()
+        out.colored(text)
     }
 
     fn only(text: &str, kind: Kind) -> Vec<&str> {
@@ -1848,7 +1848,7 @@ mod tests {
         use Kind::*;
         let lex = |lang: Language, text| -> Vec<(&str, Kind)> {
             let out = lang.lex(text);
-            out.0.iter().map(|(r, k)| (&text[r.clone()], *k)).collect()
+            out.colored(text)
         };
         assert_eq!(
             lex(Language::Rhombus, "#lang rhombus\n1 // c"),
@@ -1923,5 +1923,15 @@ mod tests {
         assert_eq!(reader("shrubbery/text"), Some(true));
         assert_eq!(reader("racket/base"), None);
         assert_eq!(reader("rhombusx"), None);
+    }
+
+    /// Identifiers are marked, one token each, but the name of an
+    /// @-form's command gets the color of its `@`.
+    #[test]
+    fn marks_plain_identifiers() {
+        let text = "fun f(x, ~y: z): x + #%call @bold{a @x}";
+        let mut out = Tokens::default();
+        lex(text, 0, false, &mut out);
+        assert_eq!(out.identifiers(text), ["fun", "f", "x", "z", "x", "#%call"]);
     }
 }

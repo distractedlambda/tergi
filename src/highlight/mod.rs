@@ -4,7 +4,8 @@
 //! get their colors from what the lexer alone can tell. There is no
 //! parser, so an identifier that a parser would know is a function or a
 //! type is only colored when its spelling or the next character gives it
-//! away.
+//! away. Other identifiers are marked as such, so that drawing can give
+//! each name a color of its own when the user asks for that.
 //!
 //! When we have the full text of a file, we lex the whole file so that
 //! multi-line strings and comments come out right, then pick out the lines
@@ -48,22 +49,28 @@ pub enum Kind {
     Lifetime,
     Operator,
     Punctuation,
+    /// An identifier that gets no other color. It is plain text unless
+    /// the user turns on colors for identifiers. Then its color depends
+    /// on its name.
+    Identifier,
 }
 
 /// The tokens of a text that get a color, in order, as byte ranges. Plain
-/// text, such as most identifiers, has none.
+/// text has none.
 #[derive(Debug, Default)]
 pub struct Tokens(Vec<(Range<usize>, Kind)>);
 
 impl Tokens {
     /// Add a token after the last one. One that follows a token of the
-    /// same kind with nothing between them is joined to it.
+    /// same kind with nothing between them is joined to it, except for
+    /// identifiers. Each of those gets a color from its own name.
     fn push(&mut self, r: Range<usize>, kind: Kind) {
         if r.is_empty() {
             return;
         }
         if let Some((last, k)) = self.0.last_mut()
             && *k == kind
+            && kind != Kind::Identifier
             && last.end == r.start
         {
             last.end = r.end;
@@ -83,6 +90,29 @@ impl Tokens {
             self.push(start..end, Kind::Comment);
             start += line.len();
         }
+    }
+}
+
+#[cfg(test)]
+impl Tokens {
+    /// Each token but the identifiers, as its text and kind. Most lexer
+    /// tests are about the other tokens, and every identifier in them
+    /// would make them hard to read.
+    fn colored<'a>(&self, text: &'a str) -> Vec<(&'a str, Kind)> {
+        self.0
+            .iter()
+            .filter(|(_, k)| *k != Kind::Identifier)
+            .map(|(r, k)| (&text[r.clone()], *k))
+            .collect()
+    }
+
+    /// The text of each identifier.
+    fn identifiers<'a>(&self, text: &'a str) -> Vec<&'a str> {
+        self.0
+            .iter()
+            .filter(|(_, k)| *k == Kind::Identifier)
+            .map(|(r, _)| &text[r.clone()])
+            .collect()
     }
 }
 
@@ -539,6 +569,7 @@ mod tests {
             [
                 vec![
                     k(0, 3, Kind::Keyword),
+                    k(4, 5, Kind::Identifier),
                     k(6, 7, Kind::Operator),
                     k(8, 12, Kind::Comment)
                 ],
@@ -548,7 +579,7 @@ mod tests {
                     k(6, 7, Kind::Punctuation)
                 ],
                 vec![k(0, 2, Kind::String)],
-                vec![k(0, 2, Kind::String)],
+                vec![k(0, 2, Kind::String), k(3, 4, Kind::Identifier)],
             ]
         );
         assert_eq!(highlight_text(Language::Rust, text, 1).len(), 1);

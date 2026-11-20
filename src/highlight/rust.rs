@@ -235,10 +235,7 @@ pub fn lex(text: &str, out: &mut Tokens) {
                 Kind::Attribute
             }
             Ok(Token::Ident) if was_fn => Kind::Function,
-            Ok(Token::Ident) => match ident(slice, lex.remainder()) {
-                Some(kind) => kind,
-                None => continue,
-            },
+            Ok(Token::Ident) => ident(slice, lex.remainder()).unwrap_or(Kind::Identifier),
             Ok(Token::Str) => {
                 for (part, r) in Part::lexer(slice).spanned() {
                     let kind = match part {
@@ -266,12 +263,12 @@ pub fn lex(text: &str, out: &mut Tokens) {
 mod tests {
     use super::*;
 
-    /// Each token as its text and kind. Tokens of the same kind with
-    /// nothing between them come out as one.
+    /// Each token but the identifiers, as its text and kind. Tokens of
+    /// the same kind with nothing between them come out as one.
     fn tokens(text: &str) -> Vec<(&str, Kind)> {
         let mut out = Tokens::default();
         lex(text, &mut out);
-        out.0.iter().map(|(r, k)| (&text[r.clone()], *k)).collect()
+        out.colored(text)
     }
 
     fn kinds_of(text: &str, kind: Kind) -> Vec<&str> {
@@ -537,5 +534,14 @@ mod tests {
             ),
             ["+=", "&&", "||", "!", "..=", ">>=", "->", "=>", "?"]
         );
+    }
+
+    /// Names that get no other color are identifiers, one token each.
+    #[test]
+    fn marks_plain_identifiers() {
+        let text = "let x = foo.len(y) + r#type; Vec::<T>::new(); println!(z); #[rustfmt::skip]";
+        let mut out = Tokens::default();
+        lex(text, &mut out);
+        assert_eq!(out.identifiers(text), ["x", "foo", "y", "r#type", "z"]);
     }
 }

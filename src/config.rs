@@ -5,6 +5,7 @@
 //! context_lines = 3       # lines of context around changes
 //! tab_width = 4
 //! relative_dates = true   # "3 days ago" instead of "2026-11-08"
+//! rainbow_identifiers = false # a color for each name in code
 //! ```
 //!
 //! Settings changed from inside tergi are written back to the file. We
@@ -33,6 +34,9 @@ pub struct Config {
     pub context_lines: u32,
     pub tab_width: usize,
     pub relative_dates: bool,
+    /// Whether to give each identifier in code a color picked from its
+    /// name, so that uses of the same name stand out.
+    pub rainbow_identifiers: bool,
 }
 
 impl Default for Config {
@@ -42,6 +46,7 @@ impl Default for Config {
             context_lines: 3,
             tab_width: 4,
             relative_dates: true,
+            rainbow_identifiers: false,
         }
     }
 }
@@ -135,6 +140,9 @@ impl Config {
         }
         if old.relative_dates != new.relative_dates {
             set(&mut doc, "relative_dates", new.relative_dates);
+        }
+        if old.rainbow_identifiers != new.rainbow_identifiers {
+            set(&mut doc, "rainbow_identifiers", new.rainbow_identifiers);
         }
         write_replacing(&target, doc.to_string().as_bytes())
     }

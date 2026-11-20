@@ -218,9 +218,11 @@ Scribble, `shrubbery.rs` for Rhombus, `toml.rs` for TOML, `yaml.rs` for
 YAML, `markdown.rs` for Markdown, and `gitignore.rs` for `.gitignore`
 files. A lexer turns
 text into `Tokens`: byte ranges, each with a `Kind` such as `Comment`,
-`Keyword` or `Escape`. Plain text, such as most identifiers, has no
-token. The theme maps kinds to colors when the
-line is drawn, so switching themes doesn't need to lex anything again.
+`Keyword` or `Escape`. Plain text has no token. An identifier that gets
+no other color is an `Identifier` token, which is plain unless the user
+turns on rainbow identifiers (see below). The theme maps kinds to
+colors when the line is drawn, so switching themes doesn't need to lex
+anything again.
 
 Colors come from lexing alone. There is no parser, so the Rust lexer
 guesses what an identifier names from its spelling and from the tokens
@@ -240,8 +242,9 @@ smaller lexer.
 The Racket lexer follows Racket's reader with the default readtable. It
 was written from the reader's source in `racket/src/expander/read`
 rather than the reference manual, which leaves out some details. For
-example, a `;` comment only ends at a linefeed. Symbols are plain, even
-`define` and `lambda`, because only the expander knows what they mean.
+example, a `;` comment only ends at a linefeed. Symbols are
+identifiers, even `define` and `lambda`, because only the expander
+knows what they mean.
 Keywords such as `#:when` get the keyword color. A `#;` comment covers
 the datum after it, so the lexer counts parentheses to find where that
 datum ends.
@@ -313,8 +316,8 @@ middle of a file. The Rhombus Scribble languages, such as
 it. Their files are `.scrbl` files like Racket's Scribble documents.
 Without a `#lang` line, we read a `.scrbl` file as Racket Scribble.
 
-Identifiers are plain, like Racket's symbols, and so are `fun` and
-`def`, which are bound like any other name. Keywords such as `~into`
+Identifiers get no color of their own, like Racket's symbols, and
+neither do `fun` and `def`, which are bound like any other name. Keywords such as `~into`
 get the keyword color, and so do the `@` of an @-form and the names in
 its command, as in `@rhombus` or `@foo.bar`. The operators get the
 operator color. `:`, `|`, `\`, `,` and `;` mean something to the parser,
@@ -470,8 +473,8 @@ reads escapes and variable references. Files named `CMakeLists.txt`,
 and files ending in `.cmake` or `.cmake.in`, are CMake.
 
 A command name can only come at the start of a line, before a `(` on
-the same line. Most command names are plain, like function calls in
-other languages. The flow control commands, such as `if`, `foreach`
+the same line. Most command names are identifiers, like function calls
+in other languages. So are arguments that are only a name. The flow control commands, such as `if`, `foreach`
 and `endfunction`, get the keyword color, because CMake doesn't let a
 script define them again. Command names are case insensitive, so `IF`
 is a keyword too. Inside `if`, `elseif` and `while`, an unquoted word
@@ -635,6 +638,36 @@ line, and a path like `1:x` names a stage of the index.
 The language is chosen by the file's extension, in
 `Language::for_path`. Files in other languages aren't highlighted.
 
+### Rainbow identifiers
+
+With `rainbow_identifiers` on, each `Identifier` token gets a color
+picked from its name, so every use of a name has the same color and
+different names usually don't. Drawing hashes the token's text and
+uses the hash to pick one of the 16 colors in `Theme::identifiers`.
+The lexers only mark identifiers that get no other color, so keywords,
+and the names that the Rust lexer guesses are types or functions, keep
+their usual colors.
+
+The C, C++, CMake, Rust, Racket, Scribble and Rhombus lexers mark
+identifiers. TOML, YAML, Markdown and gitignore have nothing that is
+really a name in code, so they don't.
+
+`Theme::build` makes the 16 colors in Oklab, where the distance
+between two colors matches how different they look much better than
+in sRGB. The hues are spread evenly around the color wheel. The
+lightness is the average of the theme's string, number, keyword, type
+and function colors, so that the colors look like they belong to the
+theme. The chroma is 80% of their average, so identifiers stand out a
+little less than other tokens, but at least 0.08. Nord's colors are so
+muted that its hues would be hard to tell apart without that floor.
+Identifiers are most of the text in code, so a color that would be
+harder to read than the text moves toward the text's lightness until
+it's about as easy to read.
+
+The hash is FNV-1a followed by the final mixing step of MurmurHash3.
+FNV-1a on its own leaves the low bits of the hash depending only on
+the low bits of each byte, and the color comes from the low bits.
+
 ### Dropping stale results
 
 Highlights are keyed by section and file index, and those indexes mean
@@ -647,7 +680,9 @@ starts them, and results from one are dropped when they arrive.
 `draw_code` draws a diff line one grapheme at a time through
 `text::draw` (see `text-width.md`). It takes the line's background from
 whether it's added, removed or context, the foreground from the syntax
-colors, and the stronger background from the word marks. A trailing
+colors, and the stronger background from the word marks. The color of
+an identifier depends on its text, so `draw_code` finds it once for each
+token rather than for each cell. A trailing
 carriage return is left out, so CRLF files don't show a stray symbol.
 Selected lines get the selection background instead.
 
@@ -681,6 +716,13 @@ leave that column blank.
   their rows when the pane is rebuilt, when the view changes, and when
   files change, go away or appear.
 - `tests/ui.rs` has `folds_do_not_carry_over_to_other_commits`.
+- Each lexer that marks identifiers has a test called
+  `marks_plain_identifiers`. The other lexer tests leave identifiers
+  out of the tokens they compare, which keeps them readable.
+- `src/theme.rs` checks that identifier colors differ from each other
+  and are about as easy to read as the text, and that a name always
+  gets the same color. `tests/ui.rs` has
+  `identifiers_can_get_colors_by_name`.
 - `src/highlight/rust.rs` has examples for each kind of Rust token,
   such as nested comments, raw strings, escapes, and characters next to
   lifetimes.
@@ -831,6 +873,9 @@ leave that column blank.
   always gets the default reader.
 - A hunk from the middle of a `#lang at-exp` file that we don't have the
   full text for is lexed as plain Racket.
+- Rainbow identifiers only look at the name. Two different variables
+  with the same name get the same color, and with 16 colors, two
+  different names often share one too.
 - Word marks pair removed and added lines in order. When lines were
   inserted between edited ones, a line can be paired with the wrong
   partner, and then gets no marks or odd ones.

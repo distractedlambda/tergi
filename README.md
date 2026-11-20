@@ -197,12 +197,14 @@ theme = "one-half-dark" # see the list below
 context_lines = 3       # lines of context around each change
 tab_width = 4
 relative_dates = true   # "3 days ago" instead of a date in the history
+rainbow_identifiers = false # give each name in code a color of its own
 ```
 
-You can also change each setting from the command palette (Ctrl+P):
-"Choose theme…", "Set context lines…", "Set tab width…", and "Show full
-dates in history" or "Show relative dates in history". tergi saves the
-change to the config file. It only rewrites the line for that setting,
+You can also change each setting from the command palette (Ctrl+P).
+The commands are "Choose theme…", "Set context lines…", "Set tab
+width…", "Show full dates in history" (or "Show relative dates in
+history"), and "Color identifiers by name" (or "Stop coloring
+identifiers by name"). tergi saves the change to the config file. It only rewrites the line for that setting,
 so your comments and the rest of the file stay as they are.
 
 tergi watches the config file while it runs, so edits you make by hand
@@ -220,6 +222,12 @@ CMake, Rust, Racket, Rhombus, Scribble, TOML, YAML, Markdown and
 theme…". The theme changes as you move through the list.
 Press Enter to keep one and save it to the config file, or Esc to go
 back.
+
+With `rainbow_identifiers` on, names in C, C++, CMake, Rust, Racket,
+Rhombus and Scribble code get a color picked from the name itself, so
+each use of a variable has the same color. Keywords, and names that
+already have a color, such as types and functions in Rust, keep theirs.
+Each theme has its own set of these colors.
 
 | Name in the config | Theme |
 | --- | --- |

@@ -99,6 +99,7 @@ pub enum Cmd {
     ChooseContextLines,
     ChooseTabWidth,
     ToggleRelativeDates,
+    ToggleRainbowIdentifiers,
     FocusNext,
     FocusPrev,
     Focus(Focus),
@@ -560,6 +561,16 @@ impl App {
                     "Show relative dates in history"
                 },
                 Cmd::ToggleRelativeDates,
+            )
+            .direct(),
+            act(
+                None,
+                if self.cfg.rainbow_identifiers {
+                    "Stop coloring identifiers by name"
+                } else {
+                    "Color identifiers by name"
+                },
+                Cmd::ToggleRainbowIdentifiers,
             )
             .direct(),
             act(Some(Key::ch('@')), "Command log", Cmd::CommandLog).direct(),
@@ -1288,6 +1299,9 @@ impl App {
                 self.open_input("Tab width", &hint, false, &current, Purpose::TabWidth);
             }
             Cmd::ToggleRelativeDates => self.change_config(|c| c.relative_dates = !c.relative_dates),
+            Cmd::ToggleRainbowIdentifiers => {
+                self.change_config(|c| c.rainbow_identifiers = !c.rainbow_identifiers);
+            }
             Cmd::FocusNext | Cmd::FocusPrev => {
                 let mut order = Vec::new();
                 if self.sidebar_shown() {

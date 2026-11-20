@@ -9,6 +9,7 @@ use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEvent, Mo
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 
 use common::Scratch;
 use common::ui::Ui;
@@ -1277,6 +1278,59 @@ fn the_theme_menu_previews_themes() {
     assert!(ui.app.overlays.is_empty());
     assert_eq!(ui.app.theme.id, second);
     assert_eq!(std::fs::read_to_string(&config).expect("config"), saved);
+}
+
+#[test]
+fn identifiers_can_get_colors_by_name() {
+    let s = Scratch::new();
+    s.write(
+        "main.rs",
+        "fn main() {\n    let count = 1;\n    let total = count + 1;\n}\n",
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("config.toml");
+    let mut ui = Ui::open_with_config(&s, Some(&config));
+    ui.wait_loaded(0);
+    // The colors that each place `word` is drawn on screen starts with.
+    let drawn = |u: &Ui, word: &str| -> Vec<Color> {
+        let buf = u.term.backend().buffer();
+        let a = buf.area;
+        let n = word.len() as u16;
+        (a.top()..a.bottom())
+            .flat_map(|y| (a.left()..a.right().saturating_sub(n)).map(move |x| (x, y)))
+            .filter(|&(x, y)| (0..n).all(|i| buf[(x + i, y)].symbol() == &word[i as usize..][..1]))
+            .map(|p| buf[p].fg)
+            .collect()
+    };
+    let colors = |u: &Ui, word: &str| {
+        u.app
+            .theme
+            .syntax_colors(true)
+            .color(Kind::Identifier, word)
+            .expect("a color")
+    };
+    // Identifiers are plain until they're turned on.
+    ui.wait("syntax highlighting", |u| {
+        drawn(u, "fn main").first().copied() == u.app.theme.syntax.color(Kind::Keyword)
+    });
+    let fg = ui.app.theme.fg;
+    assert_eq!(drawn(&ui, "count"), [fg, fg]);
+
+    ui.palette("color identifiers by name");
+    assert!(ui.app.cfg.rainbow_identifiers);
+    ui.wait("identifier colors", |u| {
+        let c = colors(u, "count");
+        drawn(u, "count") == [c, c] && drawn(u, "total") == [colors(u, "total")]
+    });
+    assert_ne!(colors(&ui, "count"), fg);
+    assert_eq!(
+        std::fs::read_to_string(&config).expect("config"),
+        "rainbow_identifiers = true\n"
+    );
+
+    ui.palette("stop coloring identifiers");
+    assert!(!ui.app.cfg.rainbow_identifiers);
+    ui.wait("plain identifiers", |u| drawn(u, "count") == [fg, fg]);
 }
 
 #[test]

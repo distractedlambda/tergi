@@ -20,6 +20,7 @@ theme = "one-half-dark"
 context_lines = 3
 tab_width = 4
 relative_dates = true
+rainbow_identifiers = false
 ```
 
 Every setting is optional. A missing setting takes its default, and so
@@ -95,8 +96,8 @@ at startup, the app tries again after the first save creates it.
 `apply_config` only redoes what depends on the settings that changed. A
 new theme swaps the colors. New context
 lines reload the working directory and the commit on screen. The tab
-width and the date style are read every frame, so they need nothing
-else.
+width, the date style and rainbow identifiers are read every frame, so
+they need nothing else.
 
 ## Themes
 
@@ -132,6 +133,10 @@ the plain background. It never goes below a floor, so the color still
 shows. Some palettes, such as Solarized, have little contrast to spare,
 and this is what keeps their selections readable.
 
+Each theme also has 16 colors for rainbow identifiers, which
+`identifier_colors` makes from its syntax colors. `diffs.md` explains
+how.
+
 Everything is 24-bit color.
 
 ### Previewing
@@ -157,7 +162,7 @@ any other setting. `commands-and-input.md` explains how menus preview.
 
 ## Known gaps
 
-- Only these four settings exist. Keys, colors and the layout can't be
+- Only these five settings exist. Keys, colors and the layout can't be
   configured.
 - Published palettes don't all meet the usual contrast guidelines. We
   keep their colors anyway, and only make sure the backgrounds we mix

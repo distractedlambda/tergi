@@ -22,7 +22,7 @@ use crate::git::log::CommitInfo;
 use crate::git::rebase::RepoState;
 use crate::git::refs::LabelKind;
 use crate::highlight::LineSpans;
-use crate::theme::{Syntax, Theme};
+use crate::theme::{SyntaxColors, Theme};
 use crate::ui::text::{self, put, put_line, truncate, width};
 use crate::util::{format_day, short_date};
 
@@ -1112,7 +1112,7 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                     det.hscroll(i, a.width),
                     Style::default().bg(bg).fg(t.fg),
                     spans,
-                    t.syntax,
+                    t.syntax_colors(app.cfg.rainbow_identifiers),
                     marks.map(Vec::as_slice),
                     emph,
                     app.cfg.tab_width,
@@ -1197,7 +1197,7 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                         det.hscroll(i, a.width),
                         Style::default().bg(bg).fg(t.fg),
                         spans,
-                        t.syntax,
+                        t.syntax_colors(app.cfg.rainbow_identifiers),
                         mk.map(Vec::as_slice),
                         emph,
                         app.cfg.tab_width,
@@ -1230,13 +1230,17 @@ fn draw_code(
     skip: usize,
     base: Style,
     spans: Option<&LineSpans>,
-    syntax: &Syntax,
+    colors: SyntaxColors,
     marks: Option<&[(usize, usize)]>,
     emph: Color,
     tab: usize,
 ) {
+    let line = text;
     let text = text.strip_suffix('\r').unwrap_or(text);
     let mut span_i = 0;
+    // The color of the span at `span_i`. It can depend on the span's
+    // text, so we look it up once for each span rather than for each cell.
+    let mut span_color = None;
     text::draw(buf, x, y, text, skip, usize::from(w), tab, |cell| {
         let mut style = base;
         if let Some(sp) = spans {
@@ -1246,9 +1250,19 @@ fn draw_code(
             if let Some(&(s, e, kind)) = sp.get(span_i)
                 && (s as usize) <= cell.byte
                 && cell.byte < e as usize
-                && let Some(c) = syntax.color(kind)
             {
-                style = style.fg(c);
+                let color = match span_color {
+                    Some((i, color)) if i == span_i => color,
+                    _ => {
+                        let name = line.get(s as usize..e as usize).unwrap_or("");
+                        let color = colors.color(kind, name);
+                        span_color = Some((span_i, color));
+                        color
+                    }
+                };
+                if let Some(c) = color {
+                    style = style.fg(c);
+                }
             }
         }
         if marks.is_some_and(|m| m.iter().any(|&(s, e)| s <= cell.byte && cell.byte < e)) {
@@ -1950,7 +1964,7 @@ mod tests {
             skip,
             Style::default(),
             None,
-            Theme::default().syntax,
+            Theme::default().syntax_colors(false),
             None,
             Color::Reset,
             4,

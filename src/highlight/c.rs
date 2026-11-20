@@ -297,10 +297,7 @@ impl State<'_> {
             Ok(Token::Attribute) => Kind::Attribute,
             Ok(Token::Hash | Token::Operator) => Kind::Operator,
             Ok(Token::Punctuation) => Kind::Punctuation,
-            Ok(Token::Ident) => match word(self.lang, slice) {
-                Some(kind) => kind,
-                None => return,
-            },
+            Ok(Token::Ident) => word(self.lang, slice).unwrap_or(Kind::Identifier),
             Ok(Token::Newline | Token::Comment) | Err(()) => return,
         };
         self.out.push(span, kind);
@@ -438,12 +435,12 @@ pub fn lex(text: &str, lang: Language, out: &mut Tokens) {
 mod tests {
     use super::*;
 
-    /// Each token as its text and kind. Tokens of the same kind with
-    /// nothing between them come out as one.
+    /// Each token but the identifiers, as its text and kind. Tokens of
+    /// the same kind with nothing between them come out as one.
     fn tokens_in(lang: Language, text: &str) -> Vec<(&str, Kind)> {
         let mut out = Tokens::default();
         lex(text, lang, &mut out);
-        out.0.iter().map(|(r, k)| (&text[r.clone()], *k)).collect()
+        out.colored(text)
     }
 
     fn tokens(text: &str) -> Vec<(&str, Kind)> {
@@ -834,5 +831,21 @@ mod tests {
                 ("int", Comment),
             ]
         );
+    }
+
+    /// Names that get no other color are identifiers, one token each,
+    /// except in code that `#if 0` leaves out.
+    #[test]
+    fn marks_plain_identifiers() {
+        let text = "#include <a.h>\n#if defined(A) && B\nint n = f(s, t);\n#endif\n#if 0\nx\n#endif\nclass C";
+        let mut out = Tokens::default();
+        lex(text, Language::C, &mut out);
+        assert_eq!(
+            out.identifiers(text),
+            ["A", "B", "n", "f", "s", "t", "class", "C"]
+        );
+        let mut out = Tokens::default();
+        lex(text, Language::Cpp, &mut out);
+        assert_eq!(out.identifiers(text), ["A", "B", "n", "f", "s", "t", "C"]);
     }
 }

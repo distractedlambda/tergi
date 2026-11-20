@@ -3,8 +3,8 @@
 //! It follows what Racket's reader does with the default readtable. The
 //! reader's source in `racket/src/expander/read` is the best reference,
 //! because the reference manual leaves out a few details. For example, a
-//! `;` comment only ends at a linefeed. Symbols are plain, even ones like
-//! `define`, because only the expander knows what they mean.
+//! `;` comment only ends at a linefeed. Symbols are identifiers, even
+//! ones like `define`, because only the expander knows what they mean.
 //!
 //! Files in `#lang at-exp` and the Scribble languages also use the
 //! @-reader from `scribble/reader.rkt` in the `at-exp-lib` package. Its
@@ -925,7 +925,7 @@ impl Lex<'_> {
         let name = if command && depth == 0 {
             Some(Kind::Keyword)
         } else {
-            None
+            Some(Kind::Identifier)
         };
         let kind = match token {
             Ok(Token::Comment) => {
@@ -1279,19 +1279,19 @@ pub fn symbol_len(text: &str) -> Option<usize> {
 mod tests {
     use super::*;
 
-    /// Each token as its text and kind. Tokens of the same kind with
-    /// nothing between them come out as one.
+    /// Each token but the identifiers, as its text and kind. Tokens of
+    /// the same kind with nothing between them come out as one.
     fn tokens(text: &str) -> Vec<(&str, Kind)> {
         let mut out = Tokens::default();
         lex(text, Language::Racket, &mut out);
-        out.0.iter().map(|(r, k)| (&text[r.clone()], *k)).collect()
+        out.colored(text)
     }
 
     /// Like `tokens`, for a Scribble file.
     fn scribble(text: &str) -> Vec<(&str, Kind)> {
         let mut out = Tokens::default();
         lex(text, Language::Scribble, &mut out);
-        out.0.iter().map(|(r, k)| (&text[r.clone()], *k)).collect()
+        out.colored(text)
     }
 
     fn kinds_of(text: &str, kind: Kind) -> Vec<&str> {
@@ -1872,5 +1872,22 @@ mod tests {
                 ("}|", Punctuation),
             ]
         );
+    }
+
+    /// Symbols are identifiers, one token each, but the name of an
+    /// @-form's command gets the color of its `@`.
+    #[test]
+    fn marks_plain_identifiers() {
+        let text = "(define (f x) (+ x 1 #:y |a b| 'z))";
+        let mut out = Tokens::default();
+        lex(text, Language::Racket, &mut out);
+        assert_eq!(
+            out.identifiers(text),
+            ["define", "f", "x", "+", "x", "|a b|", "z"]
+        );
+        let text = "@title{A @racket[(f x)]}";
+        let mut out = Tokens::default();
+        lex(text, Language::Scribble, &mut out);
+        assert_eq!(out.identifiers(text), ["f", "x"]);
     }
 }

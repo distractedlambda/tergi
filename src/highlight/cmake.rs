@@ -159,9 +159,12 @@ pub fn lex(text: &str, out: &mut Tokens) {
                     let open = i + ident + spaces(&b[i + ident..]);
                     if line_start && command.is_none() && b.get(open) == Some(&b'(') {
                         let lower = word.to_ascii_lowercase();
-                        if KEYWORDS.contains(&lower.as_str()) {
-                            out.push(i..i + ident, Kind::Keyword);
-                        }
+                        let kind = if KEYWORDS.contains(&lower.as_str()) {
+                            Kind::Keyword
+                        } else {
+                            Kind::Identifier
+                        };
+                        out.push(i..i + ident, kind);
                         out.push(open..open + 1, Kind::Punctuation);
                         command = Some(Command {
                             depth: 0,
@@ -171,9 +174,14 @@ pub fn lex(text: &str, out: &mut Tokens) {
                         i = open + 1;
                         continue;
                     }
-                    if command.as_ref().is_some_and(|c| c.condition) && OPERATORS.contains(&word) {
-                        out.push(i..i + ident, Kind::Operator);
-                    }
+                    let kind = if command.as_ref().is_some_and(|c| c.condition)
+                        && OPERATORS.contains(&word)
+                    {
+                        Kind::Operator
+                    } else {
+                        Kind::Identifier
+                    };
+                    out.push(i..i + ident, kind);
                     line_start = false;
                     i += ident;
                     continue;
@@ -490,12 +498,12 @@ fn spans_by(kinds: &[Option<Kind>], k: Option<Kind>) -> usize {
 mod tests {
     use super::*;
 
-    /// Each token as its text and kind. Tokens of the same kind with
-    /// nothing between them come out as one.
+    /// Each token but the identifiers, as its text and kind. Tokens of
+    /// the same kind with nothing between them come out as one.
     fn tokens(text: &str) -> Vec<(&str, Kind)> {
         let mut out = Tokens::default();
         lex(text, &mut out);
-        out.0.iter().map(|(r, k)| (&text[r.clone()], *k)).collect()
+        out.colored(text)
     }
 
     #[test]
@@ -770,6 +778,19 @@ endif()
                 ("\"c d\"", String),
                 (")", Punctuation),
             ]
+        );
+    }
+
+    /// Command names that aren't keywords, and arguments that are only a
+    /// name, are identifiers. Variable references keep their own color.
+    #[test]
+    fn marks_plain_identifiers() {
+        let text = "set(FOO bar \"baz\")\nif(NOT x STREQUAL ${FOO})\nendif()\nadd(a-b c)";
+        let mut out = Tokens::default();
+        lex(text, &mut out);
+        assert_eq!(
+            out.identifiers(text),
+            ["set", "FOO", "bar", "x", "add", "c"]
         );
     }
 }

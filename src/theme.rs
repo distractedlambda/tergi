@@ -52,7 +52,15 @@ pub struct Theme {
     pub tag_fg: Color,
     pub rename_fg: Color,
     pub lanes: [Color; 8],
+    /// The colors that identifiers get when the user turns that on. Each
+    /// name always gets the same one (see `SyntaxColors`).
+    pub identifiers: [Color; IDENTIFIER_COLORS],
 }
+
+/// How many colors identifiers can get. With more, two names are less
+/// likely to share a color, but colors next to each other are harder to
+/// tell apart.
+const IDENTIFIER_COLORS: usize = 16;
 
 /// Colors for syntax highlighting, one for each kind of token. Tokens
 /// without a color, and plain text, are drawn in the theme's `fg`.
@@ -94,9 +102,46 @@ impl Syntax {
             Kind::Lifetime => self.lifetime,
             Kind::Operator => self.operator?,
             Kind::Punctuation => self.punctuation?,
+            Kind::Identifier => return None,
         };
         Some(rgb(hex))
     }
+}
+
+/// The colors to draw code in. Identifiers get colors only when
+/// `identifiers` is set.
+#[derive(Clone, Copy)]
+pub struct SyntaxColors<'a> {
+    syntax: &'a Syntax,
+    identifiers: Option<&'a [Color]>,
+}
+
+impl SyntaxColors<'_> {
+    /// The color of a token of the given kind, whose text is `text`.
+    pub fn color(&self, kind: Kind, text: &str) -> Option<Color> {
+        match (kind, self.identifiers) {
+            (Kind::Identifier, Some(colors)) => {
+                let i = name_hash(text) % colors.len() as u64;
+                colors.get(i as usize).copied()
+            }
+            _ => self.syntax.color(kind),
+        }
+    }
+}
+
+/// A hash of a name that stays the same from one run to the next, so
+/// that a name keeps its color. FNV-1a alone leaves the low bits of the
+/// hash depending only on the low bits of each byte, so we mix the bits
+/// afterwards, as MurmurHash3 does.
+fn name_hash(name: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in name.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    h ^ (h >> 33)
 }
 
 /// The colors we take from a published palette. Each palette below notes
@@ -155,6 +200,100 @@ fn luminance(hex: u32) -> f32 {
         }
     };
     0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0)
+}
+
+/// A color in Oklab, as lightness and two axes of hue. Distances in Oklab
+/// match how different colors look much better than distances in sRGB.
+/// See https://bottosson.github.io/posts/oklab/.
+fn oklab(hex: u32) -> [f32; 3] {
+    let ch = |shift: u32| {
+        let c = ((hex >> shift) & 0xff) as f32 / 255.0;
+        if c <= 0.040_45 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let (r, g, b) = (ch(16), ch(8), ch(0));
+    let l = (0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_99 * b).cbrt();
+    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
+    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
+    [
+        0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
+        1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
+        0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s,
+    ]
+}
+
+/// The sRGB color of a color in Oklab, or none if sRGB can't show it.
+fn from_oklab([lightness, a, b]: [f32; 3]) -> Option<u32> {
+    let l = (lightness + 0.396_337_78 * a + 0.215_803_76 * b).powi(3);
+    let m = (lightness - 0.105_561_346 * a - 0.063_854_17 * b).powi(3);
+    let s = (lightness - 0.089_484_18 * a - 1.291_485_5 * b).powi(3);
+    let linear = [
+        4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_94 * s,
+        -1.268_438 * l + 2.609_757_4 * m - 0.341_319_38 * s,
+        -0.004_196_086_3 * l - 0.703_418_6 * m + 1.707_614_7 * s,
+    ];
+    let mut hex = 0;
+    for c in linear {
+        // Leave a little room for rounding errors.
+        if !(-0.001..=1.001).contains(&c) {
+            return None;
+        }
+        let c = c.clamp(0.0, 1.0);
+        let c = if c <= 0.003_130_8 {
+            c * 12.92
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        };
+        hex = hex << 8 | (c * 255.0).round() as u32;
+    }
+    Some(hex)
+}
+
+/// Colors for identifiers, with hues spread evenly around the color
+/// wheel. They take their lightness and some of their chroma from the
+/// theme's own syntax colors, so that they look like they belong to it.
+/// They get less chroma than those colors, so that they stand out less
+/// than keywords and strings do. But they never get so little that the
+/// hues are hard to tell apart, as they would be in Nord.
+///
+/// Identifiers are most of the text in code. So a color that is hard to
+/// read on the background moves toward the lightness of the text until
+/// it is about as easy to read.
+fn identifier_colors(p: &Palette) -> [u32; IDENTIFIER_COLORS] {
+    let s = &p.syntax;
+    let samples = [s.string, s.number, s.keyword, s.ty, s.function].map(oklab);
+    let n = samples.len() as f32;
+    let lightness = samples.iter().map(|c| c[0]).sum::<f32>() / n;
+    let chroma = (samples.iter().map(|c| c[1].hypot(c[2])).sum::<f32>() / n * 0.8).max(0.08);
+    let text = oklab(p.fg)[0];
+    let want = (contrast(p.fg, p.bg) * 0.8).min(4.5);
+    std::array::from_fn(|i| {
+        let hue = std::f32::consts::TAU * i as f32 / IDENTIFIER_COLORS as f32;
+        let mut l = lightness;
+        loop {
+            let color = in_gamut(l, chroma, hue);
+            if contrast(color, p.bg) >= want || (l - text).abs() < 0.01 {
+                return color;
+            }
+            l += (text - l).clamp(-0.01, 0.01);
+        }
+    })
+}
+
+/// The sRGB color with Oklab lightness `l` and hue `hue`, in radians, and
+/// as much of `chroma` as sRGB can show.
+fn in_gamut(l: f32, chroma: f32, hue: f32) -> u32 {
+    let mut c = chroma;
+    loop {
+        match from_oklab([l, c * hue.cos(), c * hue.sin()]) {
+            Some(hex) => return hex,
+            None if c > 0.0 => c = (c - 0.005).max(0.0),
+            None => return from_oklab([l.clamp(0.0, 1.0), 0.0, 0.0]).unwrap_or(0x808080),
+        }
+    }
 }
 
 /// The WCAG contrast ratio, from 1 to 21.
@@ -239,6 +378,16 @@ impl Theme {
             tag_fg: rgb(p.yellow),
             rename_fg: rgb(p.magenta),
             lanes: p.lanes.map(rgb),
+            identifiers: identifier_colors(p).map(rgb),
+        }
+    }
+
+    /// The colors to draw code in, with colors for identifiers if
+    /// `identifiers` is true.
+    pub fn syntax_colors(&self, identifiers: bool) -> SyntaxColors<'_> {
+        SyntaxColors {
+            syntax: self.syntax,
+            identifiers: identifiers.then_some(&self.identifiers[..]),
         }
     }
 
@@ -800,5 +949,56 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Identifier colors differ from each other and are about as easy to
+    /// read as the text.
+    #[test]
+    fn identifier_colors_are_distinct_and_readable() {
+        for (id, _) in Theme::list() {
+            let Some(t) = Theme::named(id) else { continue };
+            let (fg, bg) = (hex(t.fg), hex(t.bg));
+            let want = (contrast(fg, bg) * 0.8).min(4.5);
+            for (i, &a) in t.identifiers.iter().enumerate() {
+                let c = contrast(hex(a), bg);
+                assert!(
+                    c >= want - 0.01,
+                    "{id}: identifier color {i} has contrast {c:.2}"
+                );
+                for &b in &t.identifiers[i + 1..] {
+                    let [l1, a1, b1] = oklab(hex(a));
+                    let [l2, a2, b2] = oklab(hex(b));
+                    let d = ((l1 - l2).powi(2) + (a1 - a2).powi(2) + (b1 - b2).powi(2)).sqrt();
+                    assert!(
+                        d > 0.02,
+                        "{id}: identifier colors {a:?} and {b:?} look alike"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn identifiers_get_colors_by_name() {
+        let t = Theme::default();
+        let off = t.syntax_colors(false);
+        let on = t.syntax_colors(true);
+        assert_eq!(off.color(Kind::Identifier, "x"), None);
+        assert_eq!(
+            off.color(Kind::Keyword, "fn"),
+            on.color(Kind::Keyword, "fn")
+        );
+        assert!(on.color(Kind::Identifier, "x").is_some());
+        assert_eq!(
+            on.color(Kind::Identifier, "count"),
+            on.color(Kind::Identifier, "count")
+        );
+        // Names that differ by one character still spread over the colors.
+        let mut used: Vec<_> = (0..100)
+            .filter_map(|i| on.color(Kind::Identifier, &format!("x{i}")))
+            .collect();
+        used.sort_by_key(|&c| hex(c));
+        used.dedup();
+        assert!(used.len() >= 14, "only {} colors used", used.len());
     }
 }
