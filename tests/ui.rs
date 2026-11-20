@@ -340,7 +340,7 @@ fn long_message_lines_scroll_sideways() {
     ui.draw();
     assert!(!ui.screen().contains("the end"), "{}", ui.screen());
     let r = ui.doc_row(|r| matches!(r, Row::Meta(_)));
-    for _ in 0..40 {
+    for _ in 0..200 {
         ui.mouse(MouseEventKind::ScrollRight, r.x, r.y);
     }
     assert!(ui.screen().contains("the end"), "{}", ui.screen());
@@ -361,7 +361,7 @@ fn each_file_scrolls_sideways_on_its_own() {
     ui.select_commit(1);
     ui.draw();
     let r = ui.doc_row(|r| matches!(r, Row::Line { file: 0, .. }));
-    for _ in 0..40 {
+    for _ in 0..200 {
         ui.mouse(MouseEventKind::ScrollRight, r.x, r.y);
     }
     let screen = ui.screen();
@@ -381,7 +381,7 @@ fn sideways_scrolling_stops_at_the_end_of_the_longest_line() {
     ui.select_commit(1);
     ui.draw();
     let r = ui.doc_row(|r| matches!(r, Row::Line { file: 0, .. }));
-    for _ in 0..200 {
+    for _ in 0..400 {
         ui.mouse(MouseEventKind::ScrollRight, r.x, r.y);
     }
     // The end of the line is at the right edge, with the rest of the pane

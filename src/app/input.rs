@@ -481,7 +481,7 @@ impl App {
                 if m.modifiers.contains(KeyModifiers::SHIFT) {
                     self.hscroll_at(x, y, down);
                 } else {
-                    self.scroll_at(x, y, if down { 3 } else { -3 });
+                    self.scroll_at(x, y, if down { 1 } else { -1 });
                 }
             }
             MouseEventKind::ScrollRight => self.hscroll_at(x, y, true),
@@ -493,7 +493,7 @@ impl App {
     fn hscroll_at(&mut self, x: u16, y: u16, right: bool) {
         if let Some(Target::DocRow(i)) = self.target_at(x, y) {
             self.detail
-                .hscroll_by(i, if right { 4 } else { -4 }, self.areas.doc.width);
+                .hscroll_by(i, if right { 1 } else { -1 }, self.areas.doc.width);
         }
     }
 
