@@ -805,7 +805,6 @@ impl App {
         let len = self.history.row_count();
         let row = row.min(len.saturating_sub(1));
         self.history.last_row = row;
-        self.ensure_history_visible();
         if row == 0 {
             self.history.selected = Selected::Workdir;
             self.show_source(doc::Source::Workdir);
@@ -814,6 +813,7 @@ impl App {
             self.history.selected = Selected::Commit(id);
             self.show_source(doc::Source::Commit(id));
         }
+        self.ensure_history_visible();
     }
 
     /// How many history entries fit in the pane without being cut off.

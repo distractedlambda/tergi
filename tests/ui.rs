@@ -858,6 +858,35 @@ fn many_commits(s: &Scratch, n: usize) {
 }
 
 #[test]
+fn moving_the_selection_keeps_it_on_screen() {
+    let s = Scratch::new();
+    many_commits(&s, 60);
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(60);
+    let visible = |u: &Ui| {
+        let row = u.app.history.current_row();
+        let scroll = u.app.history.scroll;
+        (scroll..scroll + u.app.history_page()).contains(&row)
+    };
+    for key in [KeyCode::Char('G'), KeyCode::Char('g'), KeyCode::PageDown] {
+        ui.key(key);
+        assert!(
+            visible(&ui),
+            "row {} is off screen after {key:?}",
+            ui.app.history.current_row()
+        );
+    }
+    for _ in 0..30 {
+        ui.key(KeyCode::Char('j'));
+        assert!(
+            visible(&ui),
+            "row {} is off screen",
+            ui.app.history.current_row()
+        );
+    }
+}
+
+#[test]
 fn selection_follows_its_commit_through_a_reload() {
     let s = Scratch::new();
     many_commits(&s, 210);
