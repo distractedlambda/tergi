@@ -11,7 +11,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use gix::ObjectId;
 use gix::bstr::{BStr, BString, ByteSlice as _};
 
-use super::doc::{Row, Section, Source};
+use super::doc::{Depth, Row, Section, Source};
 use super::input::Target;
 use super::planner::{PlanAction, Planner};
 use super::{After, App, Focus, HISTORY_ROW_HEIGHT, Level, Suspend};
@@ -85,6 +85,8 @@ pub enum Cmd {
     Palette,
     CommandLog,
     ContextMenu,
+    /// Open the menu of git operations.
+    RepoMenu,
     ToggleSidebar,
     ToggleSplit,
     ChooseTheme,
@@ -152,6 +154,12 @@ pub enum Cmd {
     TakeSide(BString, bool),
     MarkResolved(BString),
     StartSelect,
+    /// Go one level into the detail pane: from a file to its hunks, or
+    /// from a hunk to its lines.
+    Descend,
+    /// Go one level out of the detail pane, and from the files back to
+    /// the history.
+    Ascend,
     NextHunk(bool),
     NextFile(bool),
 
@@ -265,24 +273,39 @@ impl Key {
     }
 }
 
+/// What the user presses before an action's key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Via {
+    /// Nothing. The key works by itself.
+    Direct,
+    /// `.`, which opens the menu for the selection.
+    Dot,
+    /// Esc, which opens the menu of git operations.
+    Esc,
+}
+
 #[derive(Debug, Clone)]
 pub struct ActionDef {
     pub key: Option<Key>,
     pub label: String,
     pub cmd: Cmd,
     pub enabled: bool,
-    /// Show in the right-click menu.
+    pub via: Via,
+    /// Show in the right-click menu, which `.` also opens.
     pub menu: bool,
     /// Show in the hint bar at the bottom.
     pub hint: bool,
 }
 
+/// An action on the selection. Its key works in the menu that `.` and the
+/// right mouse button open.
 fn act(key: Option<Key>, label: impl Into<String>, cmd: Cmd) -> ActionDef {
     ActionDef {
         key,
         label: label.into(),
         cmd,
         enabled: true,
+        via: Via::Dot,
         menu: true,
         hint: false,
     }
@@ -293,13 +316,36 @@ impl ActionDef {
         self.hint = true;
         self
     }
-    fn no_menu(mut self) -> Self {
+    /// The key works by itself, and the action isn't in the menu.
+    fn direct(mut self) -> Self {
+        self.via = Via::Direct;
+        self.menu = false;
+        self
+    }
+    /// The key works by itself, and the action is in the menu too.
+    fn keyed(mut self) -> Self {
+        self.via = Via::Direct;
+        self
+    }
+    fn esc(mut self) -> Self {
+        self.via = Via::Esc;
         self.menu = false;
         self
     }
     fn enabled(mut self, on: bool) -> Self {
         self.enabled = on;
         self
+    }
+
+    /// The keys to press for this action from the pane, such as `.r` or
+    /// `esc F`.
+    pub fn keys_label(&self) -> Option<String> {
+        let k = self.key?.label();
+        Some(match self.via {
+            Via::Direct => k,
+            Via::Dot => format!(".{k}"),
+            Via::Esc => format!("esc {k}"),
+        })
     }
 }
 
@@ -315,6 +361,10 @@ pub struct Menu {
     /// item's command (`Cmd::preview`) right away, and closing the menu
     /// without choosing runs this one to undo that.
     pub preview: Option<Cmd>,
+    /// The `?` list. It shows every key with what comes before it, and
+    /// pressing a key there doesn't run anything, because the same key
+    /// can mean different things after `.` and after Esc.
+    pub help: bool,
 }
 
 pub enum Purpose {
@@ -479,25 +529,29 @@ impl App {
         }
     }
 
+    /// Actions whose keys work in every pane. They are about the app rather
+    /// than the repository.
     pub fn global_actions(&self) -> Vec<ActionDef> {
-        let mut v = vec![
+        vec![
             act(Some(Key::ch('?')), "Keyboard shortcuts", Cmd::Help)
                 .hint()
-                .no_menu(),
-            act(Some(Key::ctrl('p')), "Command palette", Cmd::Palette).no_menu(),
-            act(Some(Key::ch('F')), "Fetch", Cmd::Fetch).no_menu(),
-            act(Some(Key::ch('p')), "Pull", Cmd::PullMenu).no_menu(),
-            act(Some(Key::ch('P')), "Push", Cmd::PushMenu).no_menu(),
-            act(Some(Key::ch('S')), "Stash changes", Cmd::StashPush).no_menu(),
+                .direct(),
+            act(Some(Key::ch('.')), "Selection menu", Cmd::ContextMenu)
+                .hint()
+                .direct(),
+            act(Some(Key::code(KeyCode::Esc)), "Git menu", Cmd::RepoMenu)
+                .hint()
+                .direct(),
+            act(Some(Key::ctrl('p')), "Command palette", Cmd::Palette).direct(),
             act(
                 Some(Key::ch('t')),
                 "Toggle side-by-side diff",
                 Cmd::ToggleSplit,
             )
-            .no_menu(),
-            act(None, "Choose theme…", Cmd::ChooseTheme).no_menu(),
-            act(None, "Set context lines…", Cmd::ChooseContextLines).no_menu(),
-            act(None, "Set tab width…", Cmd::ChooseTabWidth).no_menu(),
+            .direct(),
+            act(None, "Choose theme…", Cmd::ChooseTheme).direct(),
+            act(None, "Set context lines…", Cmd::ChooseContextLines).direct(),
+            act(None, "Set tab width…", Cmd::ChooseTabWidth).direct(),
             act(
                 None,
                 if self.cfg.relative_dates {
@@ -507,66 +561,85 @@ impl App {
                 },
                 Cmd::ToggleRelativeDates,
             )
-            .no_menu(),
-            act(
-                Some(Key::ch('w')),
-                "Show working directory",
-                Cmd::ShowWorkdir,
-            )
-            .no_menu(),
-            act(Some(Key::ch('@')), "Command log", Cmd::CommandLog).no_menu(),
-            act(Some(Key::ctrl('b')), "Toggle sidebar", Cmd::ToggleSidebar).no_menu(),
-            act(Some(Key::ctrl('r')), "Refresh", Cmd::Refresh).no_menu(),
-            act(Some(Key::code(KeyCode::Tab)), "Next pane", Cmd::FocusNext).no_menu(),
+            .direct(),
+            act(Some(Key::ch('@')), "Command log", Cmd::CommandLog).direct(),
+            act(Some(Key::ctrl('b')), "Toggle sidebar", Cmd::ToggleSidebar).direct(),
+            act(Some(Key::code(KeyCode::Tab)), "Next pane", Cmd::FocusNext).direct(),
             act(
                 Some(Key::code(KeyCode::BackTab)),
                 "Previous pane",
                 Cmd::FocusPrev,
             )
-            .no_menu(),
+            .direct(),
             act(
                 Some(Key::ch('1')),
                 "Focus sidebar",
                 Cmd::Focus(Focus::Sidebar),
             )
-            .no_menu(),
+            .direct(),
             act(
                 Some(Key::ch('2')),
                 "Focus history",
                 Cmd::Focus(Focus::History),
             )
-            .no_menu(),
+            .direct(),
             act(
                 Some(Key::ch('3')),
                 "Focus details",
                 Cmd::Focus(Focus::Detail),
             )
-            .no_menu(),
-            act(Some(Key::ch('.')), "Open context menu", Cmd::ContextMenu).no_menu(),
-            act(Some(Key::ctrl('z')), "Suspend", Cmd::Suspend).no_menu(),
-            act(Some(Key::ch('q')), "Quit", Cmd::Quit).no_menu(),
-        ];
+            .direct(),
+            act(Some(Key::ctrl('z')), "Suspend", Cmd::Suspend).direct(),
+            act(Some(Key::ch('q')), "Quit", Cmd::Quit).direct(),
+        ]
+    }
+
+    /// The git operations that act on the whole repository. Esc opens a
+    /// menu of these, and their keys work in that menu.
+    pub fn repo_actions(&self) -> Vec<ActionDef> {
+        let mut v = Vec::new();
         if self.repo_state != RepoState::Clean {
-            let skip = !matches!(self.repo_state, RepoState::Merge);
-            v.insert(
-                0,
-                act(Some(Key::alt('c')), "Continue", Cmd::ContinueOp)
+            v.push(
+                act(Some(Key::ch('C')), "Continue", Cmd::ContinueOp)
                     .hint()
-                    .no_menu(),
+                    .esc(),
             );
-            if skip {
-                v.insert(
-                    1,
-                    act(Some(Key::alt('s')), "Skip commit", Cmd::SkipOp).no_menu(),
-                );
+            if !matches!(self.repo_state, RepoState::Merge) {
+                v.push(act(Some(Key::ch('s')), "Skip commit", Cmd::SkipOp).esc());
             }
-            v.insert(
-                1,
-                act(Some(Key::alt('a')), "Abort", Cmd::AbortOp)
-                    .hint()
-                    .no_menu(),
-            );
+            v.push(act(Some(Key::ch('X')), "Abort", Cmd::AbortOp).hint().esc());
         }
+        v.extend([
+            act(Some(Key::ch('F')), "Fetch", Cmd::Fetch).esc(),
+            act(Some(Key::ch('p')), "Pull…", Cmd::PullMenu).esc(),
+            act(Some(Key::ch('P')), "Push…", Cmd::PushMenu).esc(),
+            act(Some(Key::ch('S')), "Stash changes…", Cmd::StashPush).esc(),
+            act(Some(Key::ch('a')), "Stage all", Cmd::StageAll).esc(),
+            act(Some(Key::ch('u')), "Unstage all", Cmd::UnstageAll).esc(),
+            act(
+                Some(Key::ch('c')),
+                "Write commit message",
+                Cmd::FocusMessage,
+            )
+            .esc(),
+            act(
+                Some(Key::ch('A')),
+                if self.amend {
+                    "Stop amending"
+                } else {
+                    "Amend the last commit"
+                },
+                Cmd::ToggleAmend,
+            )
+            .esc(),
+            act(
+                Some(Key::ch('w')),
+                "Show working directory",
+                Cmd::ShowWorkdir,
+            )
+            .esc(),
+            act(Some(Key::ch('r')), "Refresh", Cmd::Refresh).esc(),
+        ]);
         v
     }
 
@@ -585,59 +658,74 @@ impl App {
                     "Commit",
                     Cmd::Commit,
                 )
-                .hint(),
-                act(Some(Key::alt('a')), "Toggle amend", Cmd::ToggleAmend).hint(),
+                .hint()
+                .direct(),
+                act(Some(Key::alt('a')), "Toggle amend", Cmd::ToggleAmend)
+                    .hint()
+                    .direct(),
                 act(
                     Some(Key::code(KeyCode::Esc)),
                     "Leave message box",
                     Cmd::Focus(Focus::Detail),
                 )
-                .hint(),
+                .hint()
+                .direct(),
             ],
             Context::Planner => vec![
-                act(Some(Key::ch('p')), "Pick", Cmd::PlanSet(PlanAction::Pick)).hint(),
+                act(Some(Key::ch('p')), "Pick", Cmd::PlanSet(PlanAction::Pick))
+                    .hint()
+                    .keyed(),
                 act(
                     Some(Key::ch('r')),
                     "Reword",
                     Cmd::PlanSet(PlanAction::Reword),
                 )
-                .hint(),
+                .hint()
+                .keyed(),
                 act(
                     Some(Key::ch('s')),
                     "Squash into older",
                     Cmd::PlanSet(PlanAction::Squash),
                 )
-                .hint(),
+                .hint()
+                .keyed(),
                 act(
                     Some(Key::ch('f')),
                     "Fixup into older",
                     Cmd::PlanSet(PlanAction::Fixup),
                 )
-                .hint(),
-                act(Some(Key::ch('d')), "Drop", Cmd::PlanSet(PlanAction::Drop)).hint(),
+                .hint()
+                .keyed(),
+                act(Some(Key::ch('d')), "Drop", Cmd::PlanSet(PlanAction::Drop))
+                    .hint()
+                    .keyed(),
                 act(
                     Some(Key::ch('e')),
                     "Edit (stop here)",
                     Cmd::PlanSet(PlanAction::Edit),
                 )
-                .hint(),
-                act(Some(Key::ctrl('k')), "Move up (newer)", Cmd::PlanMove(true)).hint(),
+                .hint()
+                .keyed(),
+                act(Some(Key::ctrl('k')), "Move up (newer)", Cmd::PlanMove(true))
+                    .hint()
+                    .keyed(),
                 act(
                     Some(Key::ctrl('j')),
                     "Move down (older)",
                     Cmd::PlanMove(false),
                 )
-                .hint(),
+                .hint()
+                .keyed(),
                 act(
                     Some(Key::code(KeyCode::Enter)),
                     "Start rebase",
                     Cmd::PlanStart,
                 )
                 .hint()
-                .no_menu(),
+                .direct(),
                 act(Some(Key::code(KeyCode::Esc)), "Cancel", Cmd::PlanCancel)
                     .hint()
-                    .no_menu(),
+                    .direct(),
             ],
         }
     }
@@ -712,14 +800,27 @@ impl App {
     }
 
     fn detail_actions(&self) -> Vec<ActionDef> {
-        let nav = [
-            act(Some(Key::ch(']')), "Next file", Cmd::NextFile(true)).no_menu(),
-            act(Some(Key::ch('[')), "Previous file", Cmd::NextFile(false)).no_menu(),
-            act(Some(Key::ch('}')), "Next hunk", Cmd::NextHunk(true)).no_menu(),
-            act(Some(Key::ch('{')), "Previous hunk", Cmd::NextHunk(false)).no_menu(),
-            act(Some(Key::ch('z')), "Fold or unfold file", Cmd::ToggleFold),
-            act(Some(Key::ch('Z')), "Fold or unfold all files", Cmd::FoldAll),
-        ];
+        let depth = self.detail.depth();
+        let (into, out) = match depth {
+            Depth::Files => ("Go into the hunks", "Back to the history"),
+            Depth::Hunks => ("Go into the lines", "Back to the files"),
+            Depth::Lines => ("", "Back to the hunks"),
+        };
+        let mut nav = Vec::new();
+        if depth != Depth::Lines {
+            nav.push(act(Some(Key::ch('l')), into, Cmd::Descend).hint().direct());
+        }
+        nav.push(act(Some(Key::ch('h')), out, Cmd::Ascend).hint().direct());
+        nav.extend([
+            act(Some(Key::ch(' ')), "Fold or unfold file", Cmd::ToggleFold)
+                .hint()
+                .direct(),
+            act(Some(Key::ch('Z')), "Fold or unfold all files", Cmd::FoldAll).direct(),
+            act(Some(Key::ch(']')), "Next file", Cmd::NextFile(true)).direct(),
+            act(Some(Key::ch('[')), "Previous file", Cmd::NextFile(false)).direct(),
+            act(Some(Key::ch('}')), "Next hunk", Cmd::NextHunk(true)).direct(),
+            act(Some(Key::ch('{')), "Previous hunk", Cmd::NextHunk(false)).direct(),
+        ]);
         match self.detail.source.clone() {
             Source::Workdir => {
                 let mut v = Vec::new();
@@ -790,22 +891,13 @@ impl App {
                         ));
                     }
                 }
-                v.push(
-                    act(Some(Key::ch('v')), "Select lines", Cmd::StartSelect)
-                        .hint()
-                        .no_menu(),
-                );
-                v.push(
-                    act(
-                        Some(Key::ch('c')),
-                        "Write commit message",
-                        Cmd::FocusMessage,
-                    )
-                    .hint(),
-                );
-                v.push(act(Some(Key::ch('a')), "Stage all", Cmd::StageAll));
-                v.push(act(Some(Key::ch('u')), "Unstage all", Cmd::UnstageAll));
-                v.push(act(Some(Key::ch('A')), "Toggle amend", Cmd::ToggleAmend));
+                if depth != Depth::Files {
+                    v.push(
+                        act(Some(Key::ch('v')), "Select lines", Cmd::StartSelect)
+                            .hint()
+                            .direct(),
+                    );
+                }
                 v.extend(nav);
                 v
             }
@@ -829,7 +921,7 @@ impl App {
                 v.extend(nav);
                 v
             }
-            Source::None => nav.to_vec(),
+            Source::None => nav,
         }
     }
 
@@ -842,19 +934,21 @@ impl App {
         match row {
             SideRow::Header { key, .. } => vec![
                 act(
-                    Some(Key::code(KeyCode::Enter)),
+                    Some(Key::ch(' ')),
                     "Fold or unfold",
                     Cmd::ToggleSideSection(SideKey::Header(key.clone())),
                 )
-                .hint(),
+                .hint()
+                .direct(),
             ],
             SideRow::Remote(r) => vec![
                 act(
-                    Some(Key::code(KeyCode::Enter)),
+                    Some(Key::ch(' ')),
                     "Fold or unfold",
                     Cmd::ToggleSideSection(SideKey::Remote(r.clone())),
                 )
-                .hint(),
+                .hint()
+                .direct(),
                 act(Some(Key::ch('F')), "Fetch", Cmd::Fetch),
             ],
             SideRow::Branch(i) => {
@@ -976,14 +1070,19 @@ impl App {
         }
     }
 
-    /// Actions for the focused pane followed by the global ones.
+    /// Actions for the focused pane, then the global ones, then the git
+    /// menu.
     pub fn all_actions(&self) -> Vec<ActionDef> {
         let mut v = self.actions(self.context());
-        for g in self.global_actions() {
-            // A pane can offer a global command too, often without its key.
-            // List it once, with the key.
+        for g in self.global_actions().into_iter().chain(self.repo_actions()) {
+            // A pane can offer a global command too, sometimes without a
+            // key. List it once, with the key.
             match v.iter_mut().find(|p| p.cmd == g.cmd) {
-                Some(p) if p.key.is_none() || p.key == g.key => p.key = g.key,
+                Some(p) if p.key.is_none() => {
+                    p.key = g.key;
+                    p.via = g.via;
+                }
+                Some(p) if p.key == g.key && p.via == g.via => {}
                 _ => v.push(g),
             }
         }
@@ -1125,6 +1224,7 @@ impl App {
                     anchor: None,
                     scroll: 0,
                     preview: None,
+                    help: true,
                 }));
             }
             Cmd::Palette => {
@@ -1135,6 +1235,18 @@ impl App {
             }
             Cmd::CommandLog => self.overlays.push(Overlay::Log { scroll: usize::MAX }),
             Cmd::ContextMenu => self.open_context_menu(None),
+            Cmd::RepoMenu => {
+                let items = self.repo_actions();
+                self.overlays.push(Overlay::Menu(Menu {
+                    title: Some("Git".into()),
+                    items,
+                    selected: 0,
+                    anchor: None,
+                    scroll: 0,
+                    preview: None,
+                    help: false,
+                }));
+            }
             Cmd::ToggleSidebar => {
                 self.sidebar_visible = Some(!self.sidebar_shown());
                 if !self.sidebar_shown() && self.focus == Focus::Sidebar {
@@ -1156,6 +1268,7 @@ impl App {
                     anchor: None,
                     scroll: 0,
                     preview: Some(Cmd::RevertTheme),
+                    help: false,
                 }));
             }
             Cmd::SetTheme(id) => self.change_config(|c| c.theme = id.to_string()),
@@ -1435,11 +1548,18 @@ impl App {
                 ops::stage_paths(&r.git, &[&p]).await.map(|()| format!("Marked {p} as resolved"))
             }),
             Cmd::StartSelect => {
-                self.detail.anchor = match self.detail.anchor {
-                    Some(_) => None,
-                    None => Some(self.detail.cursor),
-                };
+                if self.detail.depth() == Depth::Hunks {
+                    self.descend(false);
+                }
+                if self.detail.depth() == Depth::Lines {
+                    self.detail.anchor = match self.detail.anchor {
+                        Some(_) => None,
+                        None => Some(self.detail.cursor),
+                    };
+                }
             }
+            Cmd::Descend => self.descend(false),
+            Cmd::Ascend => self.ascend(),
             Cmd::NextHunk(fwd) => {
                 self.detail.anchor = None;
                 self.detail.jump(fwd, |r| matches!(r, Row::Hunk { .. }));
@@ -1556,7 +1676,7 @@ impl App {
             Ok(match f(r).await? {
                 Outcome::Done => "Done".to_string(),
                 Outcome::Stopped => {
-                    "Stopped. Make your changes, then Continue (alt+c).".to_string()
+                    "Stopped. Make your changes, then continue (esc C).".to_string()
                 }
             })
         });
@@ -1581,6 +1701,7 @@ impl App {
             anchor,
             scroll: 0,
             preview: None,
+            help: false,
         }));
     }
 
@@ -1625,6 +1746,7 @@ impl App {
             anchor: Some(anchor),
             scroll: 0,
             preview: None,
+            help: false,
         }));
     }
 

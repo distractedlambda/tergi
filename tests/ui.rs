@@ -12,7 +12,7 @@ use ratatui::layout::Rect;
 
 use common::Scratch;
 use common::ui::Ui;
-use tergi::app::cmd::{Cmd, Overlay, SideRow, Unit};
+use tergi::app::cmd::{Cmd, Overlay, SideRow};
 use tergi::app::doc::{Row, Section};
 use tergi::app::input::{SCROLL_LOCK, Target};
 use tergi::app::planner::PlanAction;
@@ -54,13 +54,25 @@ fn shows_history_and_working_directory() {
     }
 }
 
+/// Right-click a row in the detail pane and choose the menu item with the
+/// key `c`.
+fn menu_on_row(ui: &mut Ui, row: impl Fn(&Ui, &Row) -> bool, c: char) {
+    let at = ui.doc_row(|r| row(ui, r));
+    ui.click(MouseButton::Right, at);
+    assert!(
+        matches!(ui.app.overlays.last(), Some(Overlay::Menu(_))),
+        "{}",
+        ui.screen()
+    );
+    ui.key(KeyCode::Char(c));
+}
+
 #[test]
-fn clicking_stage_stages_the_file() {
+fn staging_from_the_menu_stages_the_file() {
     let s = repo_with_change();
     let mut ui = Ui::open(&s);
     ui.wait_loaded(2);
-    let r = ui.find_hit(|t| matches!(t, Target::Button(Cmd::Stage(Unit::File(..)))));
-    ui.click(MouseButton::Left, r);
+    menu_on_row(&mut ui, |_, r| matches!(r, Row::File { .. }), ' ');
     ui.wait("the file to show as staged", |u| {
         u.screen().contains("Staged changes (1)")
     });
@@ -103,10 +115,11 @@ fn stages_and_discards_files_whose_names_are_not_utf8() {
     let mut ui = Ui::open(&s);
     ui.wait_loaded(1);
     assert!(ui.screen().contains("caf\u{fffd}.txt"), "{}", ui.screen());
-    let r = ui.find_hit(|t| {
-        matches!(t, Target::Button(Cmd::Stage(Unit::File(_, p))) if p == b"\xff.txt".as_slice())
-    });
-    ui.click(MouseButton::Left, r);
+    menu_on_row(
+        &mut ui,
+        |ui, r| matches!(r, Row::File { sec, file } if ui.app.section_files(*sec)[*file].path() == b"\xff.txt".as_slice()),
+        ' ',
+    );
     ui.settle();
     assert_eq!(
         git_z(&["diff", "--cached", "--name-only", "-z"]),
@@ -158,18 +171,20 @@ fn clicks_behind_a_dialog_are_ignored() {
     let s = repo_with_change();
     let mut ui = Ui::open(&s);
     ui.wait_loaded(2);
-    let stash = ui.find_hit(|t| matches!(t, Target::Button(Cmd::StashPush)));
+    let help = ui.find_hit(|t| matches!(t, Target::Button(Cmd::Help)));
 
     // A click outside a menu only closes the menu.
+    ui.git('F');
+    ui.settle();
     ui.key(KeyCode::Char('?'));
     assert!(matches!(ui.app.overlays.last(), Some(Overlay::Menu(_))));
-    ui.click(MouseButton::Left, stash);
+    ui.click(MouseButton::Left, help);
     assert!(ui.app.overlays.is_empty());
 
     // A click outside a dialog does nothing at all.
-    ui.key(KeyCode::Char('S'));
+    ui.git('S');
     assert!(matches!(ui.app.overlays.last(), Some(Overlay::Input(_))));
-    ui.click(MouseButton::Left, stash);
+    ui.click(MouseButton::Left, help);
     assert_eq!(ui.app.overlays.len(), 1);
 }
 
@@ -178,29 +193,38 @@ fn menus_from_the_keyboard_open_in_the_middle() {
     let s = repo_with_change();
     let mut ui = Ui::open(&s);
     ui.wait_loaded(2);
-    let push = ui.find_hit(|t| matches!(t, Target::Button(Cmd::PushMenu)));
     let anchor = |u: &Ui| match u.app.overlays.last() {
         Some(Overlay::Menu(m)) => m.anchor,
         _ => panic!("no menu is open"),
     };
 
-    // Clicking the button opens the menu right below it.
-    ui.click(MouseButton::Left, push);
-    assert_eq!(anchor(&ui), Some((push.x, push.y + 1)));
-    ui.key(KeyCode::Esc);
-
-    // The key opens it in the middle, wherever the mouse is.
-    ui.key(KeyCode::Char('P'));
-    assert_eq!(anchor(&ui), None);
-    ui.key(KeyCode::Esc);
-
-    // So does choosing it from the help menu with its key.
+    // Esc opens the git menu in the middle, and so does its push key.
     ui.mouse(MouseEventKind::Moved, 3, 3);
-    ui.key(KeyCode::Char('?'));
+    ui.key(KeyCode::Esc);
     assert_eq!(anchor(&ui), None);
     ui.key(KeyCode::Char('P'));
     assert_eq!(ui.app.overlays.len(), 1);
     assert_eq!(anchor(&ui), None);
+    ui.key(KeyCode::Esc);
+    assert!(ui.app.overlays.is_empty());
+
+    // Clicking the push item opens the push menu at the pointer.
+    ui.key(KeyCode::Esc);
+    let push = ui.find_hit(|t| matches!(t, Target::MenuItem(i) if matches!(ui.app.overlays.last(), Some(Overlay::Menu(m)) if m.items[*i].cmd == Cmd::PushMenu)));
+    ui.click(MouseButton::Left, push);
+    assert_eq!(anchor(&ui), Some((push.x, push.y)));
+    ui.key(KeyCode::Esc);
+
+    // Keys in the help menu don't run anything, because the same key can
+    // mean something else after `.` or Esc.
+    ui.key(KeyCode::Char('?'));
+    ui.key(KeyCode::Char('P'));
+    assert_eq!(ui.app.overlays.len(), 1);
+    assert!(
+        matches!(ui.app.overlays.last(), Some(Overlay::Menu(m)) if m.help),
+        "{}",
+        ui.screen()
+    );
     ui.key(KeyCode::Esc);
 
     // The context menu key is the exception. Its menu opens next to the
@@ -220,7 +244,7 @@ fn first_load_starts_at_the_top() {
     assert_eq!(ui.app.detail.cursor, 0);
     ui.key(KeyCode::Char('j'));
     assert_eq!(ui.app.detail.cursor, 1);
-    ui.key(KeyCode::Char(' '));
+    ui.dot(' ');
     ui.wait("a.txt to be staged", |u| {
         u.screen().contains("Staged changes (1)")
     });
@@ -231,18 +255,18 @@ fn buttons_under_a_dialog_do_not_light_up() {
     let s = repo_with_change();
     let mut ui = Ui::open(&s);
     ui.wait_loaded(2);
-    let stash = ui.find_hit(|t| matches!(t, Target::Button(Cmd::StashPush)));
-    let bg = |u: &Ui| u.term.backend().buffer()[(stash.x, stash.y)].bg;
+    let hint = ui.find_hit(|t| matches!(t, Target::Button(Cmd::Help)));
+    let bg = |u: &Ui| u.term.backend().buffer()[(hint.x, hint.y)].bg;
     let normal = bg(&ui);
 
-    // Hovering the button normally changes its color.
-    ui.mouse(MouseEventKind::Moved, stash.x, stash.y);
+    // Hovering a hint normally changes its color.
+    ui.mouse(MouseEventKind::Moved, hint.x, hint.y);
     assert_ne!(bg(&ui), normal);
 
     // With a dialog open, it stays as it was.
-    ui.mouse(MouseEventKind::Moved, 0, 35);
-    ui.key(KeyCode::Char('S'));
-    ui.mouse(MouseEventKind::Moved, stash.x, stash.y);
+    ui.mouse(MouseEventKind::Moved, 0, 20);
+    ui.git('S');
+    ui.mouse(MouseEventKind::Moved, hint.x, hint.y);
     assert_eq!(bg(&ui), normal);
 }
 
@@ -268,17 +292,13 @@ fn right_click_selects_without_activating() {
     assert_eq!(hunks(&ui), 1);
     ui.key(KeyCode::Esc);
 
-    // Buttons only react to the left button.
-    let stash = ui.find_hit(|t| matches!(t, Target::Button(Cmd::StashPush)));
-    ui.click(MouseButton::Right, stash);
+    // Hints in the bottom bar only react to the left button.
+    let help = ui.find_hit(|t| matches!(t, Target::Button(Cmd::Help)));
+    ui.click(MouseButton::Right, help);
     assert!(ui.app.overlays.is_empty());
-    let stage = ui.find_hit(|t| matches!(t, Target::Button(Cmd::Stage(Unit::File(..)))));
-    ui.click(MouseButton::Right, stage);
-    ui.wait("things to settle", |u| u.app.busy.is_none());
-    assert_eq!(s.sh(&["diff", "--cached", "--name-only"]).trim(), "");
 
     // A right-click outside a dialog leaves it open, like a left-click.
-    ui.key(KeyCode::Char('S'));
+    ui.git('S');
     ui.click(MouseButton::Right, Rect::new(0, 35, 1, 1));
     assert!(matches!(ui.app.overlays.last(), Some(Overlay::Input(_))));
 }
@@ -291,7 +311,7 @@ fn right_click_in_the_planner_opens_one_menu() {
     // Plan from the oldest commit, so there are two rows.
     ui.app.select_history(2);
     ui.key(KeyCode::Char('2'));
-    ui.key(KeyCode::Char('i'));
+    ui.dot('i');
     ui.wait("the planner", |u| u.app.planner.is_some());
     let action = ui.find_hit(|t| matches!(t, Target::PlannerAction(1)));
     ui.click(MouseButton::Right, action);
@@ -500,6 +520,8 @@ fn draws_at_any_size() {
     ui.key(KeyCode::Char('?'));
     draw_all(&mut ui, "the help menu");
     ui.key(KeyCode::Esc);
+    ui.key(KeyCode::Esc);
+    draw_all(&mut ui, "the git menu");
     ui.key(KeyCode::Char('S'));
     draw_all(&mut ui, "an input box");
     ui.key(KeyCode::Esc);
@@ -520,7 +542,7 @@ fn draws_at_any_size() {
     ui.key(KeyCode::Esc);
 
     ui.key(KeyCode::Char('2'));
-    ui.key(KeyCode::Char('i'));
+    ui.dot('i');
     ui.wait("the planner", |u| u.app.planner.is_some());
     draw_all(&mut ui, "the planner");
 }
@@ -530,9 +552,9 @@ fn commits_and_amends_from_the_message_box() {
     let s = repo_with_change();
     let mut ui = Ui::open(&s);
     ui.wait_loaded(2);
-    ui.key(KeyCode::Char('a'));
+    ui.git('a');
     ui.settle();
-    ui.key(KeyCode::Char('c'));
+    ui.git('c');
     ui.type_text("#3 Use a digit");
     ui.key_with(KeyCode::Enter, KeyModifiers::CONTROL);
     ui.settle();
@@ -543,11 +565,11 @@ fn commits_and_amends_from_the_message_box() {
 
     // Amend only the message.
     ui.key(KeyCode::Char('3'));
-    ui.key(KeyCode::Char('A'));
+    ui.git('A');
     ui.wait("HEAD's message", |u| {
         u.app.message.text() == "#3 Use a digit"
     });
-    ui.key(KeyCode::Char('c'));
+    ui.git('c');
     ui.type_text("!");
     ui.key_with(KeyCode::Char('s'), KeyModifiers::CONTROL);
     ui.settle();
@@ -569,7 +591,7 @@ fn rewords_a_commit_and_runs_a_plan() {
     ui.wait_loaded(3);
     // Reword the oldest commit.
     ui.app.select_history(3);
-    ui.key(KeyCode::Char('r'));
+    ui.dot('r');
     ui.wait("the reword dialog", |u| {
         matches!(u.app.overlays.last(), Some(Overlay::Input(_)))
     });
@@ -584,7 +606,7 @@ fn rewords_a_commit_and_runs_a_plan() {
 
     // Plan: fix up the newest into the middle one, and reword the middle.
     ui.app.select_history(3);
-    ui.key(KeyCode::Char('i'));
+    ui.dot('i');
     ui.wait("the planner", |u| u.app.planner.is_some());
     assert_eq!(ui.app.planner.as_ref().map(|p| p.rows.len()), Some(3));
     ui.key(KeyCode::Char('f'));
@@ -612,7 +634,7 @@ fn open_planner(s: &Scratch) -> Ui {
     let mut ui = Ui::open(s);
     ui.wait_loaded(3);
     ui.app.select_history(3);
-    ui.key(KeyCode::Char('i'));
+    ui.dot('i');
     ui.wait("the planner", |u| u.app.planner.is_some());
     ui
 }
@@ -677,7 +699,7 @@ fn stages_selected_lines_and_discards_a_file() {
     ui.app.detail_move_to(at, false);
     ui.key(KeyCode::Char('v'));
     ui.key(KeyCode::Char('j'));
-    ui.key(KeyCode::Char(' '));
+    ui.dot(' ');
     ui.settle();
     ui.wait("staged lines", |u| {
         u.screen().contains("Staged changes (1)")
@@ -689,7 +711,7 @@ fn stages_selected_lines_and_discards_a_file() {
     ui.key(KeyCode::Char('t'));
     let at = ui.app.detail.rows.iter().position(|r| matches!(r, Row::Split { sec: tergi::app::doc::Section::Unstaged, left: Some(l), right: Some(r), .. } if l != r)).expect("a split row");
     ui.app.detail_move_to(at, false);
-    ui.key(KeyCode::Char(' '));
+    ui.dot(' ');
     ui.settle();
     assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
     assert_eq!(s.index("f.txt"), "1\n2\n3\ntwo\nthree\n4\nfive\n");
@@ -723,7 +745,7 @@ fn stages_selected_lines_and_discards_a_file() {
         })
         .expect("file row");
     ui.app.detail_move_to(at, false);
-    ui.key(KeyCode::Char('d'));
+    ui.dot('d');
     assert!(
         matches!(ui.app.overlays.last(), Some(Overlay::Confirm { .. })),
         "{}",
@@ -734,7 +756,7 @@ fn stages_selected_lines_and_discards_a_file() {
     assert_eq!(s.sh(&["diff", "--name-only"]).trim(), "");
 }
 
-/// Put the cursor on a row in the detail pane and press `d`, which asks
+/// Put the cursor on a row in the detail pane and press `.d`, which asks
 /// before discarding.
 fn ask_to_discard(ui: &mut Ui, row: impl Fn(&Ui, &Row) -> bool) {
     let at = ui
@@ -745,7 +767,7 @@ fn ask_to_discard(ui: &mut Ui, row: impl Fn(&Ui, &Row) -> bool) {
         .position(|r| row(ui, r))
         .expect("row in the detail pane");
     ui.app.detail_move_to(at, false);
-    ui.key(KeyCode::Char('d'));
+    ui.dot('d');
     assert!(
         matches!(ui.app.overlays.last(), Some(Overlay::Confirm { .. })),
         "{}",
@@ -880,14 +902,32 @@ fn resolves_a_conflict_and_continues_the_merge() {
     });
     let screen = ui.screen();
     assert!(screen.contains("Merge in progress"), "{screen}");
-    let theirs = ui.find_hit(|t| matches!(t, Target::Button(Cmd::TakeSide(_, false))));
-    ui.click(MouseButton::Left, theirs);
+    ui.key(KeyCode::Char('3'));
+    let at = ui
+        .app
+        .detail
+        .rows
+        .iter()
+        .position(|r| {
+            matches!(
+                r,
+                Row::File {
+                    sec: Section::Conflicted,
+                    ..
+                }
+            )
+        })
+        .expect("the conflicted file");
+    ui.app.detail_move_to(at, false);
+    ui.dot('T');
     ui.settle();
     ui.wait("the resolution", |u| {
         u.screen().contains("Staged changes (1)")
     });
     assert_eq!(s.read("f.txt"), "theirs\n");
-    ui.key_with(KeyCode::Char('c'), KeyModifiers::ALT);
+    // The banner's Continue button finishes the merge.
+    let cont = ui.find_hit(|t| matches!(t, Target::Button(Cmd::ContinueOp)));
+    ui.click(MouseButton::Left, cont);
     ui.settle();
     assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
     ui.wait("the merge commit", |u| u.app.history.commits.len() == 4);
@@ -1099,7 +1139,7 @@ fn branches_and_remotes_whose_names_are_not_utf8() {
         MouseButton::Left,
         ui.find_hit(|t| *t == Target::SidebarRow(row)),
     );
-    ui.key(KeyCode::Char(' '));
+    ui.dot(' ');
     ui.settle();
     assert_eq!(
         s.sh_bytes(&[b"symbolic-ref", b"HEAD"]),
@@ -1148,7 +1188,7 @@ fn force_push_only_pushes_the_branch_it_asked_about() {
 
     let mut ui = Ui::open(&s);
     ui.wait_loaded(4);
-    ui.key(KeyCode::Char('P'));
+    ui.git('P');
     ui.key(KeyCode::Char('f'));
     match ui.app.overlays.last() {
         Some(Overlay::Confirm { body, .. }) => {
@@ -1355,4 +1395,269 @@ fn palette_commands_change_and_save_settings() {
     ui.wait("relative dates again", |u| {
         u.app.cfg.relative_dates && u.app.cfg.context_lines == 3
     });
+}
+
+/// Two files with two hunks each, changed in the newest commit, which is
+/// selected with the detail pane focused.
+fn two_files_two_hunks() -> (Scratch, Ui) {
+    let s = Scratch::new();
+    let text = |changes: &[usize]| {
+        (1..=30)
+            .map(|i| {
+                if changes.contains(&i) {
+                    format!("changed {i}\n")
+                } else {
+                    format!("{i}\n")
+                }
+            })
+            .collect::<String>()
+    };
+    s.write("a.txt", &text(&[]));
+    s.write("b.txt", &text(&[]));
+    s.commit_all("init");
+    s.write("a.txt", &text(&[2, 28]));
+    s.write("b.txt", &text(&[2, 28]));
+    s.commit_all("change both");
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    ui.select_commit(1);
+    ui.wait("the commit's files", |u| {
+        u.app
+            .detail
+            .rows
+            .iter()
+            .filter(|r| matches!(r, Row::Hunk { .. }))
+            .count()
+            == 4
+    });
+    ui.key(KeyCode::Char('3'));
+    (s, ui)
+}
+
+fn cursor_row(ui: &Ui) -> Row {
+    ui.app.detail.rows[ui.app.detail.cursor].clone()
+}
+
+#[test]
+fn the_detail_pane_moves_by_file_then_hunk_then_line() {
+    let (_s, mut ui) = two_files_two_hunks();
+    assert!(matches!(cursor_row(&ui), Row::Meta(0)));
+
+    // At the top level, j stops on the commit details that do something
+    // on Enter, then on the files.
+    let mut files = Vec::new();
+    for _ in 0..6 {
+        ui.key(KeyCode::Char('j'));
+        if let Row::File { file, .. } = cursor_row(&ui) {
+            files.push(file);
+        }
+    }
+    files.dedup();
+    assert_eq!(files, [0, 1]);
+    ui.key(KeyCode::Char('k'));
+    assert_eq!(
+        cursor_row(&ui),
+        Row::File {
+            sec: Section::Commit,
+            file: 0
+        }
+    );
+
+    // l goes into the file's hunks, and j crosses into the next file.
+    ui.key(KeyCode::Char('l'));
+    let hunk = |file, hunk| Row::Hunk {
+        sec: Section::Commit,
+        file,
+        hunk,
+    };
+    assert_eq!(cursor_row(&ui), hunk(0, 0));
+    ui.key(KeyCode::Char('j'));
+    assert_eq!(cursor_row(&ui), hunk(0, 1));
+    ui.key(KeyCode::Char('j'));
+    assert_eq!(cursor_row(&ui), hunk(1, 0));
+
+    // Enter goes into the lines, starting at the first change. j and k
+    // stay inside the hunk.
+    ui.key(KeyCode::Enter);
+    let line = |ui: &Ui| match cursor_row(ui) {
+        Row::Line {
+            file, hunk, line, ..
+        } => (file, hunk, line),
+        r => panic!("the cursor is on {r:?}"),
+    };
+    let f = &ui.app.section_files(Section::Commit)[1];
+    let (_, h, l) = line(&ui);
+    assert_ne!(
+        f.hunks[h].lines[l].kind,
+        tergi::git::diff::LineKind::Context
+    );
+    for _ in 0..20 {
+        ui.key(KeyCode::Char('j'));
+        assert_eq!(line(&ui).1, 0);
+    }
+    ui.key(KeyCode::Char('g'));
+    assert_eq!(line(&ui), (1, 0, 0));
+    for _ in 0..20 {
+        ui.key(KeyCode::Char('k'));
+        assert_eq!(line(&ui).1, 0);
+    }
+
+    // h backs out one level at a time, and then to the history.
+    ui.key(KeyCode::Char('h'));
+    assert_eq!(cursor_row(&ui), hunk(1, 0));
+    ui.key(KeyCode::Char('h'));
+    assert_eq!(
+        cursor_row(&ui),
+        Row::File {
+            sec: Section::Commit,
+            file: 1
+        }
+    );
+    ui.key(KeyCode::Char('h'));
+    assert_eq!(ui.app.focus, tergi::app::Focus::History);
+}
+
+#[test]
+fn esc_backs_out_before_it_opens_the_git_menu() {
+    let s = Scratch::new();
+    s.write("f.txt", "1\n2\n3\n");
+    s.commit_all("init");
+    s.write("f.txt", "1\ntwo\nthree\n");
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(1);
+    ui.key(KeyCode::Char('3'));
+    assert_eq!(cursor_row(&ui), Row::Section(Section::Unstaged));
+    ui.key(KeyCode::Char('j'));
+    ui.key(KeyCode::Char('l'));
+    ui.key(KeyCode::Char('l'));
+    ui.key(KeyCode::Char('v'));
+    ui.key(KeyCode::Char('j'));
+    assert!(ui.app.detail.selection().is_some());
+
+    // The first Esc only ends the selection.
+    ui.key(KeyCode::Esc);
+    assert!(ui.app.detail.selection().is_none());
+    assert!(matches!(cursor_row(&ui), Row::Line { .. }));
+    ui.key(KeyCode::Esc);
+    assert!(matches!(cursor_row(&ui), Row::Hunk { .. }));
+    ui.key(KeyCode::Esc);
+    assert!(matches!(cursor_row(&ui), Row::File { .. }));
+    assert!(ui.app.overlays.is_empty());
+    ui.key(KeyCode::Esc);
+    assert!(
+        matches!(ui.app.overlays.last(), Some(Overlay::Menu(m)) if m.title.as_deref() == Some("Git")),
+        "{}",
+        ui.screen()
+    );
+    ui.key(KeyCode::Esc);
+    assert!(ui.app.overlays.is_empty());
+}
+
+#[test]
+fn moving_by_hunks_opens_folded_files() {
+    let (_s, mut ui) = two_files_two_hunks();
+    ui.key(KeyCode::Char('Z'));
+    assert_eq!(ui.app.detail.collapsed.len(), 2);
+    let first = ui
+        .app
+        .detail
+        .rows
+        .iter()
+        .position(|r| matches!(r, Row::File { file: 0, .. }))
+        .expect("the first file");
+    ui.app.detail_move_to(first, false);
+
+    // l opens the folded file it goes into.
+    ui.key(KeyCode::Char('l'));
+    assert!(matches!(
+        cursor_row(&ui),
+        Row::Hunk {
+            file: 0,
+            hunk: 0,
+            ..
+        }
+    ));
+    ui.key(KeyCode::Char('j'));
+    // So does j when it moves into the next file.
+    ui.key(KeyCode::Char('j'));
+    assert!(matches!(
+        cursor_row(&ui),
+        Row::Hunk {
+            file: 1,
+            hunk: 0,
+            ..
+        }
+    ));
+    assert!(ui.app.detail.collapsed.is_empty());
+
+    // Space folds the file the cursor is in, from any level, and leaves
+    // the cursor on its header.
+    ui.key(KeyCode::Char('l'));
+    ui.key(KeyCode::Char(' '));
+    assert_eq!(
+        cursor_row(&ui),
+        Row::File {
+            sec: Section::Commit,
+            file: 1
+        }
+    );
+    assert_eq!(ui.app.detail.collapsed.len(), 1);
+
+    // Going back over the folded first file opens it too, at its last hunk.
+    ui.app.detail.collapsed.clear();
+    ui.key(KeyCode::Char('Z'));
+    ui.app.detail.collapsed.retain(|(_, p)| p == "a.txt");
+    ui.app.rebuild_doc();
+    let hunk = ui
+        .app
+        .detail
+        .rows
+        .iter()
+        .position(|r| {
+            matches!(
+                r,
+                Row::Hunk {
+                    file: 1,
+                    hunk: 0,
+                    ..
+                }
+            )
+        })
+        .expect("a hunk of the second file");
+    ui.app.detail_move_to(hunk, false);
+    ui.key(KeyCode::Char('k'));
+    assert!(matches!(
+        cursor_row(&ui),
+        Row::Hunk {
+            file: 0,
+            hunk: 1,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn actions_on_the_selection_need_a_dot_first() {
+    let s = repo_with_change();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    ui.select_commit(1);
+    ui.key(KeyCode::Char('2'));
+
+    // On its own, d doesn't drop the commit.
+    ui.key(KeyCode::Char('d'));
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
+    ui.dot('d');
+    assert!(
+        matches!(ui.app.overlays.last(), Some(Overlay::Confirm { .. })),
+        "{}",
+        ui.screen()
+    );
+    ui.key(KeyCode::Esc);
+
+    // Ctrl+J is an item in the menu, so it doesn't move the menu's selection.
+    ui.key(KeyCode::Char('.'));
+    ui.key_with(KeyCode::Char('j'), KeyModifiers::CONTROL);
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
+    ui.wait("the commit to move", |u| u.app.busy.is_none());
 }

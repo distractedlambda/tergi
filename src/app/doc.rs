@@ -39,6 +39,16 @@ impl Source {
     }
 }
 
+/// How deep the keyboard is in the detail pane. j and k move between files
+/// at the top level, between hunks one level in, and between the lines of
+/// one hunk at the bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Depth {
+    Files,
+    Hunks,
+    Lines,
+}
+
 /// A line selection: the section, the file index, and `(hunk, line)` pairs.
 pub type LineSelection = (Section, usize, Vec<(usize, usize)>);
 
@@ -797,6 +807,126 @@ impl Detail {
             }
             _ => return None,
         })
+    }
+
+    /// The level the cursor is at, which follows from the kind of row it
+    /// is on. Rows that aren't stops at any level, such as blank ones,
+    /// count as the file level.
+    pub fn depth(&self) -> Depth {
+        self.depth_of(self.cursor).unwrap_or(Depth::Files)
+    }
+
+    /// The level at which j and k stop on row `i`, if they stop there.
+    pub fn depth_of(&self, i: usize) -> Option<Depth> {
+        match self.rows.get(i)? {
+            // The subject line, and the lines that do something on Enter.
+            Row::Meta(m) => (*m == 0 || self.meta.get(*m).is_some_and(|m| m.click.is_some()))
+                .then_some(Depth::Files),
+            Row::Section(_) | Row::File { .. } => Some(Depth::Files),
+            Row::Hunk { .. } | Row::Notice { .. } => Some(Depth::Hunks),
+            Row::Line { .. } | Row::Split { .. } => Some(Depth::Lines),
+            Row::Blank | Row::Empty(_) => None,
+        }
+    }
+
+    /// The rows the cursor can move over at its level. At the line level
+    /// that's the cursor's hunk, and at the others it's every row.
+    pub fn level_range(&self) -> (usize, usize) {
+        let all = (0, self.rows.len().saturating_sub(1));
+        let hunk_of = |i: usize| match self.rows.get(i) {
+            Some(
+                &Row::Line {
+                    sec, file, hunk, ..
+                }
+                | &Row::Split {
+                    sec, file, hunk, ..
+                },
+            ) => Some((sec, file, hunk)),
+            _ => None,
+        };
+        let Some(h) = hunk_of(self.cursor) else {
+            return all;
+        };
+        let mut lo = self.cursor;
+        while lo > 0 && hunk_of(lo - 1) == Some(h) {
+            lo -= 1;
+        }
+        let mut hi = self.cursor;
+        while hunk_of(hi + 1) == Some(h) {
+            hi += 1;
+        }
+        (lo, hi)
+    }
+
+    /// Where a move at the cursor's level ends up. `to` is the row the move
+    /// aims at. The result is the nearest stop at the same level, looking
+    /// past `to` in the direction of the move first, then back the other
+    /// way. Returns the cursor if there's no other stop.
+    pub fn level_target(&self, to: isize, forward: bool) -> usize {
+        let depth = self.depth();
+        let (lo, hi) = self.level_range();
+        let to = to.clamp(lo as isize, hi as isize) as usize;
+        let stop = |i: &usize| self.depth_of(*i) == Some(depth);
+        let ahead = if forward {
+            (to..=hi).find(stop)
+        } else {
+            (lo..=to).rev().find(stop)
+        };
+        let behind = || {
+            if forward {
+                (lo..to).rev().find(stop)
+            } else {
+                (to + 1..=hi).find(stop)
+            }
+        };
+        ahead.or_else(behind).unwrap_or(self.cursor)
+    }
+
+    /// The first row of `depth` after row `i` that belongs to the same file
+    /// or section, for going into a file or a hunk.
+    pub fn first_inside(&self, i: usize, depth: Depth) -> Option<usize> {
+        let row = self.rows.get(i)?;
+        let inside = |r: &Row| match *row {
+            Row::Section(s) => r.section() == Some(s),
+            Row::File { sec, file } | Row::Notice { sec, file, .. } => {
+                r.file() == Some((sec, file))
+            }
+            Row::Hunk { sec, file, hunk } => match *r {
+                Row::Line {
+                    sec: s,
+                    file: f,
+                    hunk: h,
+                    ..
+                }
+                | Row::Split {
+                    sec: s,
+                    file: f,
+                    hunk: h,
+                    ..
+                } => (s, f, h) == (sec, file, hunk),
+                _ => false,
+            },
+            _ => false,
+        };
+        (i + 1..self.rows.len())
+            .take_while(|&j| inside(&self.rows[j]))
+            .find(|&j| self.depth_of(j) == Some(depth))
+    }
+
+    /// The row one level up from the cursor: its hunk's header from a line,
+    /// or its file's header from a hunk.
+    pub fn parent_row(&self) -> Option<usize> {
+        let want = match *self.rows.get(self.cursor)? {
+            Row::Line {
+                sec, file, hunk, ..
+            }
+            | Row::Split {
+                sec, file, hunk, ..
+            } => Row::Hunk { sec, file, hunk },
+            Row::Hunk { sec, file, .. } | Row::Notice { sec, file, .. } => Row::File { sec, file },
+            _ => return None,
+        };
+        (0..self.cursor).rev().find(|&i| self.rows[i] == want)
     }
 
     /// Move the cursor to the next or previous row matching `pred`.

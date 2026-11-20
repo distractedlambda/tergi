@@ -11,7 +11,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, BorderType, Clear, Widget};
 
-use crate::app::cmd::{ActionDef, Cmd, Overlay, SideKey, SideRow, Unit};
+use crate::app::cmd::{ActionDef, Cmd, Context, Overlay, SideKey, SideRow};
 use crate::app::doc::{Row, Section, Source};
 use crate::app::input::{Target, palette_filter};
 use crate::app::planner::PlanAction;
@@ -65,7 +65,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         }
 
         let a: &App = app;
-        draw_topbar(a, buf, Rect::new(area.x, area.y, area.width, 1), &mut hits);
+        draw_topbar(a, buf, Rect::new(area.x, area.y, area.width, 1));
         if a.repo_state != RepoState::Clean && area.height > 4 {
             draw_banner(
                 a,
@@ -270,7 +270,7 @@ fn splitter(app: &App, buf: &mut Buffer, hits: &mut Hits, which: Splitter, x: u1
     hits.push((r, Target::Splitter(which)));
 }
 
-fn draw_topbar(app: &App, buf: &mut Buffer, r: Rect, hits: &mut Hits) {
+fn draw_topbar(app: &App, buf: &mut Buffer, r: Rect) {
     let t = &app.theme;
     fill(buf, r, t.bar);
     let base = Style::default().bg(t.bar).fg(t.fg);
@@ -327,22 +327,7 @@ fn draw_topbar(app: &App, buf: &mut Buffer, r: Rect, hits: &mut Hits) {
         }
     }
 
-    let buttons = vec![
-        ("⟳ Fetch", Cmd::Fetch, None),
-        ("↓ Pull", Cmd::PullMenu, None),
-        ("↑ Push", Cmd::PushMenu, None),
-        ("Stash", Cmd::StashPush, None),
-        ("⌘ Commands", Cmd::Palette, None),
-    ];
-    let start = buttons_right(
-        app,
-        buf,
-        hits,
-        x + 2,
-        r.right().saturating_sub(1),
-        r.y,
-        buttons,
-    );
+    let start = r.right().saturating_sub(1);
 
     // Activity goes in the middle.
     let spin = SPINNER[(app
@@ -849,25 +834,6 @@ fn draw_detail(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 .fg(if focused { t.accent } else { t.dim })
                 .add_modifier(Modifier::BOLD),
         );
-        let staged = app.workdir.as_ref().map_or(0, |w| w.staged.len());
-        let label = if app.amend { "Amend" } else { "Commit" };
-        let amend_label = if app.amend { "☑ Amend" } else { "☐ Amend" };
-        buttons_right(
-            app,
-            buf,
-            hits,
-            d.x + 1,
-            d.right().saturating_sub(1),
-            label_y,
-            vec![
-                (amend_label, Cmd::ToggleAmend, None),
-                (
-                    label,
-                    Cmd::Commit,
-                    (staged > 0 || app.amend).then_some(t.badge_head),
-                ),
-            ],
-        );
         let m = app.areas.message;
         if !focused {
             // The text was drawn earlier. Give the box a subtle edge.
@@ -923,7 +889,6 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
     let t = &app.theme;
     let det = &app.detail;
     let focused = app.focus == Focus::Detail;
-    let staging = det.source == Source::Workdir;
     let sel = det.selection();
     let g = det.gutter as u16;
     for (i, row) in det
@@ -979,7 +944,7 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 } else {
                     '▾'
                 };
-                let label_end = put(
+                put(
                     buf,
                     a.x + 1,
                     y,
@@ -989,25 +954,6 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                         .bg(bg)
                         .fg(t.fg)
                         .add_modifier(Modifier::BOLD),
-                );
-                let items = match sec {
-                    Section::Staged => {
-                        vec![("Unstage all", Cmd::Unstage(Unit::Section(*sec)), None)]
-                    }
-                    Section::Conflicted => vec![],
-                    _ => vec![
-                        ("Stage all", Cmd::Stage(Unit::Section(*sec)), None),
-                        ("Discard all", Cmd::Discard(Unit::Section(*sec)), None),
-                    ],
-                };
-                buttons_right(
-                    app,
-                    buf,
-                    hits,
-                    label_end + 2,
-                    a.right().saturating_sub(1),
-                    y,
-                    items,
                 );
             }
             Row::File { sec, file } => {
@@ -1036,52 +982,9 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                         .add_modifier(Modifier::BOLD),
                 );
                 let (adds, dels) = f.added_removed();
-                let items: Vec<(&str, Cmd, Option<Color>)> = if staging {
-                    match sec {
-                        Section::Staged => vec![(
-                            "Unstage",
-                            Cmd::Unstage(Unit::File(*sec, f.path().to_owned())),
-                            None,
-                        )],
-                        Section::Conflicted => {
-                            let p = f.path().to_owned();
-                            vec![
-                                ("Ours", Cmd::TakeSide(p.clone(), true), None),
-                                ("Theirs", Cmd::TakeSide(p.clone(), false), None),
-                                ("Resolved", Cmd::MarkResolved(p), None),
-                            ]
-                        }
-                        _ => vec![
-                            (
-                                "Stage",
-                                Cmd::Stage(Unit::File(*sec, f.path().to_owned())),
-                                None,
-                            ),
-                            (
-                                "Discard",
-                                Cmd::Discard(Unit::File(*sec, f.path().to_owned())),
-                                None,
-                            ),
-                        ],
-                    }
-                } else {
-                    Vec::new()
-                };
-                // Keep room for the counts and the start of the path.
                 let counts = format!("+{adds} −{dels}");
-                let room =
-                    width(&counts, 4) as u16 + 2 + (width(&f.display_path(), 4) as u16).min(16);
-                let bx = buttons_right(
-                    app,
-                    buf,
-                    hits,
-                    x + 2 + room,
-                    a.right().saturating_sub(1),
-                    y,
-                    items,
-                );
                 let cw = width(&counts, 4) as u16;
-                let cx = bx.saturating_sub(cw + 2);
+                let cx = a.right().saturating_sub(cw + 1);
                 if !f.binary {
                     let ax = put(buf, cx, y, &format!("+{adds}"), cw, st.fg(t.add_fg));
                     put(buf, ax + 1, y, &format!("−{dels}"), cw, st.fg(t.del_fg));
@@ -1119,69 +1022,13 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 };
                 let bg = if is_cursor { t.sel } else { t.hunk_bg };
                 fill(buf, rr, bg);
-                let items: Vec<(&str, Cmd, Option<Color>)> =
-                    if staging && *sec != Section::Conflicted {
-                        let lines =
-                            det.selected_lines(|s| app.section_files(s))
-                                .filter(|(s, f, l)| {
-                                    s == sec && f == file && l.iter().any(|(hh, _)| hh == hunk)
-                                });
-                        match (sec, lines) {
-                            (Section::Staged, Some((s, _, l))) => vec![(
-                                "Unstage lines",
-                                Cmd::Unstage(Unit::Lines(s, f.clone(), l)),
-                                None,
-                            )],
-                            (Section::Staged, None) => vec![(
-                                "Unstage hunk",
-                                Cmd::Unstage(Unit::Hunk(*sec, f.clone(), *hunk)),
-                                None,
-                            )],
-                            (_, Some((s, _, l))) => vec![
-                                (
-                                    "Stage lines",
-                                    Cmd::Stage(Unit::Lines(s, f.clone(), l.clone())),
-                                    None,
-                                ),
-                                (
-                                    "Discard lines",
-                                    Cmd::Discard(Unit::Lines(s, f.clone(), l)),
-                                    None,
-                                ),
-                            ],
-                            (_, None) => vec![
-                                (
-                                    "Stage hunk",
-                                    Cmd::Stage(Unit::Hunk(*sec, f.clone(), *hunk)),
-                                    None,
-                                ),
-                                (
-                                    "Discard hunk",
-                                    Cmd::Discard(Unit::Hunk(*sec, f.clone(), *hunk)),
-                                    None,
-                                ),
-                            ],
-                        }
-                    } else {
-                        Vec::new()
-                    };
                 let header = h.header();
-                let room = (width(&header, 4) as u16).min(18);
-                let bx = buttons_right(
-                    app,
-                    buf,
-                    hits,
-                    a.x + 2 + room,
-                    a.right().saturating_sub(1),
-                    y,
-                    items,
-                );
                 put(
                     buf,
                     a.x + 1,
                     y,
                     &header,
-                    bx.saturating_sub(a.x + 2),
+                    a.width.saturating_sub(2),
                     Style::default().bg(bg).fg(t.dim),
                 );
             }
@@ -1509,17 +1356,15 @@ fn draw_planner(app: &App, buf: &mut Buffer, hits: &mut Hits) {
         }
     }
     let by = a.bottom().saturating_sub(1);
-    buttons_right(
-        app,
+    let help = "enter starts the rebase, esc cancels";
+    let w = (width(help, 4) as u16).min(a.width.saturating_sub(2));
+    put(
         buf,
-        hits,
-        a.x + 1,
-        a.right().saturating_sub(1),
+        a.right().saturating_sub(w + 1),
         by,
-        vec![
-            ("Cancel", Cmd::PlanCancel, None),
-            ("Start rebase", Cmd::PlanStart, Some(t.badge_head)),
-        ],
+        &truncate(help, usize::from(w)),
+        w,
+        Style::default().fg(t.dim),
     );
 }
 
@@ -1549,15 +1394,31 @@ fn draw_bottom(app: &App, buf: &mut Buffer, r: Rect, hits: &mut Hits) {
         .into_iter()
         .filter(|a| a.hint && a.enabled)
         .collect();
-    actions.extend(app.global_actions().into_iter().filter(|a| a.hint));
-    let mut x = r.x + 1;
-    for a in actions {
-        let Some(k) = a.key else { continue };
-        let key = k.label();
-        let w = (width(&key, 4) + width(&a.label, 4) + 1) as u16;
-        if x + w + 2 > r.right() {
-            break;
-        }
+    actions.extend(app.repo_actions().into_iter().filter(|a| a.hint));
+    // The keys that work everywhere go at the right end, so that the
+    // pane's hints can't push them off. In the message box these keys type
+    // text, and in the planner Esc cancels it.
+    let ctx = app.context();
+    let global: Vec<ActionDef> = app
+        .global_actions()
+        .into_iter()
+        .filter(|a| {
+            a.hint
+                && match ctx {
+                    Context::Message => false,
+                    Context::Planner => a.cmd == Cmd::Help,
+                    _ => true,
+                }
+        })
+        .collect();
+    let hint_width = |a: &ActionDef| {
+        a.keys_label()
+            .map_or(0, |k| (width(&k, 4) + width(&a.label, 4) + 1) as u16)
+    };
+    let global_width: u16 = global.iter().map(|a| hint_width(a) + 3).sum();
+    let mut draw_hint = |x: u16, a: ActionDef| {
+        let Some(key) = a.keys_label() else { return };
+        let w = hint_width(&a);
         let rr = Rect::new(x, r.y, w, 1);
         let bg = if hovered(app, rr) {
             t.button_hover
@@ -1567,7 +1428,39 @@ fn draw_bottom(app: &App, buf: &mut Buffer, r: Rect, hits: &mut Hits) {
         let nx = put(buf, x, r.y, &key, w, base.bg(bg).fg(t.accent));
         put(buf, nx + 1, r.y, &a.label, w, base.bg(bg));
         hits.push((rr, Target::Button(a.cmd)));
+    };
+    let mut right = r.right();
+    if r.x + 1 + global_width + 2 <= r.right() {
+        right = r.right().saturating_sub(global_width);
+        let mut x = right + 2;
+        for a in global {
+            let w = hint_width(&a);
+            draw_hint(x, a);
+            x += w + 3;
+        }
+    }
+    let mut x = r.x + 1;
+    for a in actions {
+        let w = hint_width(&a);
+        if w == 0 {
+            continue;
+        }
+        if x + w + 2 > right {
+            break;
+        }
+        draw_hint(x, a);
         x += w + 3;
+    }
+}
+
+/// The key shown next to a menu item. In the help list that's everything
+/// the user presses from the pane, and in other menus it's the key that
+/// works in the menu.
+fn menu_key(m: &crate::app::cmd::Menu, a: &ActionDef) -> Option<String> {
+    if m.help {
+        a.keys_label()
+    } else {
+        a.key.map(|k| k.label())
     }
 }
 
@@ -1631,8 +1524,8 @@ fn draw_overlays(app: &mut App, buf: &mut Buffer, area: Rect, hits: &mut Hits) -
     for (oi, ov) in app.overlays.iter_mut().enumerate() {
         let top = oi + 1 == n;
         if top {
-            // Only the topmost overlay takes clicks. Everything under it,
-            // including the top bar buttons, is out of reach while it's open.
+            // Only the topmost overlay takes clicks. Everything under it is
+            // out of reach while it's open.
             hits.clear();
         }
         match ov {
@@ -1640,7 +1533,7 @@ fn draw_overlays(app: &mut App, buf: &mut Buffer, area: Rect, hits: &mut Hits) -
                 let label_w = m
                     .items
                     .iter()
-                    .map(|a| width(&a.label, 4) + a.key.map_or(0, |k| k.label().len() + 3))
+                    .map(|a| width(&a.label, 4) + menu_key(m, a).map_or(0, |k| width(&k, 4) + 3))
                     .max()
                     .unwrap_or(10);
                 let w = (label_w as u16 + 4)
@@ -1691,8 +1584,7 @@ fn draw_overlays(app: &mut App, buf: &mut Buffer, area: Rect, hits: &mut Hits) -
                         ir.width.saturating_sub(2),
                         Style::default().bg(bg).fg(fg),
                     );
-                    if let Some(k) = a.key {
-                        let kl = k.label();
+                    if let Some(kl) = menu_key(m, a) {
                         put(
                             buf,
                             ir.right().saturating_sub(kl.len() as u16 + 1),
@@ -1861,8 +1753,7 @@ fn draw_overlays(app: &mut App, buf: &mut Buffer, area: Rect, hits: &mut Hits) -
                         ir.width.saturating_sub(14),
                         Style::default().bg(bg).fg(t.fg),
                     );
-                    if let Some(k) = a.key {
-                        let kl = k.label();
+                    if let Some(kl) = a.keys_label() {
                         put(
                             buf,
                             ir.right().saturating_sub(kl.len() as u16 + 1),

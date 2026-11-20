@@ -11,7 +11,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 
-use tergi::app::cmd::Cmd;
+use tergi::app::cmd::{Cmd, Overlay};
 use tergi::app::doc::Row;
 use tergi::app::input::Target;
 use tergi::app::{App, AppEvent, Repo};
@@ -173,6 +173,31 @@ impl Ui {
     pub fn key_with(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         self.handle(AppEvent::Input(Event::Key(KeyEvent::new(code, modifiers))));
         self.draw();
+    }
+
+    /// Press `.` and then `c` in the menu it opens for the selection.
+    pub fn dot(&mut self, c: char) {
+        self.key(KeyCode::Char('.'));
+        assert!(
+            matches!(self.app.overlays.last(), Some(Overlay::Menu(_))),
+            "`.` opened no menu\n{}",
+            self.screen()
+        );
+        self.key(KeyCode::Char(c));
+    }
+
+    /// Press Esc until the git menu opens, and then `c` in it. In the
+    /// detail pane the first presses may only back out a level.
+    pub fn git(&mut self, c: char) {
+        let open = |u: &Ui| matches!(u.app.overlays.last(), Some(Overlay::Menu(m)) if m.title.as_deref() == Some("Git"));
+        for _ in 0..4 {
+            if open(self) {
+                break;
+            }
+            self.key(KeyCode::Esc);
+        }
+        assert!(open(self), "Esc opened no git menu\n{}", self.screen());
+        self.key(KeyCode::Char(c));
     }
 
     /// Run a command from the command palette.

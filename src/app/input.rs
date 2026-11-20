@@ -7,8 +7,8 @@ use crossterm::event::{
 };
 use ratatui::layout::Rect;
 
-use super::cmd::{ActionDef, Cmd, Overlay, SideKey, SideRow};
-use super::doc::{Row, Source};
+use super::cmd::{ActionDef, Cmd, Overlay, SideKey, SideRow, Via};
+use super::doc::{Depth, Row, Source};
 use super::planner::PlanAction;
 use super::{App, Drag, Focus, HISTORY_ROW_HEIGHT, Splitter};
 use crate::ui::textarea::Outcome;
@@ -79,7 +79,10 @@ impl App {
                 return;
             }
             if let Some(a) = find_action(&self.global_actions(), &k)
-                && matches!(a, Cmd::Help | Cmd::Quit | Cmd::Palette | Cmd::CommandLog)
+                && matches!(
+                    a,
+                    Cmd::Help | Cmd::Quit | Cmd::Palette | Cmd::CommandLog | Cmd::ContextMenu
+                )
             {
                 self.run_cmd(a);
             }
@@ -129,6 +132,7 @@ impl App {
     fn nav_key(&mut self, k: KeyEvent) -> bool {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let page = |h: u16| usize::from(h.max(2)) - 1;
+        #[derive(Clone, Copy)]
         enum Move {
             By(isize),
             Top,
@@ -137,11 +141,7 @@ impl App {
         let mv = match k.code {
             KeyCode::Char('j') | KeyCode::Down if !ctrl => Some(Move::By(1)),
             KeyCode::Char('k') | KeyCode::Up if !ctrl => Some(Move::By(-1)),
-            KeyCode::Char('g') | KeyCode::Home
-                if !ctrl && self.focus != Focus::Sidebar || k.code == KeyCode::Home =>
-            {
-                Some(Move::Top)
-            }
+            KeyCode::Char('g') | KeyCode::Home if !ctrl => Some(Move::Top),
             KeyCode::Char('G') | KeyCode::End => Some(Move::Bottom),
             KeyCode::PageDown => Some(Move::By(1000)),
             KeyCode::PageUp => Some(Move::By(-1000)),
@@ -149,6 +149,31 @@ impl App {
             KeyCode::Char('u') if ctrl => Some(Move::By(-500)),
             _ => None,
         };
+        if let Some(mv) = mv
+            && matches!(self.focus, Focus::Detail | Focus::Message)
+        {
+            let p = page(self.areas.doc.height) as isize;
+            let cur = self.detail.cursor as isize;
+            let (lo, hi) = self.detail.level_range();
+            let extend = k.modifiers.contains(KeyModifiers::SHIFT);
+            let target = match mv {
+                Move::By(1) if self.detail.depth() == Depth::Hunks => {
+                    return self.step_hunk(true);
+                }
+                Move::By(-1) if self.detail.depth() == Depth::Hunks => {
+                    return self.step_hunk(false);
+                }
+                Move::Top => self.detail.level_target(lo as isize, true),
+                Move::Bottom => self.detail.level_target(hi as isize, false),
+                Move::By(1000) => self.detail.level_target(cur + p, true),
+                Move::By(-1000) => self.detail.level_target(cur - p, false),
+                Move::By(500) => self.detail.level_target(cur + p / 2, true),
+                Move::By(-500) => self.detail.level_target(cur - p / 2, false),
+                Move::By(d) => self.detail.level_target(cur + d, d > 0),
+            };
+            self.detail_move_to(target, extend && self.detail.depth() == Depth::Lines);
+            return true;
+        }
         if let Some(mv) = mv {
             let (p, len, cur) = match self.focus {
                 Focus::Sidebar => (
@@ -210,10 +235,6 @@ impl App {
                 }
                 true
             }
-            (Focus::Detail, KeyCode::Char('h')) => {
-                self.focus = Focus::History;
-                true
-            }
             (Focus::Detail, KeyCode::Left) => {
                 self.detail
                     .hscroll_by(self.detail.cursor, -8, self.areas.doc.width);
@@ -224,12 +245,18 @@ impl App {
                     .hscroll_by(self.detail.cursor, 8, self.areas.doc.width);
                 true
             }
-            (Focus::Detail, KeyCode::Esc) => {
+            // Esc finishes a line selection, then backs out a level. At the
+            // file level it falls through and opens the git menu.
+            (Focus::Detail, KeyCode::Esc) if self.detail.anchor.is_some() => {
                 self.detail.anchor = None;
                 true
             }
+            (Focus::Detail, KeyCode::Esc) if self.detail.depth() != Depth::Files => {
+                self.ascend();
+                true
+            }
             (Focus::Detail, KeyCode::Enter) => {
-                self.activate_doc_row(self.detail.cursor);
+                self.descend(true);
                 true
             }
             _ => false,
@@ -246,6 +273,129 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Move to the next or previous hunk, in any file. Folded files on the
+    /// way are unfolded, so that their hunks can be reached.
+    fn step_hunk(&mut self, forward: bool) -> bool {
+        self.detail.anchor = None;
+        loop {
+            let d = &self.detail;
+            let at = |i: usize| match d.rows[i] {
+                Row::Hunk { .. } | Row::Notice { .. } => Some(Ok(i)),
+                Row::File { sec, file } => self
+                    .section_files(sec)
+                    .get(file)
+                    .map(|f| (sec, f.path().to_owned()))
+                    .filter(|key| d.collapsed.contains(key))
+                    .map(Err),
+                _ => None,
+            };
+            let found = if forward {
+                (d.cursor + 1..d.rows.len()).find_map(at)
+            } else {
+                (0..d.cursor).rev().find_map(at)
+            };
+            match found {
+                Some(Ok(i)) => {
+                    self.detail.cursor = i;
+                    break;
+                }
+                // The rebuild keeps the cursor on its row, so the next
+                // search starts from the same place and finds the hunks
+                // of the file that just opened.
+                Some(Err(key)) => {
+                    self.detail.collapsed.remove(&key);
+                    self.rebuild_doc();
+                }
+                None => break,
+            }
+        }
+        self.ensure_doc_visible();
+        true
+    }
+
+    /// Go one level into the detail pane. `enter` is for the Enter key,
+    /// which also follows links in the commit details and loads diffs that
+    /// were too large to show.
+    pub fn descend(&mut self, enter: bool) {
+        let i = self.detail.cursor;
+        match self.detail.rows.get(i).cloned() {
+            Some(Row::Meta(m)) if enter => {
+                if let Some(c) = self.detail.meta.get(m).and_then(|m| m.click.clone()) {
+                    self.run_cmd(c);
+                }
+            }
+            Some(Row::Notice { .. }) if enter => self.run_cmd(Cmd::LoadFull),
+            Some(Row::Section(s)) => {
+                if self.detail.collapsed_sections.remove(&s) {
+                    self.rebuild_doc();
+                }
+                self.step_hunk(true);
+            }
+            Some(Row::File { sec, file }) => {
+                if let Some(f) = self.section_files(sec).get(file)
+                    && self.detail.collapsed.remove(&(sec, f.path().to_owned()))
+                {
+                    self.rebuild_doc();
+                }
+                if let Some(j) = self.detail.first_inside(self.detail.cursor, Depth::Hunks) {
+                    self.detail.cursor = j;
+                }
+            }
+            Some(Row::Hunk { .. }) => {
+                if let Some(j) = self.detail.first_inside(i, Depth::Lines) {
+                    self.detail.cursor = j;
+                    let (_, hi) = self.detail.level_range();
+                    if let Some(c) = (j..=hi).find(|&r| self.changed_row(r)) {
+                        self.detail.cursor = c;
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.ensure_doc_visible();
+    }
+
+    /// Go one level out of the detail pane, or back to the history from
+    /// the files.
+    pub fn ascend(&mut self) {
+        self.detail.anchor = None;
+        if self.detail.depth() == Depth::Files {
+            self.focus = Focus::History;
+        } else if let Some(i) = self.detail.parent_row() {
+            self.detail.cursor = i;
+            self.ensure_doc_visible();
+        }
+    }
+
+    /// Whether row `i` shows an added or removed line.
+    fn changed_row(&self, i: usize) -> bool {
+        let line = |sec: super::doc::Section, file: usize, hunk: usize, line: Option<usize>| {
+            line.is_some_and(|l| {
+                self.section_files(sec)
+                    .get(file)
+                    .and_then(|f| f.hunks.get(hunk))
+                    .and_then(|h| h.lines.get(l))
+                    .is_some_and(|l| l.kind != crate::git::diff::LineKind::Context)
+            })
+        };
+        match self.detail.rows.get(i) {
+            Some(&Row::Line {
+                sec,
+                file,
+                hunk,
+                line: l,
+            }) => line(sec, file, hunk, Some(l)),
+            Some(&Row::Split {
+                sec,
+                file,
+                hunk,
+                left,
+                right,
+            }) => line(sec, file, hunk, left) || line(sec, file, hunk, right),
+            _ => false,
         }
     }
 
@@ -321,9 +471,14 @@ impl App {
         let Some(top) = self.overlays.last_mut() else {
             return;
         };
-        let up = matches!(k.code, KeyCode::Up | KeyCode::Char('k'))
+        // Ctrl+K and Ctrl+J are menu items in the history, so they don't
+        // move through menus.
+        let plain = !k.modifiers.contains(KeyModifiers::CONTROL);
+        let up = matches!(k.code, KeyCode::Up)
+            || (plain && k.code == KeyCode::Char('k'))
             || (k.code == KeyCode::Char('p') && k.modifiers == KeyModifiers::CONTROL);
-        let down = matches!(k.code, KeyCode::Down | KeyCode::Char('j'))
+        let down = matches!(k.code, KeyCode::Down)
+            || (plain && k.code == KeyCode::Char('j'))
             || (k.code == KeyCode::Char('n') && k.modifiers == KeyModifiers::CONTROL);
         match top {
             Overlay::Menu(m) => {
@@ -354,6 +509,7 @@ impl App {
                 } else if let Some(a) = m
                     .items
                     .iter()
+                    .filter(|_| !m.help)
                     .find(|a| a.enabled && a.key.is_some_and(|key| key.matches(&k)))
                 {
                     let cmd = a.cmd.clone();
@@ -736,6 +892,7 @@ impl App {
                 label: a.name().to_string(),
                 cmd: Cmd::PlanSet(*a),
                 enabled: true,
+                via: super::cmd::Via::Direct,
                 menu: true,
                 hint: false,
             })
@@ -747,6 +904,7 @@ impl App {
             anchor: Some((x, y)),
             scroll: 0,
             preview: None,
+            help: false,
         }));
     }
 
@@ -841,10 +999,13 @@ impl App {
     }
 }
 
+/// The command for a key pressed in a pane. Only actions whose keys work
+/// by themselves count. The others need `.` or Esc first, which open a
+/// menu where their keys work.
 fn find_action(actions: &[ActionDef], k: &KeyEvent) -> Option<Cmd> {
     actions
         .iter()
-        .find(|a| a.enabled && a.key.is_some_and(|key| key.matches(k)))
+        .find(|a| a.enabled && a.via == Via::Direct && a.key.is_some_and(|key| key.matches(k)))
         .map(|a| a.cmd.clone())
 }
 
