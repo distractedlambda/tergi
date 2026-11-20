@@ -145,8 +145,8 @@ isn't, because a file folded in one commit would stay folded in every
 other commit that touches it. So `set_source` forgets the folds for
 commits whenever the pane switches to another commit.
 
-The first time a file is seen, it starts folded if its diff has more
-than 400 lines, or if a commit changes more than 40 files.
+The first time a file is seen, it starts folded if a commit changes
+more than 40 files. Large diffs aren't folded, however long they are.
 
 ### Keeping the cursor in place
 

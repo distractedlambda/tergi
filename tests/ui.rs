@@ -340,10 +340,13 @@ fn folds_do_not_carry_over_to_other_commits() {
             .count()
     };
 
-    // The big diff starts out folded.
+    // A long diff isn't folded until the user folds it.
     ui.select_commit(2);
+    assert_eq!(hunks(&ui), 1);
+    ui.key(KeyCode::Char('3'));
+    ui.key(KeyCode::Char('Z'));
     assert_eq!(hunks(&ui), 0);
-    // The small diff of the same file in another commit doesn't.
+    // The diff of the same file in another commit isn't folded.
     ui.select_commit(1);
     assert_eq!(hunks(&ui), 1);
 }

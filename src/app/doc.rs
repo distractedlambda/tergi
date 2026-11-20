@@ -629,7 +629,7 @@ impl Detail {
         let many = files.len() > 40;
         for (fi, f) in files.iter().enumerate() {
             let key = (sec, f.path().to_owned());
-            if self.seen.insert(key.clone()) && (f.line_count() > 400 || (many && !staging)) {
+            if self.seen.insert(key.clone()) && many && !staging {
                 self.collapsed.insert(key.clone());
             }
             self.rows.push(Row::File { sec, file: fi });
