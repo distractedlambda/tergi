@@ -35,7 +35,7 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// How long a scroll on one axis blocks scrolling on the other. See
 /// `scroll_axis_free`.
-pub const SCROLL_LOCK: Duration = Duration::from_millis(200);
+pub const SCROLL_LOCK: Duration = Duration::from_millis(100);
 
 impl App {
     pub fn handle_input(&mut self, ev: Event) {
