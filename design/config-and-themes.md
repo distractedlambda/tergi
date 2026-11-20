@@ -110,8 +110,9 @@ token that the lexers find (see `diffs.md`). Operators and punctuation
 can have no color, which leaves them in the text color. These colors
 are written out by hand. They come from the scheme's TextMate theme,
 the one bat and Sublime Text use. Each kind has the color that theme
-gives the scope that comes closest, such as `entity.name.function` for
-functions or `constant.character.escape` for escapes.
+gives the scope that comes closest, such as `constant.character.escape`
+for escapes. A `Syntax` also has the color of `entity.name.function`.
+No token gets it, but it helps set the colors for identifiers.
 
 A palette is a `Palette`: a background, a few surface shades, text in
 three strengths, an accent, red, yellow, green and magenta, and eight

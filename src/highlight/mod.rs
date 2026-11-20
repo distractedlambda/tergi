@@ -42,8 +42,6 @@ pub enum Kind {
     Constant,
     Keyword,
     Type,
-    Function,
-    Macro,
     Attribute,
     Lifetime,
     Operator,
