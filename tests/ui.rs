@@ -1272,7 +1272,7 @@ fn branches_and_remotes_whose_names_are_not_utf8() {
 }
 
 #[test]
-fn force_push_only_pushes_the_branch_it_asked_about() {
+fn force_push_only_pushes_the_branch_the_menu_named() {
     let remote = tempfile::tempdir().expect("tempdir");
     let s = repo_with_change();
     s.sh(&["stash", "-q"]);
@@ -1297,17 +1297,15 @@ fn force_push_only_pushes_the_branch_it_asked_about() {
     let mut ui = Ui::open(&s);
     ui.wait_loaded(4);
     ui.git('P');
-    ui.key(KeyCode::Char('f'));
-    match ui.app.overlays.last() {
-        Some(Overlay::Confirm { body, .. }) => {
-            assert!(body.contains("force pushes main"), "{body}");
-        }
-        _ => panic!("no dialog\n{}", ui.screen()),
-    }
+    assert!(
+        matches!(ui.app.overlays.last(), Some(Overlay::Menu(m)) if m.title.as_deref() == Some("Push main")),
+        "no menu\n{}",
+        ui.screen()
+    );
 
-    // Another branch gets checked out while the dialog is open.
+    // Another branch gets checked out while the menu is open.
     s.sh(&["checkout", "-q", "other"]);
-    ui.key(KeyCode::Char('y'));
+    ui.key(KeyCode::Char('f'));
     ui.settle();
     match ui.app.overlays.last() {
         Some(Overlay::Message {

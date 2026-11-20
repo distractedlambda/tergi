@@ -145,7 +145,7 @@ Push needs some care. Without a refspec, git pushes whatever is checked
 out when it runs, and it respects settings like `remote.pushDefault` and
 `branch.<name>.pushRemote`. We want to keep those settings, so we leave
 the refspec out. But the user chose to push a particular branch, and
-the confirmation for a force push names it. So the `Push` command
+the push menu names it. So the `Push` command
 carries the branch name, and the task checks that the branch is still
 checked out before it runs git. If it isn't, nothing is pushed.
 
@@ -187,9 +187,9 @@ works. The app suspends while it runs (see `background-work.md`).
 
 ## Tests
 
-- `force_push_only_pushes_the_branch_it_asked_about` in `tests/ui.rs`
-  checks that a force push confirmed for one branch doesn't push another
-  one that was checked out in the meantime.
+- `force_push_only_pushes_the_branch_the_menu_named` in `tests/ui.rs`
+  checks that a force push chosen from the menu for one branch doesn't
+  push another one that was checked out in the meantime.
 - `src/git/cli.rs` has unit tests for cleaning up progress output, and
   for shell quoting. The quoting test runs the quoted words through `sh`
   and `bash --posix` and checks that they come back unchanged. Some of

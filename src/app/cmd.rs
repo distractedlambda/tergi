@@ -1236,16 +1236,6 @@ impl App {
                 "Everything done since the operation started will be undone.".into(),
                 "Abort",
             ),
-            Cmd::Push {
-                branch,
-                force: true,
-            } => s(
-                "Force push?",
-                format!(
-                    "This force pushes {branch}. Commits on the remote that you don't have will be lost. tergi uses --force-with-lease, which refuses if the remote changed since you last fetched."
-                ),
-                "Force push",
-            ),
             Cmd::CommitAll => s(
                 "Nothing is staged",
                 "Stage all changes and commit them?".into(),

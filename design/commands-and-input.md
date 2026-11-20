@@ -94,10 +94,9 @@ entry and palette entry then all come from that one place.
 Commands that can lose work ask first. `run_cmd` calls `confirm_for`,
 which returns a title, a message and a button label for commands such as
 discarding changes, dropping a commit, a hard reset, deleting a branch,
-tag or stash, aborting a rebase and force pushing. If it returns one,
-`run_cmd` opens a `Confirm` dialog whose button runs
-`Cmd::Confirmed(the command)`, and `run_cmd` runs that one without
-asking again.
+tag or stash, and aborting a rebase. If it returns one, `run_cmd` opens
+a `Confirm` dialog whose button runs `Cmd::Confirmed(the command)`, and
+`run_cmd` runs that one without asking again.
 
 The message names what will be lost, such as the files a discard will
 throw away. Some commands are adjusted before the dialog opens, so the
