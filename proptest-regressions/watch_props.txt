@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 180d7240a835f67b55f1ce3876146de3dfede698b40132cc3779640c435eb420 # shrinks to case = Case { setup: [], bursts: [[Git { main: false, op: Clean }], [Ignore(Root, [false, false, false, false, false, false])], [Write { dir: Some(Index(10540996613548315210)), file: Index(0), content: Index(52865) }]], reftable: false, worktree: false, quiet: 10, settings: Settings([("diff.noprefix", "true"), ("status.showUntrackedFiles", "no"), ("status.renames", "false"), ("apply.whitespace", "fix"), ("rebase.updateRefs", "true")]) }
