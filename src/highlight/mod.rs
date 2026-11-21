@@ -22,6 +22,7 @@ mod rust;
 mod shrubbery;
 mod toml;
 mod yaml;
+mod zig;
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -129,6 +130,7 @@ pub enum Language {
     Scribble,
     Toml,
     Yaml,
+    Zig,
 }
 
 impl Language {
@@ -173,6 +175,8 @@ impl Language {
             "scrbl" => Some(Language::Scribble),
             "toml" => Some(Language::Toml),
             "yaml" | "yml" => Some(Language::Yaml),
+            // `.zon` files, such as `build.zig.zon`, hold Zig values.
+            "zig" | "zon" => Some(Language::Zig),
             _ => None,
         }
     }
@@ -192,6 +196,7 @@ impl Language {
             Language::Rust => rust::lex(text, &mut out),
             Language::Toml => toml::lex(text, &mut out),
             Language::Yaml => yaml::lex(text, &mut out),
+            Language::Zig => zig::lex(text, &mut out),
         }
         out
     }
@@ -396,6 +401,7 @@ mod tests {
         "a.scrbl",
         "a.toml",
         "a.yaml",
+        "a.zig",
     ];
 
     /// A line made of pieces that start or end strings, comments and
@@ -479,6 +485,8 @@ mod tests {
         pieces.extend([
             "\"a\": ", "\"a\"", "\\u00e9", "-1.5e3", "01", "null", "[1, 2]",
         ]);
+        // Pieces of Zig, such as multiline strings and builtins.
+        pieces.extend(["\\\\", "@import", "@\"", "///", ".*", ".?", "0x1p-2"]);
         // Pieces of gitignore patterns.
         pieces.extend(["!", "**/", "?", "[!a-]", "[[:alpha:]]", "\\#"]);
         // Lines that choose how the rest of a Racket file is read.
@@ -581,6 +589,8 @@ mod tests {
         assert_eq!(Language::for_path("a/b.json"), Some(Language::Json));
         assert_eq!(Language::for_path("tsconfig.jsonc"), Some(Language::Json));
         assert_eq!(Language::for_path("x/flake.lock"), Some(Language::Json));
+        assert_eq!(Language::for_path("src/a.zig"), Some(Language::Zig));
+        assert_eq!(Language::for_path("build.zig.zon"), Some(Language::Zig));
         assert_eq!(Language::for_path("a.lock"), None);
         assert_eq!(Language::for_path("a.b/c"), None);
         assert_eq!(Language::for_path("rs"), None);

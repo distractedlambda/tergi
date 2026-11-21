@@ -270,7 +270,8 @@ Each language has its own lexer, written with Logos and kept in
 `cmake.rs` for CMake, `javascript.rs` for JavaScript, `json.rs` for
 JSON, `rust.rs` for Rust, `racket.rs` for Racket and Scribble,
 `shrubbery.rs` for Rhombus, `toml.rs` for TOML, `yaml.rs` for YAML,
-`markdown.rs` for Markdown, and `gitignore.rs` for `.gitignore` files.
+`zig.rs` for Zig, `markdown.rs` for Markdown, and `gitignore.rs` for
+`.gitignore` files.
 A lexer turns text into `Tokens`: byte ranges, each with a `Kind` such as `Comment`,
 `Keyword` or `Escape`. Plain text has no token. An identifier that gets
 no other color is an `Identifier` token, which gets a color from its
@@ -762,6 +763,43 @@ isn't a space, a bracket or a quote is one plain word, so `truex` and
 `01` aren't partly colored. That includes the extra values of JSON5,
 such as `NaN` and `0x1F`.
 
+### Zig
+
+`zig.rs` follows the tokenizer in Zig's standard library,
+`lib/std/zig/tokenizer.zig`. Files ending in `.zig` are Zig, and so
+are `.zon` files such as `build.zig.zon`, which hold Zig values.
+
+Zig is easy to lex. It has no block comments, and no string can go on
+to the next line. A multiline string is a run of lines that each start
+with `\\`, and each of those lines gets the string color on its own.
+So a line's colors never depend on the lines around it, and a hunk
+gets the same colors whether we have the full text or not.
+
+Comments, including doc comments that start with `///` or `//!`, get
+the comment color. Strings and characters get the string color, and
+escapes such as `\n`, `\x7f` and `\u{1F600}` get the escape color. A
+backslash before any other character is plain string. A string without
+its closing quote ends with its line, as it does in the tokenizer.
+
+Keywords and builtins such as `@import` get the keyword color. Nobody
+can define a builtin, so they are part of the language like keywords.
+`true`, `false`, `null` and `undefined` are identifiers to the
+tokenizer, but no declaration can have those names, so they get the
+constant color. Every other name is an identifier, including types
+such as `u8` and quoted names such as `@"with spaces"`. Identifiers are
+ASCII only in Zig. Older versions of Zig had `async`, `await` and
+`usingnamespace` as keywords, but they are names now. The `Io`
+interface has methods called `async` and `await`, so they stay plain.
+
+The tokenizer reads a number loosely and leaves checking it to the
+compiler. After the first digit it takes any letters, digits and
+underscores, a sign right after `e`, `E`, `p` or `P`, and one period
+that has a letter or digit after it. The lexer reads numbers the same
+way, so `0x1.8p+3` is one number, and `0..2` is `0`, `..` and `2`.
+Brackets, `,`, `;`, `:` and `.` get the punctuation color. Other
+symbols, such as `.*`, `?` and `+%=`, get the operator color. To the
+tokenizer, `.?` is a `.` and a `?`, so it gets both colors.
+
 ### Rainbow identifiers
 
 With `rainbow_identifiers` on, which is the default, each `Identifier`
@@ -772,7 +810,7 @@ uses the hash to pick one of the 16 colors in `Theme::identifiers`.
 The lexers only mark identifiers that get no other color, so keywords,
 and words such as `AND` in a CMake `if`, keep their usual colors.
 
-The C, C++, CMake, JavaScript, Rust, Racket, Scribble and Rhombus
+The C, C++, CMake, JavaScript, Rust, Zig, Racket, Scribble and Rhombus
 lexers mark identifiers. TOML, YAML, JSON, Markdown and gitignore have
 nothing that is really a name in code, so they don't.
 
@@ -854,6 +892,13 @@ leave that column blank.
 - `src/highlight/rust.rs` has examples for each kind of Rust token,
   such as nested comments, raw strings, escapes, and characters next to
   lifetimes.
+- `src/highlight/zig.rs` has examples for each kind of Zig token, such
+  as multiline strings, quoted identifiers, escapes, and numbers that
+  only the compiler rejects. We also ran the tokenizer from Zig 0.17.1
+  over the 887 `.zig` files in its own `lib` directory, and checked the
+  color of each byte and where each identifier starts and ends. The
+  lexer agreed with it on all of them. The dev image has no Zig, so the
+  tests in the repository use fixed examples instead.
 - `src/highlight/racket.rs` has examples for each kind of Racket token,
   such as `#;` comments, here strings, characters, and atoms that are
   numbers and atoms that aren't. It also has examples of @-forms in
