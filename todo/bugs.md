@@ -51,3 +51,22 @@ The cause is in `nav_key` in `src/app/input.rs`. It treats Shift with
 any movement key as extending the selection. Crossterm reports an
 uppercase letter with the Shift modifier, so `G` counts too. The
 history only extends with Shift for keys that aren't letters.
+
+## Changes in a nested repository that lost its `.git` folder
+
+On Linux, the watcher doesn't watch nested repositories. When the
+`.git` folder of one is deleted, the folder around it becomes an
+ordinary untracked folder, but the watcher never starts watching it.
+Changes in it go unnoticed until something else makes the watcher walk
+the tree, such as a change to which folders git ignores.
+
+To see it, make a folder `sub` in the working tree and run `git init`
+in it. Start tergi, then delete `sub/.git` and write `sub/f`. The
+status shows `sub/` as untracked after the next refresh, but later
+writes in `sub` never cause a refresh.
+
+The cause is in `src/watch.rs`. Events from inside `.git` folders are
+always dropped, so the watcher doesn't see the deletion. And
+`Watches::update` only walks the tree again when the ignored folders
+change, which they don't here. macOS watches the whole tree, so it only
+misses the deletion itself.
