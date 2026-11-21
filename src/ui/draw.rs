@@ -284,23 +284,15 @@ fn draw_topbar(app: &App, buf: &mut Buffer, r: Rect) {
     let t = &app.theme;
     fill(buf, r, t.bar);
     let base = Style::default().bg(t.bar).fg(t.fg);
-    let mut x = put(
-        buf,
-        r.x + 1,
-        r.y,
-        "tergi",
-        6,
-        base.fg(t.accent).add_modifier(Modifier::BOLD),
-    );
     let name = app
         .repo
         .workdir
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    x = put(
+    let mut x = put(
         buf,
-        x + 2,
+        r.x + 1,
         r.y,
         &name,
         30,
