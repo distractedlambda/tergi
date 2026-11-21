@@ -231,11 +231,11 @@ in the background, in a worker that `Highlighter::new` returns.
 
 Each language has its own lexer, written with Logos and kept in
 `src/highlight/`, one file per language: `c.rs` for C and C++,
-`cmake.rs` for CMake, `javascript.rs` for JavaScript, `rust.rs` for
-Rust, `racket.rs` for Racket and Scribble, `shrubbery.rs` for Rhombus,
-`toml.rs` for TOML, `yaml.rs` for YAML, `markdown.rs` for Markdown, and
-`gitignore.rs` for `.gitignore` files. A lexer turns
-text into `Tokens`: byte ranges, each with a `Kind` such as `Comment`,
+`cmake.rs` for CMake, `javascript.rs` for JavaScript, `json.rs` for
+JSON, `rust.rs` for Rust, `racket.rs` for Racket and Scribble,
+`shrubbery.rs` for Rhombus, `toml.rs` for TOML, `yaml.rs` for YAML,
+`markdown.rs` for Markdown, and `gitignore.rs` for `.gitignore` files.
+A lexer turns text into `Tokens`: byte ranges, each with a `Kind` such as `Comment`,
 `Keyword` or `Escape`. Plain text has no token. An identifier that gets
 no other color is an `Identifier` token, which gets a color from its
 name unless the user turns off rainbow identifiers (see below). The theme maps kinds to
@@ -701,6 +701,31 @@ the escape color. A `/` inside a class such as `[/]` doesn't end it.
 One without its closing `/` ends with its line. A `#!` line at the
 very start of a file is a comment.
 
+### JSON
+
+`json.rs` follows RFC 8259. Files ending in `.json`, `.jsonc`,
+`.jsonl`, `.ndjson`, `.geojson`, `.ipynb` and `.webmanifest` are JSON,
+and so are `composer.lock`, `flake.lock` and `Pipfile.lock`. Many
+files that end in `.json`, such as `tsconfig.json` and VS Code's
+settings, have `//` and `/* */` comments, so the lexer reads those in
+every JSON file. Nothing else in JSON can start with a `/`.
+
+Keys are plain, like bare keys in TOML and YAML, so that the values
+stand out. In JSON every key is quoted, so coloring keys as strings
+would color most of the file the same. A string is a key when a `:`
+follows it on the same line, with nothing but spaces and tabs between
+them. That works in a hunk from the middle of an object too, where a
+stack of brackets wouldn't know that it's in an object.
+
+Strings get the string color, and escapes such as `\n` and `\u00e9`
+get the escape color. A backslash before any other character is plain
+string. A string can't go on to the next line, so one without its
+closing quote ends with its line. Numbers get the number color, and
+`true`, `false` and `null` get the constant color. Anything else that
+isn't a space, a bracket or a quote is one plain word, so `truex` and
+`01` aren't partly colored. That includes the extra values of JSON5,
+such as `NaN` and `0x1F`.
+
 ### Rainbow identifiers
 
 With `rainbow_identifiers` on, which is the default, each `Identifier`
@@ -712,7 +737,7 @@ The lexers only mark identifiers that get no other color, so keywords,
 and words such as `AND` in a CMake `if`, keep their usual colors.
 
 The C, C++, CMake, JavaScript, Rust, Racket, Scribble and Rhombus
-lexers mark identifiers. TOML, YAML, Markdown and gitignore have
+lexers mark identifiers. TOML, YAML, JSON, Markdown and gitignore have
 nothing that is really a name in code, so they don't.
 
 `Theme::build` makes the 16 colors in Oklab, where the distance
@@ -851,6 +876,12 @@ leave that column blank.
   checked whether each character was in a comment, a string, a
   template literal, a regular expression or a number. The lexer agreed
   with acorn on all of them.
+- `src/highlight/json.rs` has examples for each kind of JSON token,
+  such as keys, escapes, comments and words that only start like
+  values. Its property test builds random valid documents, with
+  comments between tokens and strings that hold brackets, colons and
+  comment markers. It builds the expected color of each byte along
+  with the text, and checks the lexer against it.
 - `src/highlight/toml.rs` has examples for each kind of TOML token. Its
   property test builds random valid documents from tricky pieces, such
   as keys that look like values and strings that hold brackets. It

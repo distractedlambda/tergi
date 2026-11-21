@@ -15,6 +15,7 @@ mod c;
 mod cmake;
 mod gitignore;
 mod javascript;
+mod json;
 mod markdown;
 mod racket;
 mod rust;
@@ -120,6 +121,7 @@ pub enum Language {
     Cpp,
     Gitignore,
     JavaScript,
+    Json,
     Markdown,
     Racket,
     Rhombus,
@@ -145,6 +147,9 @@ impl Language {
         if matches!(name, ".clang-format" | ".clang-tidy") {
             return Some(Language::Yaml);
         }
+        if matches!(name, "composer.lock" | "flake.lock" | "Pipfile.lock") {
+            return Some(Language::Json);
+        }
         match name.rsplit_once('.')?.1 {
             "c" => Some(Language::C),
             "cmake" => Some(Language::Cmake),
@@ -158,6 +163,9 @@ impl Language {
             // `.gitignore`, and templates such as `Rust.gitignore`.
             "gitignore" => Some(Language::Gitignore),
             "js" | "mjs" | "cjs" => Some(Language::JavaScript),
+            "json" | "jsonc" | "jsonl" | "ndjson" | "geojson" | "ipynb" | "webmanifest" => {
+                Some(Language::Json)
+            }
             "md" | "markdown" | "mdown" | "mkd" | "mkdn" | "mdwn" => Some(Language::Markdown),
             "rkt" | "rktl" | "rktd" => Some(Language::Racket),
             "rhm" => Some(Language::Rhombus),
@@ -176,6 +184,7 @@ impl Language {
             Language::Cmake => cmake::lex(text, &mut out),
             Language::Gitignore => gitignore::lex(text, &mut out),
             Language::JavaScript => javascript::lex(text, &mut out),
+            Language::Json => json::lex(text, &mut out),
             Language::Markdown => markdown::lex(text, &mut out),
             Language::Racket | Language::Rhombus | Language::Scribble => {
                 racket::lex(text, self, &mut out);
@@ -379,6 +388,7 @@ mod tests {
         "a.cpp",
         ".gitignore",
         "a.js",
+        "a.json",
         "a.md",
         "a.rkt",
         "a.rhm",
@@ -464,6 +474,10 @@ mod tests {
         pieces.extend([
             "`a${", "}b`", "/a/g", "[/]", "x /", "?.", "=>", "if (", ")", "@x", "#!", "#p",
             "\\u{41}", "of", "import", "from", "'a'",
+        ]);
+        // Pieces of JSON, such as keys and escapes.
+        pieces.extend([
+            "\"a\": ", "\"a\"", "\\u00e9", "-1.5e3", "01", "null", "[1, 2]",
         ]);
         // Pieces of gitignore patterns.
         pieces.extend(["!", "**/", "?", "[!a-]", "[[:alpha:]]", "\\#"]);
@@ -564,6 +578,9 @@ mod tests {
         assert_eq!(Language::for_path("a.js"), Some(Language::JavaScript));
         assert_eq!(Language::for_path("a.mjs"), Some(Language::JavaScript));
         assert_eq!(Language::for_path(".clang-format"), Some(Language::Yaml));
+        assert_eq!(Language::for_path("a/b.json"), Some(Language::Json));
+        assert_eq!(Language::for_path("tsconfig.jsonc"), Some(Language::Json));
+        assert_eq!(Language::for_path("x/flake.lock"), Some(Language::Json));
         assert_eq!(Language::for_path("a.lock"), None);
         assert_eq!(Language::for_path("a.b/c"), None);
         assert_eq!(Language::for_path("rs"), None);

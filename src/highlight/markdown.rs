@@ -1850,6 +1850,7 @@ Setext
             assert_eq!(kinds_of(&text, Keyword), ["return"]);
             assert_eq!(kinds_of(&text, String), ["/a/"]);
         }
+        assert_eq!(kinds_of("```json\n{\"a\": 1}\n```", Number), ["1"]);
         // A fence inside a list item ends with the item.
         assert_eq!(kinds_of("- ```\n  a\nb\n", String), ["a"]);
     }

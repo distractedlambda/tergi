@@ -261,7 +261,7 @@ symlink, tergi writes to the file the link points to.
 
 Each theme uses the colors that a popular color scheme publishes, and
 syntax colors that follow the scheme's own. For now, only C, C++,
-CMake, JavaScript, Rust, Racket, Rhombus, Scribble, TOML, YAML,
+CMake, JavaScript, JSON, Rust, Racket, Rhombus, Scribble, TOML, YAML,
 Markdown and `.gitignore` files get syntax colors. To try them out,
 press Ctrl+P and run "Choose theme…". The theme changes as you move
 through the list. Press Enter to keep one and save it to the config
