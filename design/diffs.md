@@ -156,15 +156,51 @@ appear on both sides.
 
 ### Folding
 
-Files can be folded with `z`. Folds are kept by section and path in
-`Detail::collapsed`, so they survive a reload. In the working directory
-that's what you want, because the same files stay around. In commits it
-isn't, because a file folded in one commit would stay folded in every
-other commit that touches it. So `set_source` forgets the folds for
-commits whenever the pane switches to another commit.
+Files can be folded with Space. Folds are kept by section and path in
+`Detail::collapsed`, so they survive a reload. Everything that folds or
+unfolds a file goes through `App::set_folded`, which also saves the
+change in the same database as the hidden branches (`src/state.rs`,
+and "Saving them" in `history.md`). So folds survive a restart too.
 
-The first time a file is seen, it starts folded if a commit changes
-more than 40 files. Large diffs aren't folded, however long they are.
+Each commit has its own folds. A file folded in one commit isn't folded
+in the other commits that touch it. `set_source` forgets the folds of
+the old commit, and the new commit's folds arrive with the commit. The
+detail worker reads them from the store right after it loads the
+commit, so the files never show up unfolded first. A comparison of two
+commits is kept under both ids.
+
+A commit with more than 40 files starts with all of them folded, and
+other commits start with none (`doc::default_folds`). Large diffs
+aren't folded, however long they are. The store only keeps a commit
+while its folds differ from the ones it starts with. Otherwise every
+commit the user looked at would stay in it. It keeps the whole set for
+the commit in one row, because an empty set ("the user unfolded
+everything") has to be told apart from no row at all.
+
+The store saves in the background, so it may not have written a
+commit's folds yet when the user comes back to that commit a moment
+later. `App::commit_folds` keeps every set saved in this run, and it
+wins over what the store reads.
+
+In the working directory, each section has its own folds, so a file
+can be folded in its unstaged changes and not in its staged ones. These
+are read once at startup and saved one change at a time. When a file is
+staged as a whole, with its file, its section or "Stage all", its
+staged changes take the fold that its unstaged changes had, and the
+unstaged changes are unfolded. Unstaging works the other way around.
+The operation does this when it succeeds, through `After::MoveFolds`.
+An unstaged file can end up in the unstaged or the untracked section,
+so it gets the fold in both. Staging single hunks or lines leaves the
+folds alone.
+
+After each load of the working directory, `drop_stale_folds` unfolds
+the files that are no longer in their section. A change that comes back
+later starts out unfolded, and the store doesn't fill up with files
+that were committed long ago. A load that started before an operation
+finished may still show the files where they were before it, which
+would drop the folds that `MoveFolds` just moved. So the app counts
+finished operations, and only a load that started with no operation
+running, and none finishing since, drops folds.
 
 ### Keeping the cursor in place
 
@@ -803,7 +839,11 @@ leave that column blank.
   lines. They also check that the cursor and the line selection stay on
   their rows when the pane is rebuilt, when the view changes, and when
   files change, go away or appear.
-- `tests/ui.rs` has `folds_do_not_carry_over_to_other_commits`.
+- `tests/ui.rs` has `folds_do_not_carry_over_to_other_commits`,
+  `folds_are_saved_for_each_commit_and_section` and
+  `a_large_commit_remembers_the_files_unfolded_in_it`. `src/state.rs`
+  checks that the store keeps folds apart by repository, section and
+  commit.
 - Each lexer that marks identifiers has a test called
   `marks_plain_identifiers`. The other lexer tests leave identifiers
   out of the tokens they compare, which keeps them readable.
@@ -936,6 +976,10 @@ leave that column blank.
 
 ## Known gaps
 
+- Folds are kept by path. A file that is renamed after it was folded in
+  the working directory starts out unfolded under its new name. The
+  folds of a repository that moves to another folder are lost, as its
+  hidden branches are.
 - A merge commit is diffed against its first parent only.
 - Only C, C++, CMake, JavaScript, Rust, Racket, Rhombus, Scribble,
   TOML, YAML, Markdown and `.gitignore` files are highlighted. That

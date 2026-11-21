@@ -330,8 +330,8 @@ impl App {
                 // The rebuild keeps the cursor on its row, so the next
                 // search starts from the same place and finds the hunks
                 // of the file that just opened.
-                Some(Err(key)) => {
-                    self.detail.collapsed.remove(&key);
+                Some(Err((sec, path))) => {
+                    self.set_folded([(sec, path, false)]);
                     self.rebuild_doc();
                 }
                 None => break,
@@ -360,8 +360,11 @@ impl App {
                 self.step_hunk(true);
             }
             Some(Row::File { sec, file }) => {
-                if let Some(f) = self.section_files(sec).get(file)
-                    && self.detail.collapsed.remove(&(sec, f.path().to_owned()))
+                if let Some(path) = self
+                    .section_files(sec)
+                    .get(file)
+                    .map(|f| f.path().to_owned())
+                    && self.set_folded([(sec, path, false)])
                 {
                     self.rebuild_doc();
                 }

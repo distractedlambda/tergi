@@ -99,6 +99,12 @@ history.
 | `]` `[` / `}` `{` | Next and previous file or hunk |
 | Enter | On a parent commit, jump to it. On a large diff, show it. |
 
+tergi remembers which files you folded, even after you quit. Each
+commit has its own folds. In the working directory, staged and unstaged
+changes have separate folds. When you stage a whole file, its staged
+changes stay folded if its unstaged changes were, and the other way
+around when you unstage it.
+
 In the working directory:
 
 | Key | What it does |

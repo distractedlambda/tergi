@@ -39,7 +39,8 @@ impl Ui {
         Ui::open_with(s, config, None)
     }
 
-    /// Open the app with a database that it saves the hidden branches to.
+    /// Open the app with a database that it saves the hidden branches and
+    /// the folds to.
     pub fn open_with_store(s: &Scratch, store: &Path) -> Ui {
         Ui::open_with(s, None, Some(store))
     }

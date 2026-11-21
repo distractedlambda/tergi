@@ -15,7 +15,7 @@ use ratatui::style::Color;
 use common::Scratch;
 use common::ui::Ui;
 use gix::bstr::BString;
-use tergi::app::cmd::{Cmd, Context, Overlay, SideRow};
+use tergi::app::cmd::{Cmd, Context, Overlay, SideRow, Unit};
 use tergi::app::doc::{Row, Section, Source};
 use tergi::app::input::{SCROLL_LOCK, Target};
 use tergi::app::planner::PlanAction;
@@ -352,6 +352,175 @@ fn folds_do_not_carry_over_to_other_commits() {
     // The diff of the same file in another commit isn't folded.
     ui.select_commit(1);
     assert_eq!(hunks(&ui), 1);
+}
+
+/// Fold or unfold a file in the detail pane, as Space does on its row.
+fn toggle_fold(ui: &mut Ui, sec: Section, path: &str) {
+    let app = &ui.app;
+    let i = app
+        .detail
+        .rows
+        .iter()
+        .position(|r| matches!(r, Row::File { sec: s, file } if *s == sec && app.section_files(sec)[*file].path() == path))
+        .expect("the file's row");
+    ui.app.detail.cursor = i;
+    ui.run_cmd(Cmd::ToggleFold);
+}
+
+fn folded(ui: &Ui, sec: Section, path: &str) -> bool {
+    ui.app
+        .detail
+        .collapsed
+        .contains(&(sec, BString::from(path)))
+}
+
+/// The folded files in the working directory, in order.
+fn workdir_folds(ui: &Ui) -> Vec<(Section, BString)> {
+    let mut folds: Vec<_> = ui
+        .app
+        .detail
+        .collapsed
+        .iter()
+        .filter(|(sec, _)| *sec != Section::Commit)
+        .cloned()
+        .collect();
+    folds.sort();
+    folds
+}
+
+#[test]
+fn folds_are_saved_for_each_commit_and_section() {
+    let s = Scratch::new();
+    s.write("a.txt", "a\n");
+    s.write("b.txt", "b\n");
+    s.commit_all("Add a and b");
+    s.write("a.txt", "a2\n");
+    s.write("b.txt", "b2\n");
+    s.commit_all("Change a and b");
+    s.write("a.txt", "a3\n");
+    s.write("c.txt", "c\n");
+    s.sh(&["add", "c.txt"]);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = dir.path().join("state.redb");
+    let mut ui = Ui::open_with_store(&s, &store);
+    ui.wait_loaded(2);
+
+    // Each commit has its own folds.
+    ui.select_commit(1);
+    toggle_fold(&mut ui, Section::Commit, "a.txt");
+    ui.select_commit(2);
+    assert!(!folded(&ui, Section::Commit, "a.txt"));
+    toggle_fold(&mut ui, Section::Commit, "b.txt");
+    ui.select_commit(1);
+    assert!(folded(&ui, Section::Commit, "a.txt"));
+    assert!(!folded(&ui, Section::Commit, "b.txt"));
+
+    ui.app.select_history(0);
+    toggle_fold(&mut ui, Section::Unstaged, "a.txt");
+    toggle_fold(&mut ui, Section::Staged, "c.txt");
+    let want = |folds: &[(Section, &str)]| -> Vec<(Section, BString)> {
+        folds
+            .iter()
+            .map(|(sec, p)| (*sec, BString::from(*p)))
+            .collect()
+    };
+
+    // The next run reads them back.
+    ui.finish_saving();
+    drop(ui);
+    let mut ui = Ui::open_with_store(&s, &store);
+    ui.wait_loaded(2);
+    assert_eq!(
+        workdir_folds(&ui),
+        want(&[(Section::Unstaged, "a.txt"), (Section::Staged, "c.txt")])
+    );
+    ui.select_commit(1);
+    assert!(folded(&ui, Section::Commit, "a.txt"));
+    assert!(!folded(&ui, Section::Commit, "b.txt"));
+    ui.select_commit(2);
+    assert!(folded(&ui, Section::Commit, "b.txt"));
+    assert!(!folded(&ui, Section::Commit, "a.txt"));
+
+    // A file that is staged or unstaged as a whole takes its fold along.
+    ui.app.select_history(0);
+    ui.run_cmd(Cmd::Stage(Unit::File(Section::Unstaged, "a.txt".into())));
+    ui.settle();
+    let staged = want(&[(Section::Staged, "a.txt"), (Section::Staged, "c.txt")]);
+    ui.wait("a.txt to be staged and folded", |u| {
+        workdir_folds(u) == staged
+    });
+    ui.run_cmd(Cmd::Unstage(Unit::File(Section::Staged, "c.txt".into())));
+    ui.settle();
+    let untracked = want(&[(Section::Untracked, "c.txt"), (Section::Staged, "a.txt")]);
+    ui.wait("c.txt to be untracked and folded", |u| {
+        workdir_folds(u) == untracked
+    });
+    ui.run_cmd(Cmd::StageAll);
+    ui.settle();
+    ui.wait("c.txt to be staged and folded", |u| {
+        workdir_folds(u) == staged
+    });
+
+    ui.finish_saving();
+    drop(ui);
+    let mut ui = Ui::open_with_store(&s, &store);
+    // This is what the store has, before the working directory loads.
+    assert_eq!(workdir_folds(&ui), staged);
+    ui.wait_loaded(2);
+
+    // Once a file's change is gone, so is its fold.
+    s.sh(&["commit", "-m", "Commit a and c"]);
+    ui.run_cmd(Cmd::Refresh);
+    ui.wait("the folds to go", |u| workdir_folds(u).is_empty());
+    ui.finish_saving();
+    drop(ui);
+    let ui = Ui::open_with_store(&s, &store);
+    assert_eq!(workdir_folds(&ui), []);
+}
+
+#[test]
+fn a_large_commit_remembers_the_files_unfolded_in_it() {
+    let s = Scratch::new();
+    for i in 0..41 {
+        s.write(&format!("f{i:02}.txt"), "x\n");
+    }
+    s.commit_all("Add many files");
+    s.write("other.txt", "y\n");
+    s.commit_all("Add another file");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = dir.path().join("state.redb");
+    let mut ui = Ui::open_with_store(&s, &store);
+    ui.wait_loaded(2);
+    let commit_folds = |u: &Ui| {
+        u.app
+            .detail
+            .collapsed
+            .iter()
+            .filter(|(sec, _)| *sec == Section::Commit)
+            .count()
+    };
+
+    // A commit with more than 40 files starts with all of them folded.
+    ui.select_commit(2);
+    assert_eq!(commit_folds(&ui), 41);
+    toggle_fold(&mut ui, Section::Commit, "f03.txt");
+    ui.select_commit(1);
+    assert_eq!(commit_folds(&ui), 0);
+    ui.select_commit(2);
+    assert_eq!(commit_folds(&ui), 40);
+    assert!(!folded(&ui, Section::Commit, "f03.txt"));
+
+    // With everything unfolded, nothing is folded the next time either.
+    ui.run_cmd(Cmd::FoldAll);
+    assert_eq!(commit_folds(&ui), 41);
+    ui.run_cmd(Cmd::FoldAll);
+    assert_eq!(commit_folds(&ui), 0);
+    ui.finish_saving();
+    drop(ui);
+    let mut ui = Ui::open_with_store(&s, &store);
+    ui.wait_loaded(2);
+    ui.select_commit(2);
+    assert_eq!(commit_folds(&ui), 0);
 }
 
 #[test]

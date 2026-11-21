@@ -91,6 +91,9 @@ each only sees the other's on its next start. Before the program exits,
 `App::finish_saving` waits up to three seconds for the task to finish, so
 a branch hidden just before quitting stays hidden.
 
+The same database holds the folded files of the detail pane, which
+`diffs.md` describes.
+
 ## The walk
 
 `log::walk` runs on a blocking thread through `util::blocking`. It uses

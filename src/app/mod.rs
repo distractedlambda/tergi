@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use gix::ObjectId;
-use gix::bstr::{BString, ByteSlice as _};
+use gix::bstr::{BStr, BString, ByteSlice as _};
 use ratatui::layout::Rect;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -89,7 +89,7 @@ pub enum AppEvent {
     HistoryError(u64, String),
     Refs(Result<Refs>),
     Workdir(Box<Result<Workdir>>),
-    Commit(u64, doc::Source, Box<Result<CommitDetail>>),
+    Commit(Box<LoadedCommit>),
     Highlight(highlight::Key, FileHighlight),
     OpDone(OpResult),
     Progress(String),
@@ -100,9 +100,20 @@ pub enum AppEvent {
     /// A read started by `App::spawn_read` finished. This applies its
     /// result.
     ReadDone(Box<dyn FnOnce(&mut App) + Send>),
-    /// Saving a change to the hidden branches failed.
+    /// Saving a change to the hidden branches or the folds failed.
     SaveFailed(String),
     Tick,
+}
+
+/// A commit or comparison that the detail pane asked for.
+pub struct LoadedCommit {
+    request: u64,
+    source: doc::Source,
+    commit: Result<CommitDetail>,
+    /// The files that were folded the last time the user changed the folds
+    /// in this commit, if the store remembers them, or why reading them
+    /// failed.
+    folded: Result<Option<HashSet<BString>>, String>,
 }
 
 /// Reports progress lines from a running operation.
@@ -121,6 +132,16 @@ pub enum After {
     Nothing,
     ClearMessage,
     OpenPlannerDone,
+    /// Give each file the fold it had in its section, in each section of
+    /// `to`, and unfold it where it was. This is for files that were
+    /// staged or unstaged as a whole. A file that gets unstaged may end up
+    /// unstaged or untracked, so it gets its fold in both. The next load of
+    /// the working directory drops the folds of files that aren't in their
+    /// section.
+    MoveFolds {
+        files: Vec<(doc::Section, BString)>,
+        to: Vec<doc::Section>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -293,9 +314,11 @@ pub struct App {
     /// here when the branch is gone, so that it stays hidden if it comes
     /// back, for example after a fetch.
     pub hidden: HashSet<BString>,
-    /// Where the hidden branches are saved. Without it, they aren't.
+    /// Where the hidden branches and the folds are saved. Without it, they
+    /// aren't.
     pub store: Option<Store>,
-    /// Sends changes to the hidden branches to the task that saves them.
+    /// Sends changes to the hidden branches and the folds to the task that
+    /// saves them.
     save_tx: Option<UnboundedSender<state::Change>>,
     /// Closes once that task has saved everything it was sent.
     saved: Option<tokio::sync::oneshot::Receiver<()>>,
@@ -304,12 +327,24 @@ pub struct App {
 
     pub workdir: Option<Workdir>,
     workdir_load: Reload,
+    /// How many operations have finished. A working directory load that
+    /// started before the last one finished may show files where they
+    /// were before it, so it doesn't drop folds.
+    ops_done: u64,
+    /// `ops_done` when the running working directory load started, or
+    /// `None` if an operation was running then.
+    workdir_load_ops: Option<u64>,
 
     pub repo_state: RepoState,
     pub focus: Focus,
     pub sidebar: SidebarState,
     pub detail: Detail,
     detail_tx: tokio::sync::watch::Sender<Option<DetailRequest>>,
+    /// The folded files of each commit whose folds changed in this run,
+    /// by `Source::fold_key`. When the user comes back to such a commit,
+    /// these win over what the store reads, because the store may not
+    /// have saved them yet.
+    commit_folds: HashMap<Vec<u8>, HashSet<BString>>,
     pub highlighter: Highlighter,
 
     pub overlays: Vec<cmd::Overlay>,
@@ -453,6 +488,8 @@ impl App {
             history: History::default(),
             workdir: None,
             workdir_load: Reload::default(),
+            ops_done: 0,
+            workdir_load_ops: None,
             repo_state: RepoState::Clean,
             focus: Focus::History,
             sidebar: SidebarState {
@@ -461,6 +498,7 @@ impl App {
             },
             detail,
             detail_tx,
+            commit_folds: HashMap::new(),
             highlighter,
             overlays: Vec::new(),
             planner: None,
@@ -568,10 +606,11 @@ impl App {
         }
     }
 
-    /// Read the hidden branches and start the task that saves changes to
-    /// them. The first history walk needs to know which branches to leave
-    /// out, so this reads them right away rather than in the background.
-    /// The database is small and the read is quick.
+    /// Read the hidden branches and the folds in the working directory,
+    /// and start the task that saves changes to them. The first history
+    /// walk needs to know which branches to leave out, so this reads them
+    /// right away rather than in the background. The database is small and
+    /// the read is quick.
     fn open_store(&mut self) {
         let Some(store) = self.store.clone() else {
             return;
@@ -580,6 +619,23 @@ impl App {
             Ok(h) => self.hidden = h,
             Err(e) => self.set_status(
                 format!("Couldn't read the hidden branches: {e:#}"),
+                Level::Warn,
+            ),
+        }
+        let names: Vec<&'static str> = doc::Section::WORKDIR
+            .iter()
+            .filter_map(|s| s.store_name())
+            .collect();
+        match store.workdir_folds(&names) {
+            Ok(folds) => {
+                for (name, path) in folds {
+                    if let Some(sec) = doc::Section::from_store_name(name) {
+                        self.detail.collapsed.insert((sec, path));
+                    }
+                }
+            }
+            Err(e) => self.set_status(
+                format!("Couldn't read the folded files: {e:#}"),
                 Level::Warn,
             ),
         }
@@ -605,9 +661,9 @@ impl App {
         self.saved = Some(done_rx);
     }
 
-    /// Wait until the hidden branches are saved, but not for long. The
-    /// event loop calls this before it exits, since a change made just
-    /// before quitting could still be on its way.
+    /// Wait until the hidden branches and folds are saved, but not for
+    /// long. The event loop calls this before it exits, since a change made
+    /// just before quitting could still be on its way.
     pub async fn finish_saving(&mut self) {
         self.save_tx = None;
         if let Some(done) = self.saved.take() {
@@ -647,6 +703,89 @@ impl App {
         if let Some(tx) = &self.save_tx {
             let _ = tx.send(change);
         }
+    }
+
+    /// Fold or unfold files in the detail pane, and save the change. Each
+    /// item is a section, a path, and whether to fold the file. Returns
+    /// whether any file changed.
+    pub fn set_folded(
+        &mut self,
+        files: impl IntoIterator<Item = (doc::Section, BString, bool)>,
+    ) -> bool {
+        let mut any = false;
+        let mut commit_changed = false;
+        for (sec, path, fold) in files {
+            let key = (sec, path);
+            let changed = if fold {
+                self.detail.collapsed.insert(key.clone())
+            } else {
+                self.detail.collapsed.remove(&key)
+            };
+            if !changed {
+                continue;
+            }
+            any = true;
+            let (sec, path) = key;
+            match sec.store_name() {
+                Some(name) if fold => self.save(state::Change::Fold(name, path)),
+                Some(name) => self.save(state::Change::Unfold(name, path)),
+                None => commit_changed = true,
+            }
+        }
+        if commit_changed {
+            self.save_commit_folds();
+        }
+        any
+    }
+
+    /// Save the folds of the commit the pane shows. A commit whose folds
+    /// are the ones it starts with is left out of the store, so that it
+    /// doesn't keep growing with every commit the user looks at.
+    fn save_commit_folds(&mut self) {
+        let (Some(key), Some(c)) = (self.detail.source.fold_key(), &self.detail.commit) else {
+            return;
+        };
+        let folded: HashSet<BString> = self
+            .detail
+            .collapsed
+            .iter()
+            .filter(|(sec, _)| *sec == doc::Section::Commit)
+            .map(|(_, path)| path.clone())
+            .collect();
+        let paths = (folded != doc::default_folds(&c.files)).then(|| {
+            let mut paths: Vec<BString> = folded.iter().cloned().collect();
+            paths.sort();
+            paths
+        });
+        self.save(state::Change::CommitFolds(key.clone(), paths));
+        self.commit_folds.insert(key, folded);
+    }
+
+    /// Unfold the files that are no longer in their section of the working
+    /// directory, so that the change that replaces them, if any, starts out
+    /// unfolded, and the store doesn't keep growing.
+    fn drop_stale_folds(&mut self) {
+        let Some(w) = &self.workdir else {
+            return;
+        };
+        let present: HashSet<(doc::Section, &BStr)> = doc::Section::WORKDIR
+            .into_iter()
+            .flat_map(|sec| {
+                doc::section_files(Some(w), None, sec)
+                    .iter()
+                    .map(move |f| (sec, f.path()))
+            })
+            .collect();
+        let gone: Vec<_> = self
+            .detail
+            .collapsed
+            .iter()
+            .filter(|(sec, path)| {
+                *sec != doc::Section::Commit && !present.contains(&(*sec, path.as_ref()))
+            })
+            .map(|(sec, path)| (*sec, path.clone(), false))
+            .collect();
+        self.set_folded(gone);
     }
 
     /// Run `fut` in the background, as one of the App's tasks.
@@ -726,6 +865,7 @@ impl App {
     }
 
     fn load_workdir(&mut self) {
+        self.workdir_load_ops = self.busy.is_none().then_some(self.ops_done);
         let repo = self.repo.clone();
         let tx = self.tx.clone();
         let ctx = self.cfg.context_lines;
@@ -769,7 +909,7 @@ impl App {
             AppEvent::ReadDone(apply) => apply(self),
             AppEvent::SaveFailed(e) => {
                 self.set_status(
-                    format!("Couldn't save the hidden branches: {e}"),
+                    format!("Couldn't save the hidden branches or folds: {e}"),
                     Level::Error,
                 );
             }
@@ -800,12 +940,31 @@ impl App {
                     self.load_workdir();
                 }
             }
-            AppEvent::Commit(generation, source, r) => {
-                if generation == self.detail.request && self.detail.source == source {
+            AppEvent::Commit(loaded) => {
+                let LoadedCommit {
+                    request,
+                    source,
+                    commit,
+                    folded,
+                } = *loaded;
+                if request == self.detail.request && self.detail.source == source {
                     self.detail.loading = false;
-                    match *r {
+                    match commit {
                         Ok(c) => {
+                            let stored = folded.unwrap_or_else(|e| {
+                                self.set_status(
+                                    format!("Couldn't read the folded files: {e}"),
+                                    Level::Warn,
+                                );
+                                None
+                            });
+                            let folded = source
+                                .fold_key()
+                                .and_then(|k| self.commit_folds.get(&k).cloned())
+                                .or(stored)
+                                .unwrap_or_else(|| doc::default_folds(&c.files));
                             self.detail.set_commit(Arc::new(c));
+                            self.detail.set_commit_folds(folded);
                             self.rebuild_doc();
                         }
                         Err(e) => {
@@ -958,6 +1117,9 @@ impl App {
     fn on_workdir(&mut self, w: Workdir) {
         self.workdir = Some(w);
         self.repo_state = rebase::state_in(&self.repo.git_dir);
+        if self.workdir_load_ops == Some(self.ops_done) {
+            self.drop_stale_folds();
+        }
         if self.detail.source == doc::Source::Workdir {
             self.detail.reset_for_reload();
             self.rebuild_doc();
@@ -1059,6 +1221,7 @@ impl App {
             request: self.detail.request,
             source: self.detail.source,
             context: self.cfg.context_lines,
+            store: self.store.clone(),
         }));
     }
 
@@ -1234,6 +1397,7 @@ impl App {
 
     fn on_op_done(&mut self, r: OpResult) {
         self.busy = None;
+        self.ops_done += 1;
         match r.result {
             Ok(msg) => {
                 let msg = if msg.trim().is_empty() {
@@ -1249,6 +1413,17 @@ impl App {
                         self.message_before_amend = None;
                     }
                     After::OpenPlannerDone => self.planner = None,
+                    After::MoveFolds { files, to } => {
+                        let mut changes = Vec::new();
+                        for (from, path) in files {
+                            let folded = self.detail.collapsed.contains(&(from, path.clone()));
+                            for &sec in &to {
+                                changes.push((sec, path.clone(), folded));
+                            }
+                            changes.push((from, path, false));
+                        }
+                        self.set_folded(changes);
+                    }
                     After::Nothing => {}
                 }
             }
@@ -1331,11 +1506,13 @@ fn check_task(done: Result<(), tokio::task::JoinError>) {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct DetailRequest {
     request: u64,
     source: doc::Source,
     context: u32,
+    /// Where to read the commit's folds from.
+    store: Option<Store>,
 }
 
 /// Load commit details as they are requested. The watch channel only keeps
@@ -1354,7 +1531,8 @@ async fn detail_worker(
             request,
             source,
             context,
-        }) = *requests.borrow_and_update()
+            store,
+        }) = requests.borrow_and_update().clone()
         else {
             continue;
         };
@@ -1363,16 +1541,26 @@ async fn detail_worker(
             doc::Source::Compare { from, to } => (to, Some(from)),
             doc::Source::None | doc::Source::Workdir => continue,
         };
-        let (back, r) = crate::util::blocking(move || {
+        let (back, commit, folded) = crate::util::blocking(move || {
             let r = crate::git::commit::load_against(&local, id, base, context, DEFAULT_LINE_LIMIT);
-            (local, r)
+            let folded = match (&r, store, source.fold_key()) {
+                (Ok(_), Some(store), Some(key)) => store
+                    .commit_folds(&key)
+                    .map(|f| f.map(|paths| paths.into_iter().collect()))
+                    .map_err(|e| format!("{e:#}")),
+                _ => Ok(None),
+            };
+            (local, r, folded)
         })
         .await;
         local = back;
-        if tx
-            .send(AppEvent::Commit(request, source, Box::new(r)))
-            .is_err()
-        {
+        let loaded = LoadedCommit {
+            request,
+            source,
+            commit,
+            folded,
+        };
+        if tx.send(AppEvent::Commit(Box::new(loaded))).is_err() {
             break;
         }
     }

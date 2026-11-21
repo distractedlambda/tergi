@@ -1694,10 +1694,28 @@ impl App {
             Cmd::Stage(u) => self.apply_unit(u, ApplyMode::Stage, has_head),
             Cmd::Unstage(u) => self.apply_unit(u, ApplyMode::Unstage, has_head),
             Cmd::Discard(u) => self.apply_unit(u, ApplyMode::Discard, has_head),
-            Cmd::StageAll => self.spawn_op("Stage all", After::Nothing, move |r, _| async move { ops::stage_all(&r.git).await.map(|()| "Staged everything".into()) }),
-            Cmd::UnstageAll => self.spawn_op("Unstage all", After::Nothing, move |r, _| async move {
-                ops::unstage_all(&r.git, has_head).await.map(|()| "Unstaged everything".into())
-            }),
+            Cmd::StageAll => {
+                let after = After::MoveFolds {
+                    files: self.workdir_files(&[
+                        Section::Conflicted,
+                        Section::Untracked,
+                        Section::Unstaged,
+                    ]),
+                    to: vec![Section::Staged],
+                };
+                self.spawn_op("Stage all", after, move |r, _| async move {
+                    ops::stage_all(&r.git).await.map(|()| "Staged everything".into())
+                });
+            }
+            Cmd::UnstageAll => {
+                let after = After::MoveFolds {
+                    files: self.workdir_files(&[Section::Staged]),
+                    to: vec![Section::Unstaged, Section::Untracked],
+                };
+                self.spawn_op("Unstage all", after, move |r, _| async move {
+                    ops::unstage_all(&r.git, has_head).await.map(|()| "Unstaged everything".into())
+                });
+            }
             Cmd::Commit | Cmd::CommitAll => {
                 let all = cmd == Cmd::CommitAll;
                 let msg = self.message.text();
@@ -2138,8 +2156,25 @@ impl App {
             Unit::Files(_, paths) => paths.clone(),
             _ => Vec::new(),
         };
+        // A file that is staged or unstaged as a whole keeps its fold.
+        let moved = || paths.iter().map(|p| (unit.section(), p.clone())).collect();
+        let after = match (&unit, mode) {
+            (Unit::Section(_) | Unit::File(..) | Unit::Files(..), ApplyMode::Stage) => {
+                After::MoveFolds {
+                    files: moved(),
+                    to: vec![Section::Staged],
+                }
+            }
+            (Unit::Section(_) | Unit::File(..) | Unit::Files(..), ApplyMode::Unstage) => {
+                After::MoveFolds {
+                    files: moved(),
+                    to: vec![Section::Unstaged, Section::Untracked],
+                }
+            }
+            _ => After::Nothing,
+        };
         self.detail.anchor = None;
-        self.spawn_op(label, After::Nothing, move |r, _| async move {
+        self.spawn_op(label, after, move |r, _| async move {
             let git = &r.git;
             match (&unit, mode) {
                 (Unit::Section(Section::Staged), ApplyMode::Unstage) => {
@@ -2170,6 +2205,19 @@ impl App {
         });
     }
 
+    /// The section and path of each file in these sections of the working
+    /// directory.
+    fn workdir_files(&self, sections: &[Section]) -> Vec<(Section, BString)> {
+        sections
+            .iter()
+            .flat_map(|&sec| {
+                self.section_files(sec)
+                    .iter()
+                    .map(move |f| (sec, f.path().to_owned()))
+            })
+            .collect()
+    }
+
     fn toggle_fold(&mut self) {
         let row = self.detail.rows.get(self.detail.cursor).cloned();
         match row {
@@ -2182,10 +2230,9 @@ impl App {
                 if let Some((sec, fi)) = r.file()
                     && let Some(f) = self.section_files(sec).get(fi)
                 {
-                    let key = (sec, f.path().to_owned());
-                    if !self.detail.collapsed.remove(&key) {
-                        self.detail.collapsed.insert(key);
-                    }
+                    let path = f.path().to_owned();
+                    let fold = !self.detail.collapsed.contains(&(sec, path.clone()));
+                    self.set_folded([(sec, path, fold)]);
                     // Keep the cursor on the file header.
                     if let Some(i) = self
                         .detail
@@ -2217,13 +2264,7 @@ impl App {
             })
             .collect();
         let all_folded = keys.iter().all(|k| self.detail.collapsed.contains(k));
-        for k in keys {
-            if all_folded {
-                self.detail.collapsed.remove(&k);
-            } else {
-                self.detail.collapsed.insert(k);
-            }
-        }
+        self.set_folded(keys.into_iter().map(|(sec, path)| (sec, path, !all_folded)));
         self.rebuild_doc();
     }
 

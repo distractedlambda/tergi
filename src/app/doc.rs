@@ -50,6 +50,27 @@ impl Source {
             Source::Commit(_) | Source::Stash(_) | Source::Compare { .. }
         )
     }
+
+    /// What the store keeps the folds of this source under: the commit id,
+    /// or both ids of a comparison. The working directory has none,
+    /// because its folds are kept by section.
+    pub fn fold_key(&self) -> Option<Vec<u8>> {
+        match self {
+            Source::Commit(id) | Source::Stash(id) => Some(id.as_bytes().to_vec()),
+            Source::Compare { from, to } => Some([from.as_bytes(), to.as_bytes()].concat()),
+            Source::None | Source::Workdir => None,
+        }
+    }
+}
+
+/// The files of a commit that start out folded. In a commit that changes
+/// more than 40 files, that's all of them.
+pub fn default_folds(files: &[Arc<FileDiff>]) -> HashSet<BString> {
+    if files.len() > 40 {
+        files.iter().map(|f| f.path().to_owned()).collect()
+    } else {
+        HashSet::new()
+    }
 }
 
 /// How deep the keyboard is in the detail pane. j and k move between files
@@ -83,6 +104,32 @@ impl Section {
             Section::Unstaged => "Unstaged changes",
             Section::Staged => "Staged changes",
         }
+    }
+
+    /// The sections of the working directory.
+    pub const WORKDIR: [Section; 4] = [
+        Section::Conflicted,
+        Section::Untracked,
+        Section::Unstaged,
+        Section::Staged,
+    ];
+
+    /// The name the store keeps this section's folds under. Commits have
+    /// their own table, so they have no name.
+    pub fn store_name(self) -> Option<&'static str> {
+        match self {
+            Section::Commit => None,
+            Section::Conflicted => Some("conflicted"),
+            Section::Untracked => Some("untracked"),
+            Section::Unstaged => Some("unstaged"),
+            Section::Staged => Some("staged"),
+        }
+    }
+
+    pub fn from_store_name(name: &str) -> Option<Section> {
+        Section::WORKDIR
+            .into_iter()
+            .find(|s| s.store_name() == Some(name))
     }
 
     pub fn from_u8(n: u8) -> Section {
@@ -203,7 +250,6 @@ pub struct Detail {
     /// Leave the commit message out of the header, because the message
     /// editor is drawn in its place.
     pub hide_message: bool,
-    seen: HashSet<(Section, BString)>,
     pub highlights: HashMap<(u8, usize), Arc<FileHighlight>>,
     pub requested: HashSet<(u8, usize)>,
     pub marks: HashMap<(Section, usize), Arc<Vec<Marks>>>,
@@ -233,7 +279,6 @@ impl Default for Detail {
             collapsed: HashSet::new(),
             collapsed_sections: HashSet::new(),
             hide_message: false,
-            seen: HashSet::new(),
             highlights: HashMap::new(),
             requested: HashSet::new(),
             marks: HashMap::new(),
@@ -283,13 +328,17 @@ impl Detail {
         self.anchor = None;
         self.scroll = 0;
         self.hscroll.clear();
-        // Folds are remembered by path. That's right for the working
-        // directory, where the same files stay around. In commits, a file
-        // that was folded in one commit would stay folded in every other
-        // commit that touches it.
+        // Each commit has its own folds, which come with the commit when it
+        // loads.
         self.collapsed.retain(|(sec, _)| *sec != Section::Commit);
-        self.seen.retain(|(sec, _)| *sec != Section::Commit);
         self.reset_for_reload();
+    }
+
+    /// Replace the folded files of the commit.
+    pub fn set_commit_folds(&mut self, folded: HashSet<BString>) {
+        self.collapsed.retain(|(sec, _)| *sec != Section::Commit);
+        self.collapsed
+            .extend(folded.into_iter().map(|p| (Section::Commit, p)));
     }
 
     pub fn set_commit(&mut self, c: Arc<CommitDetail>) {
@@ -402,7 +451,7 @@ impl Detail {
             Source::Commit(_) | Source::Stash(..) | Source::Compare { .. } => match &commit {
                 Some(c) => {
                     self.build_meta(c, labels, theme, cfg);
-                    self.build_files(Section::Commit, &c.files, split, false, cfg);
+                    self.build_files(Section::Commit, &c.files, split, cfg);
                 }
                 None => self.rows.push(Row::Empty(if self.loading {
                     "Loading…".into()
@@ -425,7 +474,7 @@ impl Detail {
                         any = true;
                         self.rows.push(Row::Section(sec));
                         if !self.collapsed_sections.contains(&sec) {
-                            self.build_files(sec, files, split, true, cfg);
+                            self.build_files(sec, files, split, cfg);
                         }
                         self.rows.push(Row::Blank);
                     }
@@ -633,20 +682,9 @@ impl Detail {
         self.widths.insert(Scrolls::Message, widest);
     }
 
-    fn build_files(
-        &mut self,
-        sec: Section,
-        files: &[Arc<FileDiff>],
-        split: bool,
-        staging: bool,
-        cfg: &Config,
-    ) {
-        let many = files.len() > 40;
+    fn build_files(&mut self, sec: Section, files: &[Arc<FileDiff>], split: bool, cfg: &Config) {
         for (fi, f) in files.iter().enumerate() {
             let key = (sec, f.path().to_owned());
-            if self.seen.insert(key.clone()) && many && !staging {
-                self.collapsed.insert(key.clone());
-            }
             self.rows.push(Row::File { sec, file: fi });
             if self.collapsed.contains(&key) {
                 continue;
@@ -1097,12 +1135,7 @@ mod tests {
     use super::*;
     use crate::git::diff::{DiffLine, FileStatus, Hunk};
 
-    const SECTIONS: [Section; 4] = [
-        Section::Conflicted,
-        Section::Untracked,
-        Section::Unstaged,
-        Section::Staged,
-    ];
+    const SECTIONS: [Section; 4] = Section::WORKDIR;
 
     /// A file that may be in the diff before a reload, after it, or both.
     #[derive(Debug, Clone)]
@@ -1304,6 +1337,7 @@ mod tests {
             Some(c) => {
                 d.set_source(Source::Commit(c.id));
                 d.set_commit(c.clone());
+                d.set_commit_folds(default_folds(&c.files));
             }
             None => d.set_source(Source::Workdir),
         }
