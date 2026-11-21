@@ -812,6 +812,13 @@ impl App {
                         self.detail.anchor = None;
                         self.activate_doc_row(i);
                     }
+                    // The header and the bottom edge of a hunk can be
+                    // dragged to show more or fewer lines.
+                    Some(Row::Hunk { .. } | Row::HunkEnd { .. }) => {
+                        self.detail.cursor = i;
+                        self.detail.anchor = None;
+                        self.start_edge_drag(i, y);
+                    }
                     _ => {
                         self.detail.cursor = i;
                         self.detail.anchor = None;
@@ -1005,6 +1012,7 @@ impl App {
                 let row = (self.detail.scroll + rel).min(self.detail.rows.len().saturating_sub(1));
                 self.detail.cursor = row;
             }
+            Some(Drag::HunkEdge { .. }) => self.drag_edge(y),
             Some(Drag::Planner(from)) => {
                 if let Some(Target::PlannerRow(to) | Target::PlannerAction(to)) =
                     self.target_at(x, y)

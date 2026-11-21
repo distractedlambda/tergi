@@ -1099,6 +1099,21 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                     Style::default().bg(bg).fg(t.dim),
                 );
             }
+            // A thin bar in the color of the hunk header, which reads as the
+            // bottom edge of the hunk.
+            Row::HunkEnd { .. } => {
+                let bg = if is_cursor { t.sel_unfocused } else { t.bg };
+                fill(buf, rr, bg);
+                let fg = if is_cursor { t.sel } else { t.hunk_bg };
+                put(
+                    buf,
+                    a.x,
+                    y,
+                    &"▔".repeat(usize::from(a.width)),
+                    a.width,
+                    Style::default().bg(bg).fg(fg),
+                );
+            }
             Row::Line {
                 sec,
                 file,

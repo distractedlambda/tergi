@@ -61,7 +61,11 @@ fn first_line(start: u32, len: u32) -> u32 {
 pub fn edge_line(hunk: &Hunk, side: Side, top: bool, out: bool) -> Option<(u32, bool)> {
     let (first, len) = side.range(hunk);
     if out {
-        let n = if top { first.checked_sub(1)? } else { first + len };
+        let n = if top {
+            first.checked_sub(1)?
+        } else {
+            first + len
+        };
         (n > 0).then_some((n, true))
     } else {
         let line = if top {
@@ -321,7 +325,7 @@ mod tests {
         let c = choices(&[(5, true), (6, true), (7, true)]);
         let partial = FileTexts {
             old: Some(Arc::from("1\n2\n3\n4\n5\nsix\n7\n8\n9\n10\n")),
-            new: t.new.clone(),
+            new: t.new,
         };
         insta::assert_snapshot!(render(&regroup(&hunks, &partial, Side::New, &c)), @r"
         @@ -2,4 +2,4 @@

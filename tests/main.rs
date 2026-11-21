@@ -13,6 +13,7 @@ mod common;
 mod commit_props;
 mod conflict_props;
 mod fmt;
+mod hunk_edges;
 mod log_props;
 mod ops;
 mod patch_props;

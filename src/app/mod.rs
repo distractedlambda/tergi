@@ -2,6 +2,7 @@
 
 pub mod cmd;
 pub mod doc;
+mod hunk_edges;
 pub mod input;
 pub mod planner;
 
@@ -275,6 +276,15 @@ pub enum Drag {
     Splitter(Splitter),
     DiffSelect,
     Planner(usize),
+    /// An edge of the hunk that holds the changed line `change`, with the
+    /// row the mouse was on last.
+    HunkEdge {
+        sec: doc::Section,
+        path: BString,
+        change: hunk_edges::LineId,
+        top: bool,
+        y: u16,
+    },
 }
 
 /// Screen areas from the last frame, for mouse handling.
@@ -1243,6 +1253,7 @@ impl App {
     }
 
     pub fn rebuild_doc(&mut self) {
+        self.apply_shown_lines();
         let workdir = self.workdir.as_ref();
         self.detail.rebuild(
             workdir,

@@ -172,6 +172,14 @@ pub enum Cmd {
     Ascend,
     NextHunk(bool),
     NextFile(bool),
+    /// Move the top or bottom edge of the hunk at the cursor by one line,
+    /// out from its middle or in towards it.
+    MoveHunkEdge {
+        top: bool,
+        out: bool,
+    },
+    /// Show the hunks of the file at the cursor as git gives them.
+    ResetHunkEdges,
 
     // Ref names needn't be UTF-8, so these keep them as bytes.
     Checkout(BString),
@@ -941,6 +949,40 @@ impl App {
             act(Some(Key::ch('}')), "Next hunk", Cmd::NextHunk(true)).direct(),
             act(Some(Key::ch('{')), "Previous hunk", Cmd::NextHunk(false)).direct(),
         ]);
+        let in_hunk = self
+            .detail
+            .rows
+            .get(self.detail.cursor)
+            .and_then(Row::hunk)
+            .is_some_and(|(sec, ..)| super::hunk_edges::side_of(sec).is_some());
+        if in_hunk {
+            let edge = |key, label, top, out| {
+                act(Some(key), label, Cmd::MoveHunkEdge { top, out }).direct()
+            };
+            nav.extend([
+                edge(Key::ch('K'), "Move the hunk's top edge up", true, true),
+                edge(Key::ch('J'), "Move the hunk's top edge down", true, false),
+                edge(
+                    Key::ctrl('j'),
+                    "Move the hunk's bottom edge down",
+                    false,
+                    true,
+                ),
+                edge(
+                    Key::ctrl('k'),
+                    "Move the hunk's bottom edge up",
+                    false,
+                    false,
+                ),
+            ]);
+        }
+        if self.hunk_edges_moved() {
+            nav.push(act(
+                Some(Key::ch('=')),
+                "Reset the hunk edges in this file",
+                Cmd::ResetHunkEdges,
+            ));
+        }
         let source = self.detail.source;
         match source {
             Source::Workdir => {
@@ -1786,6 +1828,8 @@ impl App {
                 self.detail.anchor = None;
                 self.detail.jump(fwd, |r| matches!(r, Row::File { .. }));
             }
+            Cmd::MoveHunkEdge { top, out } => self.move_edge_at_cursor(top, out),
+            Cmd::ResetHunkEdges => self.reset_hunk_edges(),
 
             Cmd::Checkout(b) => self.spawn_op("Checkout", After::Nothing, move |r, _| async move {
                 ops::checkout(&r.git, &b).await.map(|()| format!("Switched to {b}"))

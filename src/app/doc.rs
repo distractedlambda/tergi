@@ -12,6 +12,7 @@ use ratatui::text::{Line, Span};
 use super::cmd::{Cmd, Unit};
 use crate::config::Config;
 use crate::git::commit::{CommitDetail, FileTexts};
+use crate::git::context::Choices;
 use crate::git::diff::{FileDiff, LineKind};
 use crate::git::refs::{Label, LabelKind};
 use crate::git::words::{Marks, hunk_marks};
@@ -168,6 +169,12 @@ pub enum Row {
         hunk: usize,
         line: usize,
     },
+    /// The bottom edge of a hunk, which the user can drag.
+    HunkEnd {
+        sec: Section,
+        file: usize,
+        hunk: usize,
+    },
     Split {
         sec: Section,
         file: usize,
@@ -185,7 +192,23 @@ impl Row {
             | Row::Notice { sec, file, .. }
             | Row::Hunk { sec, file, .. }
             | Row::Line { sec, file, .. }
+            | Row::HunkEnd { sec, file, .. }
             | Row::Split { sec, file, .. } => Some((sec, file)),
+            _ => None,
+        }
+    }
+
+    /// The section, file and hunk that this row belongs to.
+    pub fn hunk(&self) -> Option<(Section, usize, usize)> {
+        match *self {
+            Row::Hunk { sec, file, hunk }
+            | Row::Line {
+                sec, file, hunk, ..
+            }
+            | Row::HunkEnd { sec, file, hunk }
+            | Row::Split {
+                sec, file, hunk, ..
+            } => Some((sec, file, hunk)),
             _ => None,
         }
     }
@@ -219,7 +242,20 @@ enum RowKey {
     Notice(Section, BString),
     Hunk(Section, BString, usize),
     Line(Section, BString, usize, usize),
+    HunkEnd(Section, BString, usize),
     Other,
+}
+
+/// The unchanged lines that the user showed or hid around the hunks of one
+/// file, by moving their edges.
+#[derive(Debug, Clone, Default)]
+pub struct ShownLines {
+    pub choices: Choices,
+    /// The diff as git gave it, and the one built from it with `choices`
+    /// that the pane shows in its place. If the pane's data holds some
+    /// other file, the data has reloaded since, and that file is the one
+    /// git gave.
+    pub built: Option<(Arc<FileDiff>, Arc<FileDiff>)>,
 }
 
 pub struct Detail {
@@ -247,6 +283,9 @@ pub struct Detail {
     split: bool,
     pub collapsed: HashSet<(Section, BString)>,
     pub collapsed_sections: HashSet<Section>,
+    /// Files whose hunks show more or fewer context lines than git gave.
+    /// These are kept by path, like folds, so they survive a reload.
+    pub shown_lines: HashMap<(Section, BString), ShownLines>,
     /// Leave the commit message out of the header, because the message
     /// editor is drawn in its place.
     pub hide_message: bool,
@@ -278,6 +317,7 @@ impl Default for Detail {
             split: false,
             collapsed: HashSet::new(),
             collapsed_sections: HashSet::new(),
+            shown_lines: HashMap::new(),
             hide_message: false,
             highlights: HashMap::new(),
             requested: HashSet::new(),
@@ -331,6 +371,8 @@ impl Detail {
         // Each commit has its own folds, which come with the commit when it
         // loads.
         self.collapsed.retain(|(sec, _)| *sec != Section::Commit);
+        self.shown_lines
+            .retain(|(sec, _), _| *sec != Section::Commit);
         self.reset_for_reload();
     }
 
@@ -517,7 +559,9 @@ impl Detail {
         };
         if pos.is_none() {
             let fallback = match &old_key {
-                RowKey::Line(s, p, h, _) => Some(RowKey::Hunk(*s, p.clone(), *h)),
+                RowKey::Line(s, p, h, _) | RowKey::HunkEnd(s, p, h) => {
+                    Some(RowKey::Hunk(*s, p.clone(), *h))
+                }
                 _ => None,
             };
             if let Some(k) = fallback {
@@ -533,6 +577,7 @@ impl Detail {
         if pos.is_none()
             && let RowKey::Line(s, p, ..)
             | RowKey::Hunk(s, p, _)
+            | RowKey::HunkEnd(s, p, _)
             | RowKey::Notice(s, p)
             | RowKey::File(s, p) = &old_key
         {
@@ -743,6 +788,11 @@ impl Detail {
                         });
                     }
                 }
+                self.rows.push(Row::HunkEnd {
+                    sec,
+                    file: fi,
+                    hunk: hi,
+                });
             }
         }
     }
@@ -821,7 +871,9 @@ impl Detail {
             Row::File { sec, file: i } | Row::Notice { sec, file: i, .. } => {
                 Unit::File(sec, file(sec, i)?.path().to_owned())
             }
-            Row::Hunk { sec, file: i, hunk } => Unit::Hunk(sec, file(sec, i)?, hunk),
+            Row::Hunk { sec, file: i, hunk } | Row::HunkEnd { sec, file: i, hunk } => {
+                Unit::Hunk(sec, file(sec, i)?, hunk)
+            }
             Row::Line {
                 sec,
                 file: i,
@@ -865,7 +917,12 @@ impl Detail {
     /// is on. Rows that aren't stops at any level, such as blank ones,
     /// count as the file level.
     pub fn depth(&self) -> Depth {
-        self.depth_of(self.cursor).unwrap_or(Depth::Files)
+        match self.rows.get(self.cursor) {
+            // The bottom edge of a hunk isn't a stop, but a click puts the
+            // cursor there, and it belongs to the hunk.
+            Some(Row::HunkEnd { .. }) => Depth::Hunks,
+            _ => self.depth_of(self.cursor).unwrap_or(Depth::Files),
+        }
     }
 
     /// The level at which j and k stop on row `i`, if they stop there.
@@ -877,7 +934,7 @@ impl Detail {
             Row::Section(_) | Row::File { .. } => Some(Depth::Files),
             Row::Hunk { .. } | Row::Notice { .. } => Some(Depth::Hunks),
             Row::Line { .. } | Row::Split { .. } => Some(Depth::Lines),
-            Row::Blank | Row::Empty(_) => None,
+            Row::Blank | Row::Empty(_) | Row::HunkEnd { .. } => None,
         }
     }
 
@@ -975,7 +1032,9 @@ impl Detail {
             | Row::Split {
                 sec, file, hunk, ..
             } => Row::Hunk { sec, file, hunk },
-            Row::Hunk { sec, file, .. } | Row::Notice { sec, file, .. } => Row::File { sec, file },
+            Row::Hunk { sec, file, .. }
+            | Row::HunkEnd { sec, file, .. }
+            | Row::Notice { sec, file, .. } => Row::File { sec, file },
             _ => return None,
         };
         (0..self.cursor).rev().find(|&i| self.rows[i] == want)
@@ -1057,6 +1116,7 @@ fn row_key(rows: &[Row], i: usize, paths: &HashMap<Section, Vec<BString>>) -> Ro
             hunk,
             line,
         }) => RowKey::Line(*sec, path(*sec, *file), *hunk, *line),
+        Some(Row::HunkEnd { sec, file, hunk }) => RowKey::HunkEnd(*sec, path(*sec, *file), *hunk),
         Some(Row::Split {
             sec,
             file,
@@ -1371,6 +1431,7 @@ mod tests {
         | Row::Notice { file, .. }
         | Row::Hunk { file, .. }
         | Row::Line { file, .. }
+        | Row::HunkEnd { file, .. }
         | Row::Split { file, .. } = &mut row
         {
             *file = 0;
@@ -1380,12 +1441,14 @@ mod tests {
 
     /// Every file that should be shown has a header, and then either a
     /// notice or its hunks. Each hunk's lines follow its header in order,
-    /// so each changed line shows up exactly once.
+    /// so each changed line shows up exactly once, and then its bottom
+    /// edge.
     fn check_rows(d: &Detail, data: &Data, split: bool) -> Result<(), TestCaseError> {
         let mut sections = Vec::new();
         let mut files = Vec::new();
         let mut notices = Vec::new();
         let mut hunks = Vec::new();
+        let mut ends = Vec::new();
         // The left and right columns of each hunk. A unified row is on both.
         let mut columns: HashMap<_, (Vec<usize>, Vec<usize>)> = HashMap::new();
         let mut file_now = None;
@@ -1444,11 +1507,18 @@ mod tests {
                     l.extend(left);
                     r.extend(right);
                 }
+                Row::HunkEnd { sec, file, hunk } => {
+                    prop_assert_eq!(hunk_now, Some((sec, file, hunk)));
+                    ends.push((sec, file, hunk));
+                    hunk_now = None;
+                }
                 Row::Meta(_) | Row::Blank | Row::Empty(_) => {
                     (file_now, hunk_now) = (None, None);
                 }
             }
         }
+        // Each hunk ends with its bottom edge.
+        prop_assert_eq!(&ends, &hunks);
 
         let shown: Vec<Section> = match &data.workdir {
             Some(_) => SECTIONS
