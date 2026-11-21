@@ -46,18 +46,19 @@ pub async fn apply_lines(
         bail!("No changed lines are selected.");
     };
     let mut args = vec!["apply", "--recount", "--whitespace=nowarn"];
-    // Without context lines around a hunk, `git apply` can't check where
-    // it belongs, so it refuses the patch unless we say that this is
-    // expected. That happens when `context_lines` is 0. Such a hunk can
-    // still have context lines in the middle, because git joins hunks that
-    // are close together when the user sets `diff.interHunkContext`. With
-    // more context, only a hunk that covers the whole file starts and ends
-    // with a change.
+    // `git apply` takes a hunk without context at its start or end to sit
+    // at the start or end of the file. Without context lines on both ends,
+    // it can't check where a hunk belongs at all, and it refuses the patch.
+    // `--unidiff-zero` turns both rules off, and git then places each hunk
+    // by the line in its header. That happens when `context_lines` is 0,
+    // and when the user hid the context at one edge of a hunk. A hunk that
+    // git joined because of `diff.interHunkContext` can have context lines
+    // in the middle but none at its ends.
     let changed = |l: Option<&DiffLine>| l.is_some_and(|l| l.kind != LineKind::Context);
     let zero_context = file
         .hunks
         .iter()
-        .all(|h| changed(h.lines.first()) && changed(h.lines.last()));
+        .any(|h| changed(h.lines.first()) || changed(h.lines.last()));
     if zero_context {
         args.push("--unidiff-zero");
     }

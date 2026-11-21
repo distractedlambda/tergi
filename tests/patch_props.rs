@@ -3,7 +3,9 @@
 //! Each case makes a scratch repository with a random file and a random edit
 //! to it, picks random changed lines, and runs them through `apply_lines`
 //! with the real `git apply`. A small model works out what the file should
-//! hold afterwards, straight from the diff and the selection.
+//! hold afterwards, straight from the diff and the selection. Some cases
+//! first show or hide random context lines with `regroup`, as the user does
+//! by moving the edges of hunks.
 //!
 //! `staging_in_steps` does the same over several files and several steps.
 //! Each file starts with random versions in HEAD, the index and the working
@@ -27,6 +29,7 @@ use gix::bstr::ByteSlice as _;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use tergi::git::commit::FileTexts;
+use tergi::git::context::{Choices, Side, regroup};
 use tergi::git::diff::{FileDiff, LineKind};
 use tergi::git::ops::{self, ApplyMode, apply_lines};
 use tergi::git::patch::build_patch;
@@ -81,6 +84,9 @@ struct Case {
     context: u32,
     /// Whether each changed line is selected, repeated as needed.
     mask: Vec<bool>,
+    /// Unchanged lines to show or hide around the hunks, as the user can
+    /// by moving their edges.
+    shown: Vec<(u32, bool)>,
     settings: Settings,
 }
 
@@ -133,16 +139,21 @@ fn case() -> impl Strategy<Value = Case> {
         mode,
         0u32..4,
         prop::collection::vec(any::<bool>(), 1..40),
+        prop_oneof![
+            Just(Vec::new()),
+            prop::collection::vec((1u32..28, any::<bool>()), 1..16),
+        ],
         settings(),
     )
         .prop_map(
-            |(old, ops, eol, exists, mode, context, mask, settings)| Case {
+            |(old, ops, eol, exists, mode, context, mask, shown, settings)| Case {
                 new: edit(&old, &ops, eol),
                 old,
                 exists,
                 mode,
                 context,
                 mask,
+                shown,
                 settings,
             },
         )
@@ -254,16 +265,25 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
     let wd = rt
         .block_on(Workdir::load(&s.git, case.context, 100_000))
         .expect("load");
-    let files = match case.mode {
-        ApplyMode::Unstage => wd.staged,
-        _ => wd.unstaged.into_iter().chain(wd.untracked).collect(),
+    let (files, texts, side): (Vec<_>, Vec<_>, _) = match case.mode {
+        ApplyMode::Unstage => (wd.staged, wd.staged_texts, Side::Old),
+        _ => (
+            wd.unstaged.into_iter().chain(wd.untracked).collect(),
+            wd.unstaged_texts
+                .into_iter()
+                .chain(wd.untracked_texts)
+                .collect(),
+            Side::New,
+        ),
     };
-    let Some(diff) = files.into_iter().find(|f| f.path() == PATH) else {
+    let Some(i) = files.iter().position(|f| f.path() == PATH) else {
         // Nothing changed.
         prop_assert_eq!(&old, &new);
         return Ok(());
     };
-    let diff = Arc::unwrap_or_clone(diff);
+    let mut diff = Arc::unwrap_or_clone(files[i].clone());
+    let choices: Choices = case.shown.iter().copied().collect();
+    diff.hunks = regroup(&diff.hunks, &texts[i], side, &choices);
 
     let mut selected = HashSet::new();
     let mut k = 0;
