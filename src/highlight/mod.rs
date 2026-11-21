@@ -14,6 +14,7 @@
 mod c;
 mod cmake;
 mod gitignore;
+mod javascript;
 mod markdown;
 mod racket;
 mod rust;
@@ -118,6 +119,7 @@ pub enum Language {
     Cmake,
     Cpp,
     Gitignore,
+    JavaScript,
     Markdown,
     Racket,
     Rhombus,
@@ -155,6 +157,7 @@ impl Language {
             }
             // `.gitignore`, and templates such as `Rust.gitignore`.
             "gitignore" => Some(Language::Gitignore),
+            "js" | "mjs" | "cjs" => Some(Language::JavaScript),
             "md" | "markdown" | "mdown" | "mkd" | "mkdn" | "mdwn" => Some(Language::Markdown),
             "rkt" | "rktl" | "rktd" => Some(Language::Racket),
             "rhm" => Some(Language::Rhombus),
@@ -172,6 +175,7 @@ impl Language {
             Language::C | Language::Cpp => c::lex(text, self, &mut out),
             Language::Cmake => cmake::lex(text, &mut out),
             Language::Gitignore => gitignore::lex(text, &mut out),
+            Language::JavaScript => javascript::lex(text, &mut out),
             Language::Markdown => markdown::lex(text, &mut out),
             Language::Racket | Language::Rhombus | Language::Scribble => {
                 racket::lex(text, self, &mut out);
@@ -374,6 +378,7 @@ mod tests {
         "CMakeLists.txt",
         "a.cpp",
         ".gitignore",
+        "a.js",
         "a.md",
         "a.rkt",
         "a.rhm",
@@ -453,6 +458,12 @@ mod tests {
         pieces.extend([
             "a: ", "- ", "? ", ": ", "|", ">-", "|2+", "---", "...", "&a", "*a", "!!str", "!<x>",
             "%YAML", "''", "{a: b}", "[a, b]", ".inf", "~", "  ", "    ",
+        ]);
+        // Pieces of JavaScript, such as template literals and regular
+        // expressions.
+        pieces.extend([
+            "`a${", "}b`", "/a/g", "[/]", "x /", "?.", "=>", "if (", ")", "@x", "#!", "#p",
+            "\\u{41}", "of", "import", "from", "'a'",
         ]);
         // Pieces of gitignore patterns.
         pieces.extend(["!", "**/", "?", "[!a-]", "[[:alpha:]]", "\\#"]);
@@ -550,6 +561,8 @@ mod tests {
             Some(Language::Cmake)
         );
         assert_eq!(Language::for_path("a/b.yml"), Some(Language::Yaml));
+        assert_eq!(Language::for_path("a.js"), Some(Language::JavaScript));
+        assert_eq!(Language::for_path("a.mjs"), Some(Language::JavaScript));
         assert_eq!(Language::for_path(".clang-format"), Some(Language::Yaml));
         assert_eq!(Language::for_path("a.lock"), None);
         assert_eq!(Language::for_path("a.b/c"), None);

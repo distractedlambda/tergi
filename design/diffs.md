@@ -231,10 +231,10 @@ in the background, in a worker that `Highlighter::new` returns.
 
 Each language has its own lexer, written with Logos and kept in
 `src/highlight/`, one file per language: `c.rs` for C and C++,
-`cmake.rs` for CMake, `rust.rs` for Rust, `racket.rs` for Racket and
-Scribble, `shrubbery.rs` for Rhombus, `toml.rs` for TOML, `yaml.rs` for
-YAML, `markdown.rs` for Markdown, and `gitignore.rs` for `.gitignore`
-files. A lexer turns
+`cmake.rs` for CMake, `javascript.rs` for JavaScript, `rust.rs` for
+Rust, `racket.rs` for Racket and Scribble, `shrubbery.rs` for Rhombus,
+`toml.rs` for TOML, `yaml.rs` for YAML, `markdown.rs` for Markdown, and
+`gitignore.rs` for `.gitignore` files. A lexer turns
 text into `Tokens`: byte ranges, each with a `Kind` such as `Comment`,
 `Keyword` or `Escape`. Plain text has no token. An identifier that gets
 no other color is an `Identifier` token, which gets a color from its
@@ -651,6 +651,56 @@ line, and a path like `1:x` names a stage of the index.
 The language is chosen by the file's extension, in
 `Language::for_path`. Files in other languages aren't highlighted.
 
+### JavaScript
+
+`javascript.rs` follows the ECMAScript standard. Files ending in `.js`,
+`.mjs` and `.cjs` are JavaScript.
+
+A `/` can start a regular expression or divide, and only a parser can
+tell which. The lexer guesses from the token before it. After a name,
+a literal or a `]`, a `/` divides. After an operator or most keywords,
+or where a statement starts, it starts a regular expression. `++` and
+`--` don't change the guess, because they come right after an operand
+or right before one. Two closing brackets need more care:
+
+- A `)` ends an operand, except after the condition of `if`, `while`,
+  `for` or `with`. A statement comes after that one, so
+  `if (x) /a/.test(y)` holds a regular expression.
+- A `}` that closes a block is followed by a statement, and one that
+  closes an object literal ends an operand. A `{` starts an object
+  literal after an operator or a keyword such as `return`, and a block
+  anywhere else. After a `:`, it starts a block when the `:` ends a
+  label or a case. We guess that from whether we're inside an object
+  literal or other brackets.
+
+So the lexer keeps a stack of the brackets it's inside of. The same
+stack holds the `${` of each template literal, and the `}` that closes
+one goes back to the template's text. A `)` or `]` never closes a
+`${`. A closing bracket that matches nothing changes nothing, since a
+hunk can start in the middle of a block.
+
+The reserved words get the keyword color, and so do `let`, `static`,
+`async` and `await`. Any word after `.` or `?.` names a property, and
+so does a word followed by `:` or `(` where a property starts in an
+object literal. Those are identifiers, so `x.default` and `{new: 1}`
+don't have keywords in them. `as` and `from` are keywords only in
+`import` and `export` declarations, and `of` only after the variable
+in the parentheses of `for`. `true`, `false` and `null` get the
+constant color. So do `undefined`, `NaN` and `Infinity`, which are
+really global variables, because Sublime Text colors them that way.
+Private names such as `#x` are identifiers. The `@` of a decorator and
+the name after it, as in `@a.b`, get the attribute color.
+
+A string can't go on to the next line unless a backslash comes before
+the line break, so one without its closing quote ends with its line.
+In strings and template literals, a backslash and the character after
+it are an escape, except for a `\x` or `\u` without the hex digits it
+needs. Old octal escapes such as `\012` count too. A regular expression
+gets the string color, and a backslash and the character after it get
+the escape color. A `/` inside a class such as `[/]` doesn't end it.
+One without its closing `/` ends with its line. A `#!` line at the
+very start of a file is a comment.
+
 ### Rainbow identifiers
 
 With `rainbow_identifiers` on, which is the default, each `Identifier`
@@ -661,9 +711,9 @@ uses the hash to pick one of the 16 colors in `Theme::identifiers`.
 The lexers only mark identifiers that get no other color, so keywords,
 and words such as `AND` in a CMake `if`, keep their usual colors.
 
-The C, C++, CMake, Rust, Racket, Scribble and Rhombus lexers mark
-identifiers. TOML, YAML, Markdown and gitignore have nothing that is
-really a name in code, so they don't.
+The C, C++, CMake, JavaScript, Rust, Racket, Scribble and Rhombus
+lexers mark identifiers. TOML, YAML, Markdown and gitignore have
+nothing that is really a name in code, so they don't.
 
 `Theme::build` makes the 16 colors in Oklab, where the distance
 between two colors matches how different they look much better than
@@ -792,6 +842,15 @@ leave that column blank.
   -P` on 15,000 random arguments. With no variables defined, the colors
   say whether CMake gives an error, and what it prints if it doesn't.
   They agreed on all of them.
+- `src/highlight/javascript.rs` has examples for each kind of
+  JavaScript token, and a list of places where a `/` divides or starts
+  a regular expression. The dev image has no JavaScript parser, so
+  nothing compares the lexer with one automatically. When we wrote it,
+  we parsed the 6,513 JavaScript files in some popular npm packages,
+  such as lodash, three, d3, webpack and prettier, with acorn. We
+  checked whether each character was in a comment, a string, a
+  template literal, a regular expression or a number. The lexer agreed
+  with acorn on all of them.
 - `src/highlight/toml.rs` has examples for each kind of TOML token. Its
   property test builds random valid documents from tricky pieces, such
   as keys that look like values and strings that hold brackets. It
@@ -847,8 +906,16 @@ leave that column blank.
 ## Known gaps
 
 - A merge commit is diffed against its first parent only.
-- Only C, C++, CMake, Rust, Racket, Rhombus, Scribble, TOML, YAML,
-  Markdown and `.gitignore` files are highlighted.
+- Only C, C++, CMake, JavaScript, Rust, Racket, Rhombus, Scribble,
+  TOML, YAML, Markdown and `.gitignore` files are highlighted. That
+  leaves out JSX and TypeScript.
+- The JavaScript lexer can guess wrong about a `/`. In a statement
+  such as `a ? b : {} / 2`, it reads the `{}` as a block and the `/`
+  as the start of a regular expression.
+- A hunk from the middle of a JavaScript template literal that we
+  don't have the full text for reads the template's text as code.
+- The JavaScript lexer reads `<!--` and `-->`, which start comments
+  in old scripts, as operators.
 - A hunk from the middle of a CMake `if` whose arguments go on over
   several lines doesn't know it's in an `if`, so `AND` and the other
   operators there are plain.

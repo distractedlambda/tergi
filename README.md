@@ -261,17 +261,17 @@ symlink, tergi writes to the file the link points to.
 
 Each theme uses the colors that a popular color scheme publishes, and
 syntax colors that follow the scheme's own. For now, only C, C++,
-CMake, Rust, Racket, Rhombus, Scribble, TOML, YAML, Markdown and
-`.gitignore` files get syntax colors. To try them out, press Ctrl+P and run "Choose
-theme…". The theme changes as you move through the list.
-Press Enter to keep one and save it to the config file, or Esc to go
-back.
+CMake, JavaScript, Rust, Racket, Rhombus, Scribble, TOML, YAML,
+Markdown and `.gitignore` files get syntax colors. To try them out,
+press Ctrl+P and run "Choose theme…". The theme changes as you move
+through the list. Press Enter to keep one and save it to the config
+file, or Esc to go back.
 
-Names in C, C++, CMake, Rust, Racket, Rhombus and Scribble code get a
-color picked from the name itself, so each use of a variable has the
-same color. Keywords keep their own color. Each theme has its own set of
-these colors. To draw the other names in the text color instead, set
-`rainbow_identifiers = false`.
+Names in C, C++, CMake, JavaScript, Rust, Racket, Rhombus and Scribble
+code get a color picked from the name itself, so each use of a variable
+has the same color. Keywords keep their own color. Each theme has its
+own set of these colors. To draw the other names in the text color
+instead, set `rainbow_identifiers = false`.
 
 | Name in the config | Theme |
 | --- | --- |

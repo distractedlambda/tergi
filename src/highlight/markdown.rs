@@ -55,6 +55,7 @@ fn for_info(info: &str) -> Option<Language> {
         .next()?
         .to_ascii_lowercase();
     match word.as_str() {
+        "javascript" => Some(Language::JavaScript),
         "rust" => Some(Language::Rust),
         "racket" => Some(Language::Racket),
         "scribble" => Some(Language::Scribble),
@@ -1844,6 +1845,11 @@ Setext
                 ("~~~", Punctuation),
             ]
         );
+        for lang in ["js", "javascript"] {
+            let text = format!("```{lang}\nreturn /a/\n```");
+            assert_eq!(kinds_of(&text, Keyword), ["return"]);
+            assert_eq!(kinds_of(&text, String), ["/a/"]);
+        }
         // A fence inside a list item ends with the item.
         assert_eq!(kinds_of("- ```\n  a\nb\n", String), ["a"]);
     }
