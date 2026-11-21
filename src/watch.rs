@@ -214,7 +214,15 @@ pub fn start_with(
                                 EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
                             );
                             for p in &ev.paths {
-                                let flags = classify(&roots, p, &watches.ignored);
+                                let mut flags = classify(&roots, p, &watches.ignored);
+                                // An ignored folder that we remembered while
+                                // it was gone may not be ignored any more.
+                                // Only git can tell, so load the status. We
+                                // keep dropping events from inside it until
+                                // then.
+                                if appeared && watches.ignored.gone.contains(p) {
+                                    flags |= WORKTREE;
+                                }
                                 if flags == 0 {
                                     continue;
                                 }
@@ -248,7 +256,8 @@ pub fn start_with(
                         Ok(true) => {
                             // Folders that stopped being ignored may have
                             // changed after git looked at them and before we
-                            // watched them.
+                            // watched them, or before we stopped dropping
+                            // their events.
                             pending |= WORKTREE;
                             first.get_or_insert_with(Instant::now);
                             None
@@ -331,6 +340,9 @@ struct Ignored {
     /// Ignored folders, with everything in them.
     dirs: HashSet<PathBuf>,
     files: HashSet<PathBuf>,
+    /// The folders in `dirs` that the last status didn't list, because they
+    /// didn't exist.
+    gone: HashSet<PathBuf>,
 }
 
 impl Ignored {
@@ -349,10 +361,11 @@ impl Ignored {
         // everything the build puts in it until the next status. So we
         // keep ignored folders that are gone.
         for d in &old.dirs {
-            if std::fs::symlink_metadata(d).is_err() {
-                new.dirs.insert(d.clone());
+            if !new.dirs.contains(d) && std::fs::symlink_metadata(d).is_err() {
+                new.gone.insert(d.clone());
             }
         }
+        new.dirs.extend(new.gone.iter().cloned());
         new
     }
 
@@ -383,8 +396,8 @@ struct Watches {
 impl Watches {
     /// Take in the ignored paths from a new status. On Linux, walk the tree
     /// again if the ignored folders changed. Returns whether that added
-    /// watches to folders we didn't watch before, not counting the first
-    /// walk.
+    /// watches to folders we didn't watch before. On macOS, returns whether
+    /// any folder stopped being ignored. Neither counts the first status.
     fn update(
         &mut self,
         watcher: &Arc<Mutex<RecommendedWatcher>>,
@@ -395,8 +408,12 @@ impl Watches {
         let walk =
             cfg!(target_os = "linux") && (!self.informed || ignored.dirs != self.ignored.dirs);
         let first = !self.informed;
+        let unignored = self.ignored.dirs.iter().any(|d| !ignored.dirs.contains(d));
         self.ignored = ignored;
         self.informed = true;
+        if !cfg!(target_os = "linux") {
+            return Ok(unignored && !first);
+        }
         if !walk {
             return Ok(false);
         }
@@ -833,6 +850,30 @@ mod tests {
     }
 
     #[test]
+    fn notices_a_folder_that_comes_back_no_longer_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(git(dir.path(), &["init", "-q"]));
+        std::fs::write(dir.path().join(".gitignore"), "gen/\n").unwrap();
+        std::fs::create_dir(dir.path().join("gen")).unwrap();
+        std::fs::write(dir.path().join("gen/a"), "x").unwrap();
+        let (dir, handle, rx, _rt) = watch_repo(dir);
+        let gen_dir = dir.path().join("gen");
+        std::fs::remove_dir_all(&gen_dir).unwrap();
+        tell(dir.path(), &handle);
+        let edited = write(&rx, &dir.path().join(".gitignore"));
+        assert_eq!(edited.map(|f| f & WORKTREE), Some(WORKTREE));
+        tell(dir.path(), &handle);
+        settle(&rx);
+        std::fs::create_dir(&gen_dir).unwrap();
+        let back = rx.recv_timeout(Duration::from_secs(2));
+        assert_eq!(back.map(|f| f & WORKTREE), Ok(WORKTREE));
+        // The app loads the status after that.
+        tell(dir.path(), &handle);
+        let written = write(&rx, &gen_dir.join("b"));
+        assert_eq!(written.map(|f| f & WORKTREE), Some(WORKTREE));
+    }
+
+    #[test]
     fn remembers_ignored_folders_that_are_gone() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -868,6 +909,7 @@ mod tests {
         let ignored = Ignored {
             dirs: HashSet::from([PathBuf::from("/r/target")]),
             files: HashSet::from([PathBuf::from("/r/src/a.log")]),
+            gone: HashSet::new(),
         };
         assert_eq!(
             classify(&roots, Path::new("/r/src/a.rs"), &ignored),

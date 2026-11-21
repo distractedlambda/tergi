@@ -51,22 +51,3 @@ The cause is in `nav_key` in `src/app/input.rs`. It treats Shift with
 any movement key as extending the selection. Crossterm reports an
 uppercase letter with the Shift modifier, so `G` counts too. The
 history only extends with Shift for keys that aren't letters.
-
-## Changes in a folder that stopped being ignored while it was gone
-
-The watcher remembers ignored folders after they are deleted, so that a
-build tool can delete and remake its output folder without making the
-watcher watch everything in it. But it keeps remembering a folder even
-after the ignore rules change so that git no longer ignores it. When
-the folder comes back, the watcher drops every change in it until some
-unrelated refresh loads the status.
-
-To see it, start with `gen/` in `.gitignore` and a `gen` folder. Run
-`git clean -fdx`, which deletes `gen`. Remove the rule from
-`.gitignore`. Then write `gen/f`. tergi doesn't show the new file until
-something else makes it refresh.
-
-The cause is in `Ignored::new` in `src/watch.rs`, which keeps every old
-ignored folder that no longer exists. `design/watching.md` lists this
-under its known gaps. `tests/watch_props.rs` finds it, and the case is
-saved in `proptest-regressions/watch_props.txt`.

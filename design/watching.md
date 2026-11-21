@@ -101,6 +101,13 @@ it was gone, we would see everything the build writes until the next
 status. So `Ignored::new` keeps ignored folders from the previous status
 as long as they don't exist.
 
+The rules may change while such a folder is gone, so that git no longer
+ignores it. We can't tell without asking git. So when a folder we kept
+this way appears again, we report `WORKTREE` once, and keep dropping
+events from inside it. If the status that follows still lists it as
+ignored, nothing else happens. If it doesn't, the folder isn't ignored
+any more, and the next section explains what happens then.
+
 A path git hasn't seen yet can't be in the list. When a build folder
 appears for the first time after startup, or a new `*.log` file is
 written, it causes one refresh. That status lists it, and later events
@@ -146,6 +153,10 @@ refreshes.
 FSEvents watches a whole tree cheaply, so we watch the working directory
 with all its subfolders, and rely on `Ignored` to drop the events we
 don't care about.
+
+When a later status no longer lists a folder as ignored, we report
+`WORKTREE`. We dropped events from that folder until the status arrived,
+and the next status catches anything that changed after git looked.
 
 ## How a batch is reported
 
@@ -195,11 +206,13 @@ least likely to matter.
   root of the working tree. A change in a subfolder after git looked at
   it and before we watch it goes unnoticed until the next refresh. The
   window is about as long as one `git status`.
-- **Ignored folders that come back after the rules changed.** We keep
-  ignored folders that are gone. If one comes back after the rules
-  stopped ignoring it, we drop its events until the next status. The
-  same happens when a nested repository is deleted, because events from
-  inside `.git` folders are always dropped.
+- **Nested repositories that lose their `.git` folder.** Events from
+  inside `.git` folders are always dropped, so we don't notice when a
+  nested repository's `.git` folder is deleted. The folder around it is
+  then an ordinary folder. On Linux we never watched it, and a new
+  status doesn't make us walk it, because the ignored folders didn't
+  change. So we miss changes in it until something else makes us walk
+  the tree.
 - **Nested repositories on macOS.** On Linux we don't watch nested
   repositories or submodules. On macOS we get their events, and they
   cause refreshes unless git ignores them. The status lists an untracked
