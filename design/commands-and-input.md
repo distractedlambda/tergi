@@ -180,6 +180,8 @@ it changes.
   selection.
 - Dragging over diff lines selects them. Dragging past the top or bottom
   edge scrolls.
+- Dragging a hunk's header or the bar under it moves that edge of the
+  hunk (see "Moving the edges of hunks" in `diffs.md`).
 - Dragging a divider resizes the panes. Dragging a planner row moves it.
 - Clicks are looked up in the hits of the last frame. The main loop
   handles every queued event before it draws again, so a click can

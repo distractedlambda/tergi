@@ -67,6 +67,9 @@ Skip and Abort buttons.
 - Right-click anything for a menu of what you can do with it.
 - Drag over diff lines to select them, then right-click them to stage,
   unstage or discard them.
+- Drag a hunk's header up to show more lines above it, or down to hide
+  them. The thin bar under each hunk does the same for the lines below
+  it. A hunk that grows into the next one joins it.
 - Scroll with the wheel. Hold Shift to scroll the file or commit message
   under the pointer sideways. Each one keeps its own position, and it
   stops once the end of its longest line is in view.
@@ -116,7 +119,15 @@ history.
 | `v` | Start selecting lines. Esc ends the selection. |
 | Shift+arrows | Select lines |
 | `]` `[` / `}` `{` | Next and previous file or hunk |
+| `K` / `J` | Move the hunk's top edge up or down |
+| Ctrl+J / Ctrl+K | Move the hunk's bottom edge down or up |
+| `.=` | Put the file's hunks back the way git shows them |
 | Enter | On a parent commit, jump to it. On a large diff, show it. |
+
+Moving the edges of a hunk shows the unchanged lines around it, or
+hides its context lines. When two hunks meet, they become one, and
+staging a hunk stages what it shows. The edges stay where you put them
+when the working directory reloads.
 
 tergi remembers which files you folded, even after you quit. Each
 commit has its own folds. In the working directory, staged and unstaged

@@ -147,6 +147,9 @@ The kinds of row are:
 - `File`: a file header.
 - `Notice`: a line in place of a diff, such as "Binary file".
 - `Hunk` and `Line`: a hunk header and one diff line.
+- `HunkEnd`: a thin bar under each hunk, which the user drags to move
+  the hunk's bottom edge. It isn't a stop for j and k, but a click puts
+  the cursor there, and then it counts as part of the hunk.
 - `Split`: one row of the side-by-side view, with a line on each side.
 - `Blank` and `Empty`: spacing, and placeholders such as "Loading…".
 
@@ -244,6 +247,57 @@ the search for the next hunk meets a folded file, it unfolds it and
 rebuilds the rows. The rebuild keeps the cursor on its row, so the next
 search starts from the same place and finds the hunks that just
 appeared.
+
+### Moving the edges of hunks
+
+The user can move the top and bottom edges of a hunk, to show the
+unchanged lines around it or to hide its context lines. `K` and `J`
+move the top edge, and Ctrl+J and Ctrl+K move the bottom edge. With
+the mouse, the user drags the hunk's header or its `HunkEnd` row. When
+the context of two hunks meets, they become one hunk, as they would
+in git with more context.
+
+`regroup` in `src/git/context.rs` builds the hunks again. It walks the
+whole file in order. Changed lines always show up. The context lines in
+git's diff show up unless the user hid them, and the lines between
+hunks show up if the user chose them. Each run of lines that show up
+and has a change in it becomes a hunk. The lines between hunks come
+from the full texts of both sides, which we load for syntax
+highlighting anyway. A line is only used if both texts have it with the
+same text and line ending, because the texts are read separately from
+the diff and the file may have changed in between. Lines that aren't
+valid UTF-8 aren't used either, because the texts only keep a lossy
+copy, and a patch needs the bytes. Without the texts, an edge can
+still move in, but it can only move out as far as git's context went. A new hunk takes the section
+name of the first hunk of git's that it has changes from, so a hunk
+that grew past the line that git took its name from still shows it.
+
+The choices are kept in `Detail::shown_lines`, by section and path
+like folds, as a map from line numbers to shown or hidden. A line is
+named by its number on the side of the diff that staging leaves alone.
+That's the new side for unstaged changes and commits, and the old side
+for staged changes. So staging one hunk of a file doesn't move the
+choices for its other hunks. Untracked and conflicted files show every
+line as added, so they have no edges to move.
+
+The hunks built from the choices replace git's in the pane's data
+(`App::apply_shown_lines`), so staging, word marks, highlighting and
+the cursor all work on the hunks the user sees. `ShownLines::built`
+keeps git's file next to the one built from it. Before each rebuild of
+the rows, the app checks whether the data still holds the built file.
+If it doesn't, the data has reloaded, and the new file is git's, so the
+hunks are built again from it. A file that leaves its section loses its
+choices, and so does a commit when the pane moves to another one.
+
+When an edge moves, the word marks and syntax colors of the file are
+dropped, because they are kept by hunk and line index. The cursor goes
+back to the same line, or to the same header or bottom edge, of the
+hunk that holds the first changed line it was in.
+
+While the mouse drags the top edge, the pane scrolls by one row for
+each line shown or hidden. The lines of the hunk then stay where they
+are on the screen, and the header follows the mouse. A drag ends when
+its hunk joins another one, because the edge it held is gone.
 
 ## Word marks
 
@@ -941,6 +995,13 @@ leave that column blank.
   `a_large_commit_remembers_the_files_unfolded_in_it`. `src/state.rs`
   checks that the store keeps folds apart by repository, section and
   commit.
+- `src/git/context.rs` has examples of hunks that grow, shrink and
+  join, and a property test that hunks built from random choices still
+  turn the old text into the new one, keep every change, and never
+  touch. Without choices, they are git's hunks.
+- `tests/hunk_edges.rs` moves edges with the keys and the mouse in the
+  whole app, joins two hunks, stages a hunk without context at its top,
+  and checks that the choices survive a reload and go with a reset.
 - Each lexer that marks identifiers has a test called
   `marks_plain_identifiers`. The other lexer tests leave identifiers
   out of the tokens they compare, which keeps them readable.
@@ -1149,6 +1210,14 @@ leave that column blank.
 - Rainbow identifiers only look at the name. Two different variables
   with the same name get the same color, and with 16 colors, two
   different names often share one too.
+- A hunk that grew upwards keeps the section name git gave it, even
+  when the line that name came from is now inside the hunk. We don't
+  know which line git took it from, or what `diff.<driver>.xfuncname`
+  would pick for the new start.
+- The choices for moved hunk edges name lines by number. When a file
+  in the working directory gets lines inserted or removed above a moved
+  edge, the choice stays on the old number, and the edge shows up in
+  another place.
 - Word marks pair removed and added lines in order. When lines were
   inserted between edited ones, a line can be paired with the wrong
   partner, and then gets no marks or odd ones.
