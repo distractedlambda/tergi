@@ -56,6 +56,7 @@ fn for_info(info: &str) -> Option<Language> {
         .to_ascii_lowercase();
     match word.as_str() {
         "javascript" => Some(Language::JavaScript),
+        "llvm" => Some(Language::LlvmIr),
         "rust" => Some(Language::Rust),
         "racket" => Some(Language::Racket),
         "scribble" => Some(Language::Scribble),

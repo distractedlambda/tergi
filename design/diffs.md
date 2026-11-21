@@ -270,8 +270,8 @@ Each language has its own lexer, written with Logos and kept in
 `cmake.rs` for CMake, `javascript.rs` for JavaScript, `json.rs` for
 JSON, `rust.rs` for Rust, `racket.rs` for Racket and Scribble,
 `shrubbery.rs` for Rhombus, `toml.rs` for TOML, `yaml.rs` for YAML,
-`zig.rs` for Zig, `markdown.rs` for Markdown, and `gitignore.rs` for
-`.gitignore` files.
+`zig.rs` for Zig, `llvm.rs` for LLVM IR, `markdown.rs` for Markdown,
+and `gitignore.rs` for `.gitignore` files.
 A lexer turns text into `Tokens`: byte ranges, each with a `Kind` such as `Comment`,
 `Keyword` or `Escape`. Plain text has no token. An identifier that gets
 no other color is an `Identifier` token, which gets a color from its
@@ -800,6 +800,65 @@ Brackets, `,`, `;`, `:` and `.` get the punctuation color. Other
 symbols, such as `.*`, `?` and `+%=`, get the operator color. To the
 tokenizer, `.?` is a `.` and a `?`, so it gets both colors.
 
+### LLVM IR
+
+`llvm.rs` follows LLVM's own lexer, `llvm/lib/AsmParser/LLLexer.cpp`.
+Files ending in `.ll` are LLVM IR, and so are Markdown code blocks
+marked `llvm`.
+
+Names of values start with a sigil. Local values and basic blocks have
+`%`, globals have `@`, comdats `$`, metadata `!`, attribute groups `#`
+and summary entries `^`. These names are identifiers, and so are
+numbered ones such as `%0` and `!12`. To LLVM, `!12` is a `!` followed
+by a number, but it names a node the way `!foo` does. The `%` of a
+local value isn't part of its identifier. A basic block's label leaves
+out the `%`, as in `entry:`, so the label gets the same color as the
+`%entry` in a branch to it. A name such as `!DILocation` right before
+a `(` is a kind of node that only LLVM can define, so it gets the
+keyword color.
+
+Every bare word is a keyword, a type or a constant. LLVM has hundreds
+of keywords, mostly attributes and calling conventions, and adds more
+in most releases. A bare word that isn't one is an error, so we don't
+list them. Types are words such as `ptr`, `float` and `i32`. Constants
+are `true`, `false`, `null`, `none`, `undef`, `poison` and
+`zeroinitializer`, and the values of enums in debug info, such as
+`DW_TAG_member` and `DIFlagPrototyped`. Like LLVM, the lexer ends an
+integer type at its last digit, so `i32x` is `i32` and `x`. It reads
+`cc10` as the keyword `cc` and the number `10`.
+
+To LLVM, any run of letters, digits, `-`, `$`, `.` and `_` followed by
+a colon is a label. That includes the names of fields, as in
+`!DILocation(line: 3)`. In `memory(argmem: read)` and a few other
+attributes, the parser tells LLVM's lexer to read the name as a word
+instead. We can't tell these apart the way the parser does, so we look
+at where the label is. A label at the start of its line is a basic
+block, unless it's inside parentheses and something other than a
+comment follows it on its line. That's how a field looks in a node
+that goes on over several lines. Any other label is a field, and its
+name gets the colors it would have without the colon. So `line` and
+`argmem` get the keyword color, and the `float` in
+`denormal_fpenv(float: ieee)` gets the type color.
+
+Comments start with `;`, or go between `/*` and `*/`. A string reads
+up to the next quote, even on another line, and a backslash doesn't
+stop a quote from ending it. The only escapes are `\\` and a backslash
+followed by two hex digits, such as `\0A`. Quoted names such as
+`@"a b"` are identifiers.
+
+Numbers include floats written as their bits in hexadecimal, such as
+`0x3FF0000000000000`. A letter after the `0x` gives the type, as in
+`0xK4000C000000000000000`. Integers can be in hexadecimal too, as in
+`u0xFF`, and floats can be `+inf`, `-qnan` or `+nan(0x8)`. LLVM reads
+a NaN's payload up to the `)`, even on another line, and a quoted
+label can go on over lines too. LLVM never prints either one, and the
+colors of their first line would depend on the lines after it. So the
+lexer ends a payload with its line, and reads a quoted label that goes
+on over lines as a string and a colon.
+
+`=`, `*` and `|` get the operator color. Other symbols get the
+punctuation color.
+
 ### Rainbow identifiers
 
 With `rainbow_identifiers` on, which is the default, each `Identifier`
@@ -810,8 +869,8 @@ uses the hash to pick one of the 16 colors in `Theme::identifiers`.
 The lexers only mark identifiers that get no other color, so keywords,
 and words such as `AND` in a CMake `if`, keep their usual colors.
 
-The C, C++, CMake, JavaScript, Rust, Zig, Racket, Scribble and Rhombus
-lexers mark identifiers. TOML, YAML, JSON, Markdown and gitignore have
+The C, C++, CMake, JavaScript, Rust, Zig, LLVM IR, Racket, Scribble
+and Rhombus lexers mark identifiers. TOML, YAML, JSON, Markdown and gitignore have
 nothing that is really a name in code, so they don't.
 
 `Theme::build` makes the 16 colors in Oklab, where the distance
@@ -899,6 +958,16 @@ leave that column blank.
   color of each byte and where each identifier starts and ends. The
   lexer agreed with it on all of them. The dev image has no Zig, so the
   tests in the repository use fixed examples instead.
+- `src/highlight/llvm.rs` has examples for each kind of LLVM IR token,
+  such as names, labels, fields, strings and floats in hexadecimal.
+  The dev image has no LLVM, so nothing compares the lexer with LLVM's
+  automatically. When we wrote it, we built a program that runs
+  `LLLexer` from LLVM 23.1.6 over the 44,904 `.ll` files in LLVM's own
+  `test` directory. It gave each byte the color that its token calls
+  for, and we checked that against the lexer's colors and where each
+  identifier starts and ends. LLVM's lexer reports errors in 575 of
+  the files, which test errors or are templates that the tests fill
+  in. The lexer agreed with it on every byte of the other 44,329.
 - `src/highlight/racket.rs` has examples for each kind of Racket token,
   such as `#;` comments, here strings, characters, and atoms that are
   numbers and atoms that aren't. It also has examples of @-forms in
@@ -1026,9 +1095,9 @@ leave that column blank.
   folds of a repository that moves to another folder are lost, as its
   hidden branches are.
 - A merge commit is diffed against its first parent only.
-- Only C, C++, CMake, JavaScript, Rust, Racket, Rhombus, Scribble,
-  TOML, YAML, Markdown and `.gitignore` files are highlighted. That
-  leaves out JSX and TypeScript.
+- Only C, C++, CMake, JavaScript, Rust, Zig, LLVM IR, Racket, Rhombus,
+  Scribble, TOML, YAML, Markdown and `.gitignore` files are
+  highlighted. That leaves out JSX and TypeScript.
 - The JavaScript lexer can guess wrong about a `/`. In a statement
   such as `a ? b : {} / 2`, it reads the `{}` as a block and the `/`
   as the start of a regular expression.
@@ -1065,6 +1134,10 @@ leave that column blank.
   compiler joins them.
 - C and C++ read `<:` and `:>` as `[` and `]`. We read them as two
   tokens, which only changes the color of the `<` or `>`.
+- A hunk from the middle of an LLVM IR node that goes on over several
+  lines, and that we don't have the full text for, doesn't know it's
+  inside parentheses. So it reads a field at the start of a line, as
+  in `file: !1,`, as the label of a basic block.
 - A hunk from the middle of a Rhombus Scribble document that we don't
   have the full text for is lexed as Racket Scribble.
 - Other Racket languages with a reader of their own, such as

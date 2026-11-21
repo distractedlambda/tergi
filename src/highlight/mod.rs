@@ -16,6 +16,7 @@ mod cmake;
 mod gitignore;
 mod javascript;
 mod json;
+mod llvm;
 mod markdown;
 mod racket;
 mod rust;
@@ -123,6 +124,7 @@ pub enum Language {
     Gitignore,
     JavaScript,
     Json,
+    LlvmIr,
     Markdown,
     Racket,
     Rhombus,
@@ -168,6 +170,7 @@ impl Language {
             "json" | "jsonc" | "jsonl" | "ndjson" | "geojson" | "ipynb" | "webmanifest" => {
                 Some(Language::Json)
             }
+            "ll" => Some(Language::LlvmIr),
             "md" | "markdown" | "mdown" | "mkd" | "mkdn" | "mdwn" => Some(Language::Markdown),
             "rkt" | "rktl" | "rktd" => Some(Language::Racket),
             "rhm" => Some(Language::Rhombus),
@@ -189,6 +192,7 @@ impl Language {
             Language::Gitignore => gitignore::lex(text, &mut out),
             Language::JavaScript => javascript::lex(text, &mut out),
             Language::Json => json::lex(text, &mut out),
+            Language::LlvmIr => llvm::lex(text, &mut out),
             Language::Markdown => markdown::lex(text, &mut out),
             Language::Racket | Language::Rhombus | Language::Scribble => {
                 racket::lex(text, self, &mut out);
@@ -394,6 +398,7 @@ mod tests {
         ".gitignore",
         "a.js",
         "a.json",
+        "a.ll",
         "a.md",
         "a.rkt",
         "a.rhm",
@@ -487,6 +492,11 @@ mod tests {
         ]);
         // Pieces of Zig, such as multiline strings and builtins.
         pieces.extend(["\\\\", "@import", "@\"", "///", ".*", ".?", "0x1p-2"]);
+        // Pieces of LLVM IR, such as names, labels and fields.
+        pieces.extend([
+            "%x", "@\"a", "!0", "!dbg", "entry:", "\"a\":", "line: ", "i32", "cc10", "-0x1.p2",
+            "+nan(0x", "#0", "\\0A",
+        ]);
         // Pieces of gitignore patterns.
         pieces.extend(["!", "**/", "?", "[!a-]", "[[:alpha:]]", "\\#"]);
         // Lines that choose how the rest of a Racket file is read.
@@ -591,6 +601,7 @@ mod tests {
         assert_eq!(Language::for_path("x/flake.lock"), Some(Language::Json));
         assert_eq!(Language::for_path("src/a.zig"), Some(Language::Zig));
         assert_eq!(Language::for_path("build.zig.zon"), Some(Language::Zig));
+        assert_eq!(Language::for_path("test/a.ll"), Some(Language::LlvmIr));
         assert_eq!(Language::for_path("a.lock"), None);
         assert_eq!(Language::for_path("a.b/c"), None);
         assert_eq!(Language::for_path("rs"), None);
