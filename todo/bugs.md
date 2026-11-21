@@ -2,6 +2,22 @@
 
 Known problems that nobody has fixed yet.
 
+## Working tree texts skip git's clean filters
+
+`read_text` in `src/git/workdir.rs` says it reads a file "as git would
+store it", but it reads the raw bytes. It doesn't apply `core.autocrlf`,
+the `text` and `eol` attributes, `working-tree-encoding`, `ident` or
+filter drivers such as git-lfs. `git diff` compares the index with the
+filtered file, so the new side of an unstaged diff and its text can
+disagree.
+
+With `core.autocrlf = input` and a file with CRLF line endings, every
+line of the text ends in a carriage return, but the index lines don't.
+`regroup` in `src/git/context.rs` then finds no lines that both sides
+share, so the edges of the file's unstaged hunks can't move out past
+git's context. Highlighting gets the CRLF text too. This was found by
+reading the code and hasn't been reproduced yet.
+
 ## Copies are found from the wrong version of a changed file
 
 With `diff.renames = copies`, a commit diff looks for copies among the
