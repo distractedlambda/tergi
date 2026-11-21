@@ -27,6 +27,11 @@ You need a recent stable Rust toolchain and `git` on your `PATH`.
 cargo install --path .
 ```
 
+CI also builds a binary for every commit, for macOS on Apple silicon and
+for Linux on x86_64 and aarch64. The Linux binaries link musl statically,
+so they run on any distribution. You can download them from the run's page
+under the Actions tab on GitHub.
+
 ## Running
 
 ```sh

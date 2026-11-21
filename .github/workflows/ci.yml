@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep this the same as the Rust version in dev/Containerfile. Otherwise
+  # a different rustfmt can make tests/fmt.rs fail here but not locally.
+  RUST_VERSION: "1.99.1"
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      # The tests make commits in scratch repositories. Tests that need
+      # reftable skip themselves if git is older than 2.45, so print the
+      # version to make that easy to spot.
+      - name: Set up git
+        run: |
+          git config --global user.name "Test User"
+          git config --global user.email "test@example.com"
+          git config --global init.defaultBranch main
+          git --version
+      - run: cargo test --locked
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            debuginfo: tergi.dSYM
+          # The release build has no C code, and .cargo/config.toml links
+          # musl targets with rust-lld, so both cross-compile from x86_64.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            debuginfo: tergi.dwp
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            debuginfo: tergi.dwp
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --locked --profile dist --target ${{ matrix.target }}
+      # Artifacts lose the executable bit, so we pack the files in tarballs.
+      # The debug info goes in its own artifact because it's ten times the
+      # size of the binary.
+      - name: Pack
+        working-directory: target/${{ matrix.target }}/dist
+        run: |
+          tar czf "$GITHUB_WORKSPACE/tergi-${{ matrix.target }}.tar.gz" tergi
+          tar czf "$GITHUB_WORKSPACE/tergi-${{ matrix.target }}-debuginfo.tar.gz" ${{ matrix.debuginfo }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tergi-${{ matrix.target }}
+          path: tergi-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tergi-${{ matrix.target }}-debuginfo
+          path: tergi-${{ matrix.target }}-debuginfo.tar.gz
+          if-no-files-found: error

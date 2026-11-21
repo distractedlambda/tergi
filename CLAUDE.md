@@ -37,6 +37,11 @@ Clippy lints are set in `Cargo.toml`. `unwrap_used` warns outside tests,
 and `unsafe_code` is forbidden. Both dev and release builds use
 `panic = "abort"`.
 
+`.github/workflows/ci.yml` runs the tests on Linux and macOS and builds
+release binaries with the `dist` profile. It names the Rust version
+itself, so change it there too when you update the one in
+`dev/Containerfile`.
+
 Code is formatted with rustfmt's default settings. `rustfmt.toml` is empty
 so that nobody's personal config applies. `tests/fmt.rs` runs
 `cargo fmt --check`, so `cargo test` fails until you run `cargo fmt`.
