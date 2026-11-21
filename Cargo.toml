@@ -56,7 +56,12 @@ semicolon_if_nothing_returned = "warn"
 opt-level = 1
 panic = "abort"
 
-[profile.release]
+[profile.dist]
+inherits = "release"
 lto = "fat"
 codegen-units = 1
 panic = "abort"
+opt-level = "s"
+strip = true
+debug = true
+split-debuginfo = "packed"
