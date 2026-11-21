@@ -38,8 +38,8 @@ and `unsafe_code` is forbidden. Both dev and release builds use
 `panic = "abort"`.
 
 `.github/workflows/ci.yml` runs the tests on Linux and macOS and builds
-release binaries with the `dist` profile. On pushes to `main`, it also
-puts them in the `nightly` prerelease. It names the Rust version
+release binaries with the `dist` profile. For each push to `main`, it also
+makes a prerelease with them. It names the Rust version
 itself, so change it there too when you update the one in
 `dev/Containerfile`.
 

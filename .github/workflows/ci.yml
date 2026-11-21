@@ -81,16 +81,13 @@ jobs:
           path: tergi-${{ matrix.target }}-debuginfo.tar.gz
           if-no-files-found: error
 
-  # Keeps the `nightly` prerelease up to date with the newest build of main.
-  nightly:
+  # Makes a prerelease for each push to main, tagged with its commit.
+  release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [test, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    # Two runs could otherwise update the release at the same time and
-    # leave it with files from both.
-    concurrency: nightly
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -100,25 +97,25 @@ jobs:
           pattern: tergi-*
           path: dist
           merge-multiple: true
-      # We move the tag and replace the files instead of making a new
-      # release, because publishing a new release notifies everyone who
-      # watches the repository's releases.
-      - name: Update the release
+      - name: Make the release
         run: |
-          # A later push has its own run, which will publish a newer build.
-          # Skip this one so that an older build can't replace it.
-          head=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
-          if [ "$head" != "$GITHUB_SHA" ]; then
-            echo "main has moved on to $head, so this build is out of date."
-            exit 0
-          fi
-          notes="The newest build of main, from $GITHUB_SHA. Every push to main replaces it."
-          if gh release view nightly > /dev/null 2>&1; then
-            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/nightly" \
-              -f sha="$GITHUB_SHA" -F force=true > /dev/null
-            gh release edit nightly --notes "$notes"
-            gh release upload nightly dist/* --clobber
+          short="${GITHUB_SHA::12}"
+          tag="build-$short"
+          # The notes list the commits in the push, newest first, the way
+          # git log does.
+          {
+            echo "Built from $GITHUB_SHA."
+            commits=$(jq -r '.commits | reverse | .[]
+              | "- \(.id[0:12]) \(.message | split("\n")[0])"' "$GITHUB_EVENT_PATH")
+            if [ -n "$commits" ]; then
+              printf '\nCommits in this push:\n\n%s\n' "$commits"
+            fi
+          } > notes.md
+          # If the job runs again, the release is already there, so we
+          # replace its files.
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
           else
-            gh release create nightly dist/* --prerelease --latest=false \
-              --target "$GITHUB_SHA" --title Nightly --notes "$notes"
+            gh release create "$tag" dist/* --prerelease --latest=false \
+              --target "$GITHUB_SHA" --title "Build $short" --notes-file notes.md
           fi
