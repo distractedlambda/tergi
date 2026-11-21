@@ -76,7 +76,11 @@ The cursor and the line selection in the detail pane become a `Unit`:
 
 - `Section`: everything in one section.
 - `File` and `Files`: whole files, by path.
-- `Hunk`: one hunk, with the diff it came from.
+- `Hunk`: one hunk as the detail pane shows it, with the diff it came
+  from. That's a range of git's hunks. Usually it holds one, but the
+  user can join hunks by moving their edges (see "Moving the edges of
+  hunks" in `diffs.md`). The patch still holds git's hunks as git gave
+  them, so moving edges never changes what we pass to `git apply`.
 - `Lines`: some changed lines, as `(hunk, line)` indexes into the diff
   they came from.
 

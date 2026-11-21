@@ -125,9 +125,9 @@ history.
 | Enter | On a parent commit, jump to it. On a large diff, show it. |
 
 Moving the edges of a hunk shows the unchanged lines around it, or
-hides its context lines. When two hunks meet, they become one, and
-staging a hunk stages what it shows. The edges stay where you put them
-when the working directory reloads.
+hides its context lines. This only changes what you see. When two
+hunks meet, they become one, and staging it stages both. The edges stay
+where you put them when the working directory reloads.
 
 tergi remembers which files you folded, even after you quit. Each
 commit has its own folds. In the working directory, staged and unstaged

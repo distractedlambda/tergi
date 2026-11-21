@@ -254,23 +254,34 @@ The user can move the top and bottom edges of a hunk, to show the
 unchanged lines around it or to hide its context lines. `K` and `J`
 move the top edge, and Ctrl+J and Ctrl+K move the bottom edge. With
 the mouse, the user drags the hunk's header or its `HunkEnd` row. When
-the context of two hunks meets, they become one hunk, as they would
-in git with more context.
+two hunks meet, the pane shows them as one.
 
-`regroup` in `src/git/context.rs` builds the hunks again. It walks the
-whole file in order. Changed lines always show up. The context lines in
-git's diff show up unless the user hid them, and the lines between
-hunks show up if the user chose them. Each run of lines that show up
-and has a change in it becomes a hunk. The lines between hunks come
-from the full texts of both sides, which we load for syntax
-highlighting anyway. A line is only used if both texts have it with the
-same text and line ending, because the texts are read separately from
-the diff and the file may have changed in between. Lines that aren't
-valid UTF-8 aren't used either, because the texts only keep a lossy
-copy, and a patch needs the bytes. Without the texts, an edge can
-still move in, but it can only move out as far as git's context went. A new hunk takes the section
-name of the first hunk of git's that it has changes from, so a hunk
-that grew past the line that git took its name from still shows it.
+This only changes what the pane shows. The diffs in the pane's data
+stay as git gave them. Each hunk the pane shows is a run of whole hunks
+of git's, and staging it stages those as they are. So a mistake here
+can show the wrong lines, but it can't stage the wrong thing.
+
+`view` in `src/git/context.rs` works out what the pane shows. It walks
+the whole file in order. Changed lines always show up. The context
+lines in git's diff show up unless the user hid them, and the lines
+between git's hunks show up if the user chose them. Each run of lines
+that show up and has a change in it becomes a `Group`, which is one
+hunk in the pane. A group lists its lines as `Shown` values, which are
+either a line of one of git's hunks or a line from the texts.
+
+To keep git's hunks whole, the context lines between the first and last
+change of a hunk always show up. A context line further out only
+belongs to its hunk if every line between it and the hunk's changes
+shows up too. Otherwise `view` treats it like a line from the texts,
+so that it can join the next hunk instead.
+
+The lines between git's hunks come from the full texts of both sides,
+which we load for syntax highlighting anyway. A line is only used if
+both texts have it with the same text and line ending, because the
+texts are read separately from the diff and the file may have changed
+in between. Without the texts, an edge can still move in, but it can
+only move out as far as git's context went. A group takes the section
+name of its first hunk of git's.
 
 The choices are kept in `Detail::shown_lines`, by section and path
 like folds, as a map from line numbers to shown or hidden. A line is
@@ -278,21 +289,29 @@ named by its number on the side of the diff that staging leaves alone.
 That's the new side for unstaged changes and commits, and the old side
 for staged changes. So staging one hunk of a file doesn't move the
 choices for its other hunks. Untracked and conflicted files show every
-line as added, so they have no edges to move.
+line as added, so they have no edges to move. A file that leaves its
+section loses its choices, and so does a commit when the pane moves to
+another one.
 
-The hunks built from the choices replace git's in the pane's data
-(`App::apply_shown_lines`), so staging, word marks, highlighting and
-the cursor all work on the hunks the user sees. `ShownLines::built`
-keeps git's file next to the one built from it. Before each rebuild of
-the rows, the app checks whether the data still holds the built file.
-If it doesn't, the data has reloaded, and the new file is git's, so the
-hunks are built again from it. A file that leaves its section loses its
-choices, and so does a commit when the pane moves to another one.
+Each rebuild of the rows works out the view of each file with choices
+again and keeps it in `Detail::views`. Other files have no view, and
+the pane shows their hunks as git gave them. The rows of a group look
+like this:
 
-When an edge moves, the word marks and syntax colors of the file are
-dropped, because they are kept by hunk and line index. The cursor goes
-back to the same line, or to the same header or bottom edge, of the
-hunk that holds the first changed line it was in.
+- `Hunk`, `HunkEnd` and `Extra` rows name the group by its first hunk of
+  git's. `Detail::hunk_at` gives that name for any row, and
+  `Detail::shown_hunks` gives the range of git's hunks in a group.
+- `Line` and `Split` rows still name one of git's hunks and a line in
+  it. So line staging, word marks and syntax colors work as before.
+- An `Extra` row is a line from the texts, by its index in
+  `View::extra`. In the side-by-side view it fills both sides.
+
+The highlighter gets a file's extra lines as one more hunk after git's,
+so their colors come back at that index. When an edge moves, the syntax
+colors of the file are dropped, because the extra lines changed. Word
+marks stay, since they only cover git's lines. The rebuild keeps the
+cursor on its row as usual. If the row went away, the cursor goes to
+the header of the group that now holds its hunk of git's.
 
 While the mouse drags the top edge, the pane scrolls by one row for
 each line shown or hidden. The lines of the hunk then stay where they
@@ -996,12 +1015,14 @@ leave that column blank.
   checks that the store keeps folds apart by repository, section and
   commit.
 - `src/git/context.rs` has examples of hunks that grow, shrink and
-  join, and a property test that hunks built from random choices still
-  turn the old text into the new one, keep every change, and never
-  touch. Without choices, they are git's hunks.
+  join, and a property test that views from random choices keep git's
+  hunks whole and in order, show every change, still turn the old text
+  into the new one, and never touch. Without choices, a view shows git's
+  hunks as they are.
 - `tests/hunk_edges.rs` moves edges with the keys and the mouse in the
-  whole app, joins two hunks, stages a hunk without context at its top,
-  and checks that the choices survive a reload and go with a reset.
+  whole app, joins two hunks and stages them, stages a hunk from a line
+  the texts gave, and checks that the choices survive a reload and go
+  with a reset.
 - Each lexer that marks identifiers has a test called
   `marks_plain_identifiers`. The other lexer tests leave identifiers
   out of the tokens they compare, which keeps them readable.
