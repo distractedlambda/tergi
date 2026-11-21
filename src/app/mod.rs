@@ -276,12 +276,12 @@ pub enum Drag {
     Splitter(Splitter),
     DiffSelect,
     Planner(usize),
-    /// An edge of the hunk that holds the changed line `change`, with the
-    /// row the mouse was on last.
+    /// An edge of the hunk that the pane shows with git's hunk `hunk` of
+    /// the file at `path` in it, with the row the mouse was on last.
     HunkEdge {
         sec: doc::Section,
         path: BString,
-        change: hunk_edges::LineId,
+        hunk: usize,
         top: bool,
         y: u16,
     },
@@ -1253,7 +1253,7 @@ impl App {
     }
 
     pub fn rebuild_doc(&mut self) {
-        self.apply_shown_lines();
+        self.prune_shown_lines();
         let workdir = self.workdir.as_ref();
         self.detail.rebuild(
             workdir,
@@ -1500,6 +1500,21 @@ impl App {
             .and_then(|t| t.get(file))
             .cloned()
             .unwrap_or_default();
+        // The lines that the texts gave go in one more hunk after git's,
+        // which is where drawing looks for their colors.
+        let mut hunks = f.hunks.clone();
+        if let Some(v) = self.detail.views.get(&(sec, file))
+            && !v.extra.is_empty()
+        {
+            hunks.push(crate::git::diff::Hunk {
+                old_start: 0,
+                old_len: 0,
+                new_start: 0,
+                new_len: 0,
+                section: String::new(),
+                lines: v.extra.clone(),
+            });
+        }
         self.highlighter.request(highlight::Job {
             key: highlight::Key {
                 generation: self.detail.generation.current(),
@@ -1507,7 +1522,7 @@ impl App {
                 file,
             },
             path: f.path().to_str_lossy().into_owned(),
-            hunks: f.hunks.clone(),
+            hunks,
             old: texts.old,
             new: texts.new,
         });

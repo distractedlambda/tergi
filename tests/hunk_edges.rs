@@ -22,12 +22,20 @@ fn text(changed: bool) -> String {
         .collect()
 }
 
-/// The first and last line on the new side of each hunk of the first file
-/// in `sec`.
+/// The first and last line on the new side of each hunk that the pane
+/// shows of the first file in `sec`.
 fn hunks(ui: &Ui, sec: Section) -> Vec<(u32, u32)> {
-    ui.app.section_files(sec)[0]
-        .hunks
+    let d = &ui.app.detail;
+    d.rows
         .iter()
+        .filter_map(|r| match *r {
+            Row::Hunk {
+                sec: s,
+                file: 0,
+                hunk,
+            } if s == sec => d.header(ui.app.section_files(sec), sec, 0, hunk),
+            _ => None,
+        })
         .map(|h| (h.new_start, h.new_start + h.new_len - 1))
         .collect()
 }
@@ -89,8 +97,21 @@ fn keys_move_the_edges_of_a_hunk_until_it_meets_the_next() {
         ui.key(KeyCode::Char('J'));
     }
     assert_eq!(hunks(&ui, Section::Unstaged), [(5, 8), (12, 18)]);
-    let first = &ui.app.section_files(Section::Unstaged)[0].hunks[0].lines[0];
+    let rows = &ui.app.detail.rows;
+    let header = rows
+        .iter()
+        .position(|r| matches!(r, Row::Hunk { hunk: 0, .. }))
+        .expect("header");
+    let Row::Line { hunk, line, .. } = rows[header + 1] else {
+        panic!("a line after the header");
+    };
+    let first = &ui.app.section_files(Section::Unstaged)[0].hunks[hunk].lines[line];
     assert_eq!(first.kind, LineKind::Del);
+    // git's hunks stay as git gave them.
+    assert_eq!(
+        ui.app.section_files(Section::Unstaged)[0].hunks[0].new_start,
+        2
+    );
 
     // Ctrl+J shows the lines below, and the third one joins the hunks. The
     // cursor stays on the header of the hunk it was on.
@@ -107,8 +128,7 @@ fn keys_move_the_edges_of_a_hunk_until_it_meets_the_next() {
     ctrl(&mut ui, 'k');
     assert_eq!(hunks(&ui, Section::Unstaged), [(5, 17)]);
 
-    // The hunk stages as it is shown, with no context above its first
-    // change.
+    // Staging the hunk stages both of git's hunks in it.
     ui.dot(' ');
     ui.settle();
     ui.wait("the staged hunk", |u| {
@@ -192,33 +212,28 @@ fn dragging_the_edges_of_a_hunk() {
     assert_eq!(lines(&ui), [(2, 8), (12, 18)]);
 
     // The header follows the mouse up, and the hunk's lines stay where
-    // they are on the screen.
+    // they are on the screen. The line it shows comes from the texts.
     let r = header(&ui);
-    let line_12 = ui.doc_row(|r| {
-        matches!(
-            r,
-            Row::Line {
-                hunk: 1,
-                line: 0,
-                ..
-            }
-        )
-    });
+    let line_12 = |ui: &Ui| {
+        ui.doc_row(|r| {
+            matches!(
+                r,
+                Row::Line {
+                    hunk: 1,
+                    line: 0,
+                    ..
+                }
+            )
+        })
+    };
+    let before = line_12(&ui);
     ui.mouse(MouseEventKind::Down(MouseButton::Left), r.x, r.y);
     ui.mouse(MouseEventKind::Drag(MouseButton::Left), r.x, r.y - 1);
     assert_eq!(lines(&ui), [(2, 8), (11, 18)]);
     assert_eq!(header(&ui).y, r.y - 1);
-    let line_11 = ui.doc_row(|r| {
-        matches!(
-            r,
-            Row::Line {
-                hunk: 1,
-                line: 0,
-                ..
-            }
-        )
-    });
-    assert_eq!(line_11.y, line_12.y - 1);
+    assert_eq!(line_12(&ui).y, before.y);
+    let line_11 = ui.doc_row(|r| matches!(r, Row::Extra { hunk: 1, .. }));
+    assert_eq!(line_11.y, before.y - 1);
 
     // Back down hides the line again.
     ui.mouse(MouseEventKind::Drag(MouseButton::Left), r.x, r.y);
@@ -255,4 +270,45 @@ fn dragging_the_edges_of_a_hunk() {
     ui.select_commit(2);
     ui.select_commit(1);
     assert_eq!(lines(&ui), [(2, 8), (12, 18)]);
+}
+
+#[test]
+fn lines_from_the_texts_belong_to_their_hunk() {
+    let s = Scratch::new();
+    s.write("f.txt", &text(false));
+    s.commit_all("init");
+    s.write("f.txt", &text(true));
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(1);
+    ui.key(KeyCode::Char('3'));
+    put_cursor(&mut ui, |r| matches!(r, Row::Hunk { hunk: 1, .. }));
+    ui.key(KeyCode::Char('K'));
+    assert_eq!(hunks(&ui, Section::Unstaged), [(2, 8), (11, 18)]);
+
+    // Both sides of the side-by-side view show the line.
+    ui.key(KeyCode::Char('t'));
+    let r = ui.doc_row(|r| matches!(r, Row::Extra { hunk: 1, .. }));
+    let row = ui
+        .screen()
+        .lines()
+        .nth(usize::from(r.y))
+        .unwrap_or("")
+        .to_string();
+    assert_eq!(row.matches("11").count(), 4, "{row}");
+    ui.key(KeyCode::Char('t'));
+
+    // Staging from that line stages the second change and not the first.
+    put_cursor(&mut ui, |r| matches!(r, Row::Extra { .. }));
+    ui.dot(' ');
+    ui.settle();
+    ui.wait("the staged hunk", |u| {
+        u.app.workdir.as_ref().is_some_and(|w| w.staged.len() == 1)
+    });
+    let staged: String = (1..=30)
+        .map(|i| match i {
+            15 => format!("changed {i}\n"),
+            _ => format!("{i}\n"),
+        })
+        .collect();
+    assert_eq!(s.sh(&["show", ":f.txt"]), staged);
 }

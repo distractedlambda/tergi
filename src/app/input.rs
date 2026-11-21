@@ -793,7 +793,7 @@ impl App {
                 self.focus = Focus::Detail;
                 let row = self.detail.rows.get(i).cloned();
                 match row {
-                    Some(Row::Line { .. } | Row::Split { .. }) => {
+                    Some(Row::Line { .. } | Row::Split { .. } | Row::Extra { .. }) => {
                         let staging = self.detail.source == Source::Workdir;
                         if shift && self.detail.anchor.is_some() {
                             self.detail.cursor = i;

@@ -5,6 +5,7 @@
 //! menu, the `?` help menu, the hint bar and the command palette.
 
 use std::collections::HashSet;
+use std::ops::Range;
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -39,7 +40,8 @@ pub enum Unit {
     /// dialog asking about it opens. That way it only discards the files
     /// the dialog names, and not ones that show up while it's open.
     Files(Section, Vec<BString>),
-    Hunk(Section, Arc<FileDiff>, usize),
+    /// A hunk as the pane shows it, which is one or more of git's.
+    Hunk(Section, Arc<FileDiff>, Range<usize>),
     /// `(hunk, line)` indexes into the diff.
     Lines(Section, Arc<FileDiff>, Vec<(usize, usize)>),
 }
@@ -2237,9 +2239,8 @@ impl App {
                         ops::discard_paths(git, &paths).await?;
                     }
                 }
-                (Unit::Hunk(_, f, h), _) => {
-                    let h = *h;
-                    ops::apply_lines(git, f, mode, &|hh, _| hh == h).await?;
+                (Unit::Hunk(_, f, hunks), _) => {
+                    ops::apply_lines(git, f, mode, &|h, _| hunks.contains(&h)).await?;
                 }
                 (Unit::Lines(_, f, set), _) => {
                     ops::apply_lines(git, f, mode, &|h, l| set.contains(&(h, l))).await?;

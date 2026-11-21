@@ -198,15 +198,14 @@ With `context_lines = 0`, the diffs have no context lines at all. Then
 unless we pass `--unidiff-zero`. Without context, git places each hunk by
 the start in its header, so that start has to be exact.
 
-`git apply` also takes a hunk without context at its end to sit at the
-end of the file. Hunks like that come up in two other ways.
 If the user sets `diff.interHunkContext`, git joins hunks that are that
-close together, even with `-U0`, so a joined hunk has context lines in
-the middle but none at its ends. And the user can hide the context at
-one edge of a hunk (see "Moving the edges of hunks" in `diffs.md`). So
-`apply_lines` passes `--unidiff-zero` whenever some hunk starts or ends
-with a changed line. Git then places every hunk by the start in its
-header, which `build_patch` writes exactly.
+close together, even with `-U0`. A joined hunk has context lines in the
+middle but none at its ends. `git apply` then wants the hunk to sit at
+the end of the file, because a hunk with context only lacks it there.
+So `apply_lines` passes `--unidiff-zero` whenever every hunk starts and
+ends with a changed line, rather than only when there is no context at
+all. With more context, only a hunk that covers the whole file looks
+like that.
 
 There is one more wrinkle there. For an empty range, a hunk header
 usually gives the line before it. But `git apply` guesses where a hunk
@@ -245,8 +244,7 @@ puts the cursor back on the same file and hunk by path (see
   few small diffs with context sizes from 0 up.
 - `tests/patch_props.rs` makes random files and random edits, picks
   random lines, applies them with `apply_lines`, and checks the index or
-  working tree against a small model. Some cases first show or hide
-  random context lines with `regroup`. The model also says when a
+  working tree against a small model. The model also says when a
   selection should be refused. A second test, `staging_in_steps`, runs a
   random sequence of steps on several files that can have staged and
   unstaged changes at once. Each step stages, unstages or discards a

@@ -16,7 +16,7 @@ use crate::app::doc::{Row, Section, Source};
 use crate::app::input::{Target, palette_filter};
 use crate::app::planner::PlanAction;
 use crate::app::{App, Drag, Focus, HISTORY_ROW_HEIGHT, Level, Splitter};
-use crate::git::diff::{FileStatus, LineKind};
+use crate::git::diff::{DiffLine, FileStatus, LineKind};
 use crate::git::graph::DOWN;
 use crate::git::log::CommitInfo;
 use crate::git::rebase::RepoState;
@@ -970,6 +970,13 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
         hits.push((rr, Target::DocRow(i)));
         let is_cursor = i == det.cursor && focused;
         let in_sel = sel.is_some_and(|(lo, hi)| (lo..=hi).contains(&i));
+        let cx = LineCx {
+            app,
+            a,
+            g,
+            in_sel,
+            is_cursor,
+        };
         match row {
             Row::Empty(text) => {
                 put(
@@ -1081,10 +1088,7 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 );
             }
             Row::Hunk { sec, file, hunk } => {
-                let Some(f) = app.section_files(*sec).get(*file) else {
-                    continue;
-                };
-                let Some(h) = f.hunks.get(*hunk) else {
+                let Some(h) = det.header(app.section_files(*sec), *sec, *file, *hunk) else {
                     continue;
                 };
                 let bg = if is_cursor { t.sel } else { t.hunk_bg };
@@ -1136,75 +1140,34 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                     .get(&(*sec, *file))
                     .and_then(|m| m.get(*hunk))
                     .and_then(|m| m.get(*line));
-                let (bg, emph) = line_colors(t, l.kind);
-                fill(buf, rr, bg);
-                let gutter_bg = if in_sel {
-                    t.line_sel
-                } else if is_cursor {
-                    t.sel
+                cx.unified(buf, y, i, l, spans, marks.map(Vec::as_slice));
+            }
+            Row::Extra {
+                sec, file, line, ..
+            } => {
+                let Some(f) = app.section_files(*sec).get(*file) else {
+                    continue;
+                };
+                let Some(l) = det
+                    .views
+                    .get(&(*sec, *file))
+                    .and_then(|v| v.extra.get(*line))
+                else {
+                    continue;
+                };
+                // The highlighter gets these lines as one more hunk after
+                // git's.
+                let spans = det
+                    .highlights
+                    .get(&(*sec as u8, *file))
+                    .and_then(|h| h.lines.get(f.hunks.len()))
+                    .and_then(|h| h.get(*line));
+                if det.is_split() {
+                    cx.half(buf, y, i, 0, Some(l), spans, None);
+                    cx.half(buf, y, i, 1, Some(l), spans, None);
+                    cx.divider(buf, y);
                 } else {
-                    bg
-                };
-                let gw = g * 2 + 3;
-                fill(buf, Rect::new(a.x, y, gw.min(a.width), 1), gutter_bg);
-                let gs = Style::default().bg(gutter_bg).fg(t.faint);
-                if in_sel {
-                    put(buf, a.x, y, "▌", 1, gs.fg(t.accent));
-                }
-                let num = |n: Option<u32>| n.map_or_else(String::new, |n| n.to_string());
-                put(
-                    buf,
-                    a.x + 1,
-                    y,
-                    &format!("{:>w$}", num(l.old_no), w = usize::from(g)),
-                    g,
-                    gs,
-                );
-                put(
-                    buf,
-                    a.x + 2 + g,
-                    y,
-                    &format!("{:>w$}", num(l.new_no), w = usize::from(g)),
-                    g,
-                    gs,
-                );
-                let sign = match l.kind {
-                    LineKind::Add | LineKind::Del => "▎",
-                    LineKind::Context => " ",
-                };
-                let tx = a.x + gw;
-                put(
-                    buf,
-                    tx,
-                    y,
-                    sign,
-                    1,
-                    Style::default().bg(bg).fg(if l.kind == LineKind::Add {
-                        t.add_fg
-                    } else {
-                        t.del_fg
-                    }),
-                );
-                draw_code(
-                    buf,
-                    tx + 1,
-                    y,
-                    a.right().saturating_sub(tx + 1),
-                    &l.text,
-                    det.hscroll(i, a.width),
-                    Style::default().bg(bg).fg(t.fg),
-                    spans,
-                    t.syntax_colors(app.cfg.rainbow_identifiers),
-                    marks.map(Vec::as_slice),
-                    emph,
-                    app.cfg.tab_width,
-                );
-                if l.no_eol {
-                    let w = width(&l.text, app.cfg.tab_width) as u16;
-                    let x = tx + 2 + w.saturating_sub(det.hscroll(i, a.width) as u16);
-                    if x < a.right() {
-                        put(buf, x, y, "⏎̸", 2, Style::default().bg(bg).fg(t.faint));
-                    }
+                    cx.unified(buf, y, i, l, spans, None);
                 }
             }
             Row::Split {
@@ -1225,70 +1188,190 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                     .get(&(*sec as u8, *file))
                     .and_then(|x| x.lines.get(*hunk));
                 let marks = det.marks.get(&(*sec, *file)).and_then(|m| m.get(*hunk));
-                let half = a.width / 2;
                 for (side, idx) in [(0u16, left), (1u16, right)] {
-                    let x0 = a.x + side * half;
-                    let w = if side == 0 { half } else { a.width - half };
-                    let r = Rect::new(x0, y, w, 1);
-                    let Some(li) = idx else {
-                        fill(buf, r, t.panel);
-                        continue;
-                    };
-                    let l = &h.lines[*li];
-                    let (bg, emph) = line_colors(t, l.kind);
-                    fill(buf, r, bg);
-                    let gutter_bg = if in_sel {
-                        t.line_sel
-                    } else if is_cursor {
-                        t.sel
-                    } else {
-                        bg
-                    };
-                    fill(buf, Rect::new(x0, y, (g + 2).min(w), 1), gutter_bg);
-                    if in_sel && side == 0 {
-                        put(
-                            buf,
-                            x0,
-                            y,
-                            "▌",
-                            1,
-                            Style::default().bg(gutter_bg).fg(t.accent),
-                        );
-                    }
-                    let no = if side == 0 { l.old_no } else { l.new_no };
-                    put(
-                        buf,
-                        x0 + 1,
-                        y,
-                        &format!(
-                            "{:>w$}",
-                            no.map_or(String::new(), |n| n.to_string()),
-                            w = usize::from(g)
-                        ),
-                        g,
-                        Style::default().bg(gutter_bg).fg(t.faint),
-                    );
-                    let spans = hl.and_then(|v| v.get(*li));
-                    let mk = marks.and_then(|m| m.get(*li));
-                    draw_code(
-                        buf,
-                        x0 + g + 2,
-                        y,
-                        w.saturating_sub(g + 3),
-                        &l.text,
-                        det.hscroll(i, a.width),
-                        Style::default().bg(bg).fg(t.fg),
-                        spans,
-                        t.syntax_colors(app.cfg.rainbow_identifiers),
-                        mk.map(Vec::as_slice),
-                        emph,
-                        app.cfg.tab_width,
-                    );
+                    let l = idx.and_then(|li| h.lines.get(li));
+                    let spans = idx.and_then(|li| hl.and_then(|v| v.get(li)));
+                    let mk = idx.and_then(|li| marks.and_then(|m| m.get(li)));
+                    cx.half(buf, y, i, side, l, spans, mk.map(Vec::as_slice));
                 }
-                if let Some(c) = buf.cell_mut((a.x + half - 1, y)) {
-                    c.set_char('│').set_fg(t.border);
-                }
+                cx.divider(buf, y);
             }
+        }
+    }
+}
+
+/// What drawing one line of a diff needs to know about the row it's on.
+struct LineCx<'a> {
+    app: &'a App,
+    /// The pane.
+    a: Rect,
+    /// The width of a line number column.
+    g: u16,
+    in_sel: bool,
+    is_cursor: bool,
+}
+
+impl LineCx<'_> {
+    /// Draw a line of the unified view on row `i`, which is at `y`.
+    fn unified(
+        &self,
+        buf: &mut Buffer,
+        y: u16,
+        i: usize,
+        l: &DiffLine,
+        spans: Option<&LineSpans>,
+        marks: Option<&[(usize, usize)]>,
+    ) {
+        let (app, a, g) = (self.app, self.a, self.g);
+        let (t, det) = (&app.theme, &app.detail);
+        let (bg, emph) = line_colors(t, l.kind);
+        fill(buf, Rect::new(a.x, y, a.width, 1), bg);
+        let gutter_bg = if self.in_sel {
+            t.line_sel
+        } else if self.is_cursor {
+            t.sel
+        } else {
+            bg
+        };
+        let gw = g * 2 + 3;
+        fill(buf, Rect::new(a.x, y, gw.min(a.width), 1), gutter_bg);
+        let gs = Style::default().bg(gutter_bg).fg(t.faint);
+        if self.in_sel {
+            put(buf, a.x, y, "▌", 1, gs.fg(t.accent));
+        }
+        let num = |n: Option<u32>| n.map_or_else(String::new, |n| n.to_string());
+        put(
+            buf,
+            a.x + 1,
+            y,
+            &format!("{:>w$}", num(l.old_no), w = usize::from(g)),
+            g,
+            gs,
+        );
+        put(
+            buf,
+            a.x + 2 + g,
+            y,
+            &format!("{:>w$}", num(l.new_no), w = usize::from(g)),
+            g,
+            gs,
+        );
+        let sign = match l.kind {
+            LineKind::Add | LineKind::Del => "▎",
+            LineKind::Context => " ",
+        };
+        let tx = a.x + gw;
+        put(
+            buf,
+            tx,
+            y,
+            sign,
+            1,
+            Style::default().bg(bg).fg(if l.kind == LineKind::Add {
+                t.add_fg
+            } else {
+                t.del_fg
+            }),
+        );
+        draw_code(
+            buf,
+            tx + 1,
+            y,
+            a.right().saturating_sub(tx + 1),
+            &l.text,
+            det.hscroll(i, a.width),
+            Style::default().bg(bg).fg(t.fg),
+            spans,
+            t.syntax_colors(app.cfg.rainbow_identifiers),
+            marks,
+            emph,
+            app.cfg.tab_width,
+        );
+        if l.no_eol {
+            let w = width(&l.text, app.cfg.tab_width) as u16;
+            let x = tx + 2 + w.saturating_sub(det.hscroll(i, a.width) as u16);
+            if x < a.right() {
+                put(buf, x, y, "⏎̸", 2, Style::default().bg(bg).fg(t.faint));
+            }
+        }
+    }
+
+    /// Draw one side of a row of the side-by-side view. `side` is 0 for
+    /// the left and 1 for the right. Without a line, the side is blank.
+    #[allow(clippy::too_many_arguments)]
+    fn half(
+        &self,
+        buf: &mut Buffer,
+        y: u16,
+        i: usize,
+        side: u16,
+        l: Option<&DiffLine>,
+        spans: Option<&LineSpans>,
+        marks: Option<&[(usize, usize)]>,
+    ) {
+        let (app, a, g) = (self.app, self.a, self.g);
+        let (t, det) = (&app.theme, &app.detail);
+        let half = a.width / 2;
+        let x0 = a.x + side * half;
+        let w = if side == 0 { half } else { a.width - half };
+        let r = Rect::new(x0, y, w, 1);
+        let Some(l) = l else {
+            fill(buf, r, t.panel);
+            return;
+        };
+        let (bg, emph) = line_colors(t, l.kind);
+        fill(buf, r, bg);
+        let gutter_bg = if self.in_sel {
+            t.line_sel
+        } else if self.is_cursor {
+            t.sel
+        } else {
+            bg
+        };
+        fill(buf, Rect::new(x0, y, (g + 2).min(w), 1), gutter_bg);
+        if self.in_sel && side == 0 {
+            put(
+                buf,
+                x0,
+                y,
+                "▌",
+                1,
+                Style::default().bg(gutter_bg).fg(t.accent),
+            );
+        }
+        let no = if side == 0 { l.old_no } else { l.new_no };
+        put(
+            buf,
+            x0 + 1,
+            y,
+            &format!(
+                "{:>w$}",
+                no.map_or(String::new(), |n| n.to_string()),
+                w = usize::from(g)
+            ),
+            g,
+            Style::default().bg(gutter_bg).fg(t.faint),
+        );
+        draw_code(
+            buf,
+            x0 + g + 2,
+            y,
+            w.saturating_sub(g + 3),
+            &l.text,
+            det.hscroll(i, a.width),
+            Style::default().bg(bg).fg(t.fg),
+            spans,
+            t.syntax_colors(app.cfg.rainbow_identifiers),
+            marks,
+            emph,
+            app.cfg.tab_width,
+        );
+    }
+
+    /// The line between the two sides of the side-by-side view.
+    fn divider(&self, buf: &mut Buffer, y: u16) {
+        if let Some(c) = buf.cell_mut((self.a.x + self.a.width / 2 - 1, y)) {
+            c.set_char('│').set_fg(self.app.theme.border);
         }
     }
 }
