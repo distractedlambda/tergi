@@ -29,8 +29,8 @@ cargo install --path .
 
 CI also builds binaries on every push, for macOS on Apple silicon and for
 Linux on x86_64 and aarch64. The Linux binaries link musl statically, so
-they run on any distribution. Each push to `main` gets a prerelease on
-the [Releases](https://github.com/distractedlambda/tergi/releases) page,
+they run on any distribution. Each push to `main` gets a build on the
+[Releases](https://github.com/distractedlambda/tergi/releases) page,
 tagged `build-` and the first 12 digits of the commit hash. Builds of
 other branches are on each run's page under the Actions tab.
 
