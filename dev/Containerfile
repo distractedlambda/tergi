@@ -6,7 +6,7 @@
 # reftable format. Older versions skip those tests, so use a Debian release
 # that ships a new enough git.
 
-FROM docker.io/library/rust:1.99.1-slim-trixie
+FROM docker.io/library/rust:1.100.0-slim-trixie
 
 # tmux is for running the app by hand in a terminal we can script.
 RUN apt-get update \

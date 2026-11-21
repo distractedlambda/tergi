@@ -724,8 +724,7 @@ impl Detail {
                 .map(|l| width(&l.text, cfg.tab_width) + if l.no_eol { 3 } else { 0 })
                 .max()
                 .unwrap_or(0);
-            self.widths
-                .insert(Scrolls::File(sec, key.1.clone()), widest);
+            self.widths.insert(Scrolls::File(sec, key.1), widest);
             for (hi, h) in f.hunks.iter().enumerate() {
                 self.rows.push(Row::Hunk {
                     sec,

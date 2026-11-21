@@ -8,7 +8,7 @@ env:
   CARGO_TERM_COLOR: always
   # Keep this the same as the Rust version in dev/Containerfile. Otherwise
   # a different rustfmt can make tests/fmt.rs fail here but not locally.
-  RUST_VERSION: "1.99.1"
+  RUST_VERSION: "1.100.0"
 
 jobs:
   test:

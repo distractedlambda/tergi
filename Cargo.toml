@@ -51,6 +51,9 @@ unwrap_used = "warn"
 needless_pass_by_value = "warn"
 redundant_clone = "warn"
 semicolon_if_nothing_returned = "warn"
+# Logos lexers often give two patterns the same callback, which this
+# lint mistakes for a repeated attribute.
+duplicated_attributes = "allow"
 
 [profile.dev]
 opt-level = 1
