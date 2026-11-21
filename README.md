@@ -1,12 +1,23 @@
-# tergi
+# Tergi
 
-tergi is a git client for the terminal, modeled on Sublime Merge. It's
-built for browsing history, reading diffs, staging hunks and single
-lines, and rewriting commits. Everything works with both the mouse and
-the keyboard.
+Tergi is yet another terminal Git client.
 
-It runs on Linux and macOS. It looks best in a terminal with truecolor
-and the kitty keyboard protocol, such as ghostty, kitty or WezTerm.
+> [!WARNING]
+> This project is vibe-coded; essentially all code (and much of the documentation) is AI-written. Testing is limited to my own personal use, and the automated test suite (which was written by Claude).
+
+## What? Why?
+
+I wanted a git client that worked exactly the way I liked, while natively supporting terminal-based workflows. In an ordinary world this would be no more than a passing wish, but we live in a strange time of suspiciously-cheap and surprisingly-competent coding agents.
+
+This is a tool for myself first and foremost, but I'm keeping the code public ~~to get free time on GitHub Actions runners~~ in case others share my odd sensibilities.
+
+Functionality may change or break, without notice, according to my whims. If you want something to work differently, fork Tergi and set your own agent on it!
+
+### Similarities with [Sublime Merge][1]
+
+You may notice some striking similarities between Tergi and Sublime Merge. This is not an accident; Sublime Merge was my daily driver until I ~~created~~ had Claude create Tergi. The starting point for Tergi's design was essentially "Sublime Merge as a TUI".
+
+With that said, **Tergi is not intended to be a Sublime Merge clone**. Functionality has diverged wherever I wanted something to work differently, and Sublime Merge has many features that Tergi does not. More importantly, Sublime Merge is a polished and supported software product that in turn financially supports real human developers. **If you want a better Git client and don't happen to need a TUI, please consider [Sublime Merge][1]**.
 
 ## Building
 
@@ -302,3 +313,5 @@ instead, set `rainbow_identifiers = false`.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+[1]: https://www.sublimemerge.com

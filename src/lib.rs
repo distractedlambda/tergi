@@ -1,4 +1,4 @@
-//! tergi: a terminal git client inspired by Sublime Merge.
+//! Tergi: yet another terminal Git client.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 

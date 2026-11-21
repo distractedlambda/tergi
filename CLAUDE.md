@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-tergi is a terminal git client modeled on Sublime Merge, written in Rust
+tergi is a terminal git client initially modeled on Sublime Merge, written in Rust
 with ratatui, crossterm and Tokio. `README.md` describes what it does from
 the user's side, and `todo/bugs.md` lists known bugs that nobody has fixed
 yet. `design/` explains how each part works inside. `design/README.md`

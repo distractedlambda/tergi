@@ -2,7 +2,7 @@
 name = "tergi"
 version = "0.1.0"
 edition = "2024"
-description = "A terminal git client inspired by Sublime Merge"
+description = "Yet another terminal git client"
 license = "MIT"
 readme = "README.md"
 # The integration tests are modules of tests/main.rs, so they build into

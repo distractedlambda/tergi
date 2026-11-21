@@ -14,7 +14,7 @@ use tergi::config::Config;
 use tergi::state::Store;
 use tergi::terminal;
 
-/// A terminal git client inspired by Sublime Merge.
+/// Yet another terminal Git client.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
