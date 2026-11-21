@@ -7,7 +7,7 @@
 use gix::bstr::ByteSlice as _;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Position, Rect};
+use ratatui::layout::{Margin, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, BorderType, Clear, Widget};
 
@@ -74,30 +74,46 @@ pub fn draw(app: &mut App, f: &mut Frame) {
                 &mut hits,
             );
         }
-        if a.areas.sidebar.width > 0 {
+        // Keys go to the editor or the planner while either is open, so
+        // their panes count as focused.
+        let editing = a.edit.is_some();
+        let focus = if a.planner.is_some() {
+            None
+        } else {
+            Some(a.focus)
+        };
+        let t = &a.theme;
+        if a.areas.sidebar_frame.width > 0 {
+            let lit = focus == Some(Focus::Sidebar) && !editing;
+            pane_frame(a, buf, a.areas.sidebar_frame, t.panel, lit);
             draw_sidebar(a, buf, &mut hits);
-            splitter(
-                a,
-                buf,
-                &mut hits,
-                Splitter::Sidebar,
-                a.areas.sidebar.right(),
-                a.areas.body,
-            );
         }
         if a.planner.is_some() {
+            pane_frame(a, buf, a.areas.planner_frame, t.bg, true);
             draw_planner(a, buf, &mut hits);
         } else {
+            let lit = focus == Some(Focus::History) && !editing;
+            pane_frame(a, buf, a.areas.history_frame, t.bg, lit);
             draw_history(a, buf, &mut hits);
+            let lit = matches!(focus, Some(Focus::Detail | Focus::Message)) || editing;
+            pane_frame(a, buf, a.areas.detail_frame, t.bg, lit);
+            draw_detail(a, buf, &mut hits);
             splitter(
                 a,
                 buf,
                 &mut hits,
                 Splitter::History,
-                a.areas.history.right(),
-                a.areas.body,
+                a.areas.history_frame.right(),
             );
-            draw_detail(a, buf, &mut hits);
+        }
+        if a.areas.sidebar_frame.width > 0 {
+            splitter(
+                a,
+                buf,
+                &mut hits,
+                Splitter::Sidebar,
+                a.areas.sidebar_frame.right(),
+            );
         }
         draw_bottom(
             a,
@@ -127,22 +143,28 @@ fn layout(app: &mut App, area: Rect) {
         area.height.saturating_sub(top + 1),
     );
     app.areas.body = body;
+    let inner = |r: Rect| r.inner(Margin::new(1, 1));
     let mut x = body.x;
     let show_sidebar = app.sidebar_shown() && body.width >= 40;
     if show_sidebar {
-        let w = app.sidebar_width.min(body.width / 2);
-        app.areas.sidebar = Rect::new(x, body.y, w, body.height);
-        x += w + 1;
+        // `sidebar_width` doesn't count the border.
+        let w = app.sidebar_width.min(body.width / 2) + 2;
+        app.areas.sidebar_frame = Rect::new(x, body.y, w, body.height);
+        x += w;
     } else {
-        app.areas.sidebar = Rect::default();
+        app.areas.sidebar_frame = Rect::default();
     }
+    app.areas.sidebar = inner(app.areas.sidebar_frame);
     let rest = body.right().saturating_sub(x);
     let hw = ((f32::from(rest) * app.history_frac) as u16)
-        .clamp(rest.min(20), rest.saturating_sub(21).max(rest.min(20)));
-    app.areas.history = Rect::new(x, body.y, hw, body.height);
-    app.areas.planner = Rect::new(x, body.y, rest, body.height);
-    let dx = x + hw + 1;
-    app.areas.detail = Rect::new(dx, body.y, body.right().saturating_sub(dx), body.height);
+        .clamp(rest.min(22), rest.saturating_sub(22).max(rest.min(22)));
+    app.areas.history_frame = Rect::new(x, body.y, hw, body.height);
+    app.areas.planner_frame = Rect::new(x, body.y, rest, body.height);
+    let dx = x + hw;
+    app.areas.detail_frame = Rect::new(dx, body.y, body.right().saturating_sub(dx), body.height);
+    app.areas.history = inner(app.areas.history_frame);
+    app.areas.planner = inner(app.areas.planner_frame);
+    app.areas.detail = inner(app.areas.detail_frame);
 
     let d = app.areas.detail;
     if let Some(e) = &app.edit
@@ -264,18 +286,28 @@ fn buttons_right(
     start
 }
 
-fn splitter(app: &App, buf: &mut Buffer, hits: &mut Hits, which: Splitter, x: u16, body: Rect) {
-    let r = Rect::new(x, body.y, 1, body.height);
+/// Draw the border around a pane, in the accent color if the pane has
+/// focus, and fill the pane with `bg`.
+fn pane_frame(app: &App, buf: &mut Buffer, r: Rect, bg: Color, lit: bool) {
+    let t = &app.theme;
+    let color = if lit { t.accent } else { t.border };
+    fill(buf, r, bg);
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(color).bg(bg))
+        .render(r, buf);
+}
+
+/// Make the borders on either side of `x`, where one pane ends and the
+/// next begins, into a handle for resizing the panes. Draw this after the
+/// panes so that it can change the color of their borders.
+fn splitter(app: &App, buf: &mut Buffer, hits: &mut Hits, which: Splitter, x: u16) {
+    let body = app.areas.body;
+    let r = Rect::new(x.saturating_sub(1), body.y, 2, body.height).intersection(body);
     let active = matches!(&app.drag, Some(Drag::Splitter(s)) if *s == which) || hovered(app, r);
-    let color = if active {
-        app.theme.accent
-    } else {
-        app.theme.border
-    };
-    for y in r.top()..r.bottom() {
-        if let Some(c) = buf.cell_mut((x, y)) {
-            c.set_char('│').set_fg(color).set_bg(app.theme.bg);
-        }
+    if active {
+        // Not the accent color, which would look like focus.
+        buf.set_style(r, Style::default().fg(app.theme.dim));
     }
     hits.push((r, Target::Splitter(which)));
 }

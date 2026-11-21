@@ -280,9 +280,15 @@ pub enum Drag {
 /// Screen areas from the last frame, for mouse handling.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Areas {
+    /// The insides of the panes. Each pane has a border around it, and
+    /// the `_frame` areas include that border.
     pub sidebar: Rect,
     pub history: Rect,
     pub detail: Rect,
+    pub sidebar_frame: Rect,
+    pub history_frame: Rect,
+    pub detail_frame: Rect,
+    pub planner_frame: Rect,
     pub doc: Rect,
     pub message: Rect,
     pub input: Rect,

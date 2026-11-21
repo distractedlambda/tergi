@@ -2262,3 +2262,62 @@ fn actions_on_the_selection_need_a_dot_first() {
     assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
     ui.wait("the commit to move", |u| u.app.busy.is_none());
 }
+
+#[test]
+fn the_focused_pane_has_a_lit_border() {
+    let s = repo_with_change();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    // The color of the top left corner of each pane's border.
+    let corners = |u: &Ui| {
+        let buf = u.term.backend().buffer();
+        let a = &u.app.areas;
+        [a.sidebar_frame, a.history_frame, a.detail_frame].map(|r| {
+            assert_eq!(buf[(r.x, r.y)].symbol(), "╭", "{}", u.screen());
+            buf[(r.x, r.y)].fg
+        })
+    };
+    let (lit, unlit) = (ui.app.theme.accent, ui.app.theme.border);
+    for (focus, expected) in [
+        (Focus::Sidebar, [lit, unlit, unlit]),
+        (Focus::History, [unlit, lit, unlit]),
+        (Focus::Detail, [unlit, unlit, lit]),
+        (Focus::Message, [unlit, unlit, lit]),
+    ] {
+        ui.app.focus = focus;
+        ui.draw();
+        assert_eq!(corners(&ui), expected, "{focus:?}");
+    }
+
+    // The message editor takes the keys, so its pane is the lit one.
+    ui.app.focus = Focus::History;
+    ui.select_commit(1);
+    ui.dot('r');
+    ui.wait("the message editor", |u| u.app.edit.is_some());
+    assert_eq!(corners(&ui), [unlit, unlit, lit]);
+}
+
+#[test]
+fn dragging_a_border_resizes_the_panes() {
+    let s = repo_with_change();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    let handle = ui.find_hit(|t| *t == Target::Splitter(tergi::app::Splitter::Sidebar));
+    assert_eq!(handle.width, 2);
+    assert_eq!(handle.x, ui.app.areas.sidebar_frame.right() - 1);
+    let start = handle.x;
+    ui.mouse(MouseEventKind::Down(MouseButton::Left), start, 5);
+    ui.mouse(MouseEventKind::Drag(MouseButton::Left), start + 6, 5);
+    ui.mouse(MouseEventKind::Up(MouseButton::Left), start + 6, 5);
+    // The sidebar's right border follows the pointer.
+    assert_eq!(ui.app.areas.sidebar_frame.right() - 1, start + 6);
+    assert_eq!(ui.app.areas.history_frame.x, start + 7);
+
+    let handle = ui.find_hit(|t| *t == Target::Splitter(tergi::app::Splitter::History));
+    let start = handle.x;
+    ui.mouse(MouseEventKind::Down(MouseButton::Left), start + 1, 5);
+    ui.mouse(MouseEventKind::Drag(MouseButton::Left), start - 10, 5);
+    ui.mouse(MouseEventKind::Up(MouseButton::Left), start - 10, 5);
+    let moved = ui.app.areas.history_frame.right() as i32 - (start as i32 - 10);
+    assert!(moved.abs() <= 1, "{}", ui.screen());
+}

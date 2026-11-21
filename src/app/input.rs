@@ -978,15 +978,13 @@ impl App {
             Some(Drag::Splitter(Splitter::Sidebar)) => {
                 // `clamp` panics when the upper bound is below the lower one.
                 let max = (self.size.0 / 2).max(12);
-                self.sidebar_width = x.saturating_sub(self.areas.body.x).clamp(12, max);
+                // Keep the sidebar's right border under the pointer.
+                let w = x.saturating_sub(self.areas.body.x + 1);
+                self.sidebar_width = w.clamp(12, max);
             }
             Some(Drag::Splitter(Splitter::History)) => {
                 let b = self.areas.body;
-                let left = if self.areas.sidebar.width > 0 {
-                    self.areas.sidebar.width + 1
-                } else {
-                    0
-                };
+                let left = self.areas.sidebar_frame.width;
                 let avail = b.width.saturating_sub(left).max(1);
                 let rel = x.saturating_sub(b.x + left);
                 self.history_frac = (f32::from(rel) / f32::from(avail)).clamp(0.15, 0.85);
@@ -1042,18 +1040,18 @@ impl App {
             }
             return;
         }
-        if inside(self.areas.sidebar) {
+        if inside(self.areas.sidebar_frame) {
             let max = self
                 .sidebar
                 .rows
                 .len()
                 .saturating_sub(usize::from(self.areas.sidebar.height));
             apply(&mut self.sidebar.scroll, max);
-        } else if inside(self.areas.history) {
+        } else if inside(self.areas.history_frame) {
             let max = (self.history.row_count() * usize::from(HISTORY_ROW_HEIGHT))
                 .saturating_sub(usize::from(self.areas.history.height));
             apply(&mut self.history.scroll, max);
-        } else if inside(self.areas.detail) {
+        } else if inside(self.areas.detail_frame) {
             let max = self
                 .detail
                 .rows

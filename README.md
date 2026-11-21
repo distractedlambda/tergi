@@ -62,8 +62,9 @@ the selected item come after `.`, which opens the menu for it. Git
 operations on the whole repository come after Esc, which opens a menu
 of them. Both menus list their keys, and a second Esc closes them.
 
-The bottom bar shows the most useful keys for the focused pane. Press
-`?` for the full list, or Ctrl+P to search for any command by name.
+The focused pane has a colored border. The bottom bar shows the most
+useful keys for it. Press `?` for the full list, or Ctrl+P to search
+for any command by name.
 
 | Key | What it does |
 | --- | --- |
