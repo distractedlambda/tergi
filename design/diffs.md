@@ -387,8 +387,10 @@ follows `string->number` from the reader's `number.rkt`, with about one
 state for each function there, but it only checks the syntax.
 
 A `#lang` line at the top of a Racket file chooses the reader for the
-rest. Only Racket comments can come before it. With `#lang at-exp`, the
-lexer also reads @-forms such as `@foo[1]{text}`. With a Scribble
+rest. Only Racket comments can come before it. A `#!` line such as
+`#!/usr/bin/env racket` is one of those comments. A script that starts
+with one is Racket even without an extension, and a `#lang` line after
+it still chooses the reader. With `#lang at-exp`, the lexer also reads @-forms such as `@foo[1]{text}`. With a Scribble
 language such as `#lang scribble/manual`, the whole file is text with
 @-forms in it. A `.scrbl` file is Scribble text even without a `#lang`
 line, because a hunk from the middle of a document doesn't have one. A
@@ -780,9 +782,10 @@ line, and a path like `1:x` names a stage of the index.
 The language is chosen by the file's extension, in
 `Language::for_path`. Scripts often have no extension, so when the
 name doesn't give a language, `Language::for_shebang` looks for a `#!`
-line that runs Python, a shell in the sh family, or Node. Examples are
-`#!/usr/bin/env python3`, `#!/usr/bin/env -S uv run --script`,
-`#!/bin/sh` and `#!/usr/bin/env node`. We check the first line of both
+line that runs Python, a shell in the sh family, Node or Racket.
+Examples are `#!/usr/bin/env python3`,
+`#!/usr/bin/env -S uv run --script`, `#!/bin/sh`, `#!/usr/bin/env node`
+and `#!/usr/bin/env racket`. We check the first line of both
 sides of the diff. Without the full text of a side, we only see its
 first line if a hunk shows it. Files in other languages aren't
 highlighted.

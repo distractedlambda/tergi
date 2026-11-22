@@ -1287,6 +1287,24 @@ mod tests {
         out.colored(text)
     }
 
+    #[test]
+    fn scripts_can_choose_a_language() {
+        // `//` starts a comment in shrubbery notation, and is a symbol in
+        // Racket.
+        assert_eq!(
+            tokens("#!/usr/bin/env racket\n#lang rhombus\n// c\n"),
+            [
+                ("#!/usr/bin/env racket", Kind::Comment),
+                ("#lang rhombus", Kind::Attribute),
+                ("// c", Kind::Comment),
+            ]
+        );
+        assert_eq!(
+            tokens("#!/usr/bin/env racket\n// c\n"),
+            [("#!/usr/bin/env racket", Kind::Comment)]
+        );
+    }
+
     /// Like `tokens`, for a Scribble file.
     fn scribble(text: &str) -> Vec<(&str, Kind)> {
         let mut out = Tokens::default();

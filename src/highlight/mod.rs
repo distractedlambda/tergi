@@ -206,7 +206,7 @@ impl Language {
     }
 
     /// The language of a script from its `#!` line, such as
-    /// `#!/usr/bin/env python3` or `#!/bin/sh`.
+    /// `#!/usr/bin/env python3`, `#!/bin/sh` or `#!/usr/bin/env racket`.
     pub fn for_shebang(line: &str) -> Option<Language> {
         fn base(path: &str) -> &str {
             path.rsplit('/').next().unwrap_or(path)
@@ -225,6 +225,11 @@ impl Language {
                 return Some(Language::Shell);
             }
             "node" | "nodejs" => return Some(Language::JavaScript),
+            // A `#lang` line after the `#!` line can still pick Rhombus or
+            // Scribble, as the Racket lexer reads it.
+            "racket" | "racketcs" | "racketbc" | "gracket" | "gracket-text" => {
+                return Some(Language::Racket);
+            }
             // `uv run --script` runs a Python script with the packages
             // it lists at the top.
             "uv" => {
@@ -806,6 +811,10 @@ mod tests {
                 Some(Language::JavaScript),
             ),
             ("#!/usr/bin/nodejs", Some(Language::JavaScript)),
+            ("#!/usr/bin/env racket", Some(Language::Racket)),
+            ("#! /usr/local/bin/racket -u", Some(Language::Racket)),
+            ("#!/usr/bin/racketcs", Some(Language::Racket)),
+            ("#!/usr/bin/env gracket", Some(Language::Racket)),
             ("#!/usr/bin/python-config", None),
             ("#!/usr/bin/env -S uv run", None),
             ("#!/usr/bin/env perl", None),
