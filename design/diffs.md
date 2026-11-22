@@ -1098,94 +1098,85 @@ leave that column blank.
   lifetimes.
 - `src/highlight/zig.rs` has examples for each kind of Zig token, such
   as multiline strings, quoted identifiers, escapes, and numbers that
-  only the compiler rejects. We also ran the tokenizer from Zig 0.17.1
-  over the 887 `.zig` files in its own `lib` directory, and checked the
-  color of each byte and where each identifier starts and ends. The
-  lexer agreed with it on all of them. The dev image has no Zig, so the
-  tests in the repository use fixed examples instead.
+  only the compiler rejects. `dev/reference/zig` runs the tokenizer
+  from Zig 0.17.1 over the 887 `.zig` and `.zon` files in its own `lib`
+  directory, and checks the color of each byte and where each
+  identifier starts and ends. The lexer agrees with it on all of them.
 - `src/highlight/llvm.rs` has examples for each kind of LLVM IR token,
   such as names, labels, fields, strings and floats in hexadecimal.
-  The dev image has no LLVM, so nothing compares the lexer with LLVM's
-  automatically. When we wrote it, we built a program that runs
-  `LLLexer` from LLVM 23.1.6 over the 44,904 `.ll` files in LLVM's own
-  `test` directory. It gave each byte the color that its token calls
-  for, and we checked that against the lexer's colors and where each
-  identifier starts and ends. LLVM's lexer reports errors in 575 of
-  the files, which test errors or are templates that the tests fill
-  in. The lexer agreed with it on every byte of the other 44,329.
+  `dev/reference/llvm` builds a program that runs `LLLexer` from LLVM
+  23.1.6 over the 44,904 `.ll` files in LLVM's own `test` directory.
+  It gives each byte the color that its token calls for, and checks
+  that against the lexer's colors and where each identifier starts and
+  ends. LLVM's lexer reports errors in 575 of the files, which test
+  errors or are templates that the tests fill in. The lexer agrees
+  with it on every byte of the other 44,329.
 - `src/highlight/python.rs` has examples for each kind of Python
   token, such as strings with prefixes, f-strings with fields and
-  format specs, and soft keywords. The dev image has no Python, so
-  nothing compares the lexer with Python automatically. When we wrote
-  it, we ran the tokenizer from Python 3.15.2 over 6,657 `.py` files
-  from CPython's source, Django, NumPy, pandas, requests and SymPy. We
-  checked whether each character was in a comment, a string, a number,
-  a name or an operator, and where each name started and ended. We also
-  checked each `match`, `case`, `type` and `lazy` against the
-  statements that Python's parser found. The lexer agreed on all of
-  them, except two of CPython's tests of how it handles errors.
+  format specs, and soft keywords. `dev/reference/python` runs the
+  tokenizer from Python 3.15.2 over 6,657 `.py` files from CPython's
+  source, Django, NumPy, pandas, requests and SymPy. It checks whether
+  each character is in a comment, a string, a number, a name or an
+  operator, and where each name starts and ends. It also checks each
+  `match`, `case`, `type` and `lazy` against the statements that
+  Python's parser finds. The lexer agrees on all of them, except two
+  of CPython's tests of how it handles errors.
 - `src/highlight/racket.rs` has examples for each kind of Racket token,
   such as `#;` comments, here strings, characters, and atoms that are
   numbers and atoms that aren't. It also has examples of @-forms in
   Scribble and `#lang at-exp`, with other delimiters, escapes and
-  comments. The dev image has no Racket, so nothing runs the real
-  reader automatically. When the lexer was written, we checked
-  `is_number` against Racket's reader on about 240,000 random atoms.
-  We also checked the whole lexer against `read-syntax` on about
-  120,000 random texts that Racket reads without an error, and they
-  agreed on all of them.
-- When the lexer learned @-forms, we checked it against a copy of the
-  @-reader that marked where each piece of text came from. On about
-  200,000 random texts that Racket reads without an error, in plain
-  Racket, `#lang at-exp` and Scribble, every number, string, character,
-  boolean and keyword got its color, symbols and text got none, and
-  comments covered nothing that the reader read. We checked the 1,300
-  Scribble and `at-exp` files in Racket's own source the same way. The
-  only differences were here strings, where Racket counts the linefeed
-  after the terminator and the lexer doesn't, which changes no colors.
+  comments.
+- `dev/reference/racket` checks the lexer against Racket 9.3's reader,
+  and against a copy of the @-reader that marks where each piece of
+  text came from. It reads random atoms, random texts in plain Racket,
+  `#lang at-exp` and Scribble, and the Scribble, `at-exp` and Racket
+  files in Racket's own source. Every number, string, character,
+  boolean and keyword must get its color, symbols and text must get
+  none, and comments must cover nothing that the reader read. An atom
+  must get the number color exactly when Racket reads it as a number.
+  When we wrote the lexer, this agreed on about 240,000 random atoms
+  and 320,000 random texts. The only differences are here strings,
+  where Racket counts the linefeed after the terminator and the lexer
+  doesn't, which changes no colors.
 - `src/highlight/shrubbery.rs` has examples for each kind of shrubbery
   token, such as numbers and operators after a term, group comments,
-  quotes, Racket data, @-forms and Rhombus Scribble text. Like the
-  Racket lexer, nothing runs the real one automatically. When we wrote
-  it, we checked each character's color against DrRacket's lexer on
-  about 90,000 random texts and on the 1,091 Rhombus files in Racket's
-  source, and they agreed on all of them. We left out about 1,000
-  random texts that made the real lexer fail, for example on a `²`
-  followed by a letter, which no rule of its lexer matches.
+  quotes, Racket data, @-forms and Rhombus Scribble text.
+  `dev/reference/shrubbery` checks each character's color against
+  DrRacket's lexer on random texts and on the 1,069 Rhombus files in
+  the Rhombus repository, and they agree on all of them. When we wrote
+  the lexer, they agreed on about 90,000 random texts. The check
+  leaves out random texts that make the real lexer fail, for example
+  on a `²` followed by a letter, which no rule of its lexer matches.
 - `src/highlight/c.rs` has examples for each kind of C and C++ token,
   such as line splices, raw strings, digit separators, header names
-  and `#if 0`. The dev image has no C compiler, so nothing compares it
-  with one automatically. When we wrote it, we compared it with clang's
-  raw lexer (`clang -cc1 -dump-raw-tokens`) on about 3,000 random
-  texts, each read as C23 and as C++23. We checked whether each
-  character was in a comment, a string, a number or none of these.
-  They only differed on splices inside a token, on raw string
-  delimiters that hold a quote, on how clang recovers from errors such
-  as a bad delimiter, and on numbers like `1p-1`. In C++, clang only
+  and `#if 0`. `dev/reference/c` compares it with clang's raw lexer
+  (`clang -cc1 -dump-raw-tokens`) on random texts, each read as C23 and
+  as C++23. It checks whether each character is in a comment, a
+  string, a number or none of these. They only differ on splices
+  inside a token, on raw string delimiters that hold a quote, on how
+  clang recovers from errors such as a bad delimiter or a stray `\`
+  before a `u`, and on numbers like `1p-1`. In C++, clang only
   reads that as one number when it's hexadecimal, but the standard
   says it's always one.
 - `src/highlight/cmake.rs` has examples for comments, brackets,
   command names, `if` operators, escapes, variable references,
   generator expressions and the arguments that old versions allowed.
-  The dev image has no CMake, so nothing compares it with the real one
-  automatically. When we wrote it, we built `cmListFileLexer.c` from
-  CMake's source into a program that prints its tokens, and simulated
-  CMake's parser on them. We checked that each byte had the color its
-  token called for, on 25,000 random texts and on the 12,885 CMake
-  files in CMake's own source, and they agreed on all of them. For
-  escapes and variable references, we ran `message("…")` with `cmake
-  -P` on 15,000 random arguments. With no variables defined, the colors
-  say whether CMake gives an error, and what it prints if it doesn't.
-  They agreed on all of them.
+  `dev/reference/cmake` builds `cmListFileLexer.c` from CMake's source
+  into a program that prints its tokens, and follows the steps of
+  CMake's parser on them. It checks that each byte has the color its
+  token calls for, on random texts and on the 12,885 CMake files in
+  CMake's own source. For escapes and variable references, it runs
+  `message("…")` with `cmake -P` on random arguments. With no
+  variables defined, the colors say whether CMake gives an error, and
+  what it prints if it doesn't. They agreed on all of them, on 25,000
+  random texts and 15,000 arguments when we wrote the lexer.
 - `src/highlight/javascript.rs` has examples for each kind of
   JavaScript token, and a list of places where a `/` divides or starts
-  a regular expression. The dev image has no JavaScript parser, so
-  nothing compares the lexer with one automatically. When we wrote it,
-  we parsed the 6,513 JavaScript files in some popular npm packages,
-  such as lodash, three, d3, webpack and prettier, with acorn. We
-  checked whether each character was in a comment, a string, a
-  template literal, a regular expression or a number. The lexer agreed
-  with acorn on all of them.
+  a regular expression. `dev/reference/javascript` parses the 6,513
+  JavaScript files in some popular npm packages, such as lodash,
+  three, d3, webpack and prettier, with acorn. It checks whether each
+  character is in a comment, a string, a template literal, a regular
+  expression or a number. The lexer agrees with acorn on all of them.
 - `src/highlight/json.rs` has examples for each kind of JSON token,
   such as keys, escapes, comments and words that only start like
   values. Its property test builds random valid documents, with
@@ -1212,9 +1203,11 @@ leave that column blank.
   agreed on a million streams while we wrote the lexer. We also ran
   the same check on the inputs of the YAML test suite and on the YAML
   files of Ansible, the Kubernetes examples and the OpenAPI
-  specification, 5,438 files that saphyr-parser reads, and they agreed
-  on all of them. On those files, cutting the text after a line never
-  changed the colors of the lines before it.
+  specification, and they agreed on all of them. On those files,
+  cutting the text after a line never changed the colors of the lines
+  before it. `dev/reference/yaml` runs that check on the 2,985 of
+  those files that saphyr-parser reads, but not the one that cuts the
+  text.
 - `src/highlight/markdown.rs` has examples for each kind of Markdown
   block and inline construct. Its property test builds random documents
   from nested block quotes, lists, tables, code blocks, HTML and text

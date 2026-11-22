@@ -168,6 +168,11 @@ in detail. Read it before changing the watcher.
   drags, resizes, palette commands, file edits and git commands behind
   the app's back. It has no model. It checks that nothing panics and
   that selections and cursors point at rows that exist.
+- `dev/reference` has scripts that compare the lexers with the real
+  lexers of their languages, such as clang's or Python's, in
+  containers. They aren't part of `cargo test`. Run one with
+  `dev/reference/run.sh <name>` on the host, where podman is, after
+  changing its lexer. `dev/reference/README.md` explains them.
 - Some tests need git 2.45 or newer for reftable repositories. With an
   older git they skip themselves.
 - Property tests use `proptest`. The most important one is
