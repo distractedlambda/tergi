@@ -1127,7 +1127,11 @@ instruction, even inside quotes. So the lexer first gathers the lines
 of an instruction, colors its comment lines, and joins the rest with
 line feeds. Then it lexes the joined text, and maps the colors back to
 the lines they came from. The escape character is `\` unless an
-`escape` directive at the top of the file makes it `` ` ``.
+`escape` directive at the top of the file makes it `` ` ``. BuildKit
+only takes it as a line continuation when something other than the
+escape character comes before it, so a line that ends in `\\` doesn't
+go on. It also removes all carriage returns from the end of a line, and
+all whitespace, even U+00A0, from the ends of an instruction.
 
 Instructions such as `FROM` and `RUN` get the keyword color, and so do
 `AS` in `FROM`, and `CMD` and `NONE` in `HEALTHCHECK`. Instructions
@@ -1151,6 +1155,7 @@ as `CMD ["a", "b"]`, is lexed as JSON. BuildKit takes the arguments as
 JSON when they read as a JSON array of strings, and as a shell command
 otherwise, as in `RUN [ -f a ] && b`. We only look at the first line of
 the array, and take it as JSON if it's fine up to the end of that line.
+When the instruction ends on that line too, the array has to end there.
 A `SHELL` instruction that names a shell outside the sh family, such as
 `powershell` or `cmd`, makes the commands after it plain until the next
 `FROM`. We can't tell whether an image is for Windows, where the shell
@@ -1158,10 +1163,20 @@ is `cmd`. But Dockerfiles for Windows almost always make `` ` `` the
 escape character, so with that, commands are plain until a `SHELL`
 names a shell in the sh family.
 
-`RUN`, `COPY` and `ADD` can read here-documents. BuildKit finds them in
-words of their own such as `<<EOF`, `<<-EOF` or `<<"EOF"`, so in
-`cat << EOF` and `cat<<EOF`, it doesn't see one, and neither do we. The
-bodies start on the line after the instruction. They are colored as
+`RUN`, `COPY` and `ADD` can read here-documents. BuildKit splits the
+whole instruction into words with its `shell` package, and takes each
+word that starts with `<<`, such as `<<EOF`, `<<-EOF` or `<<"EOF"`, as
+one. The package keeps the spaces after `<<` in the word, so
+`cat << EOF` has a here-document, but `cat<<EOF` doesn't. Two quirks of
+the package matter here, and we follow both. When it can't read the
+instruction, for example because a quote isn't closed, BuildKit finds
+no here-documents at all. Then we still color the words as
+here-documents, but no lines become their bodies, so that the colors of
+the instruction don't depend on its later lines. And at a `${` with an
+operator, as in `<<EOF${x:-y}`, the package forgets the part of the
+word before it, so that word doesn't start with `<<` any more.
+
+The bodies start on the line after the instruction. They are colored as
 follows:
 
 - When a `RUN` is just one here-document, BuildKit runs its body as a
@@ -1170,12 +1185,17 @@ follows:
 - Otherwise the shell reads the bodies of a `RUN`'s here-documents, so
   the shell lexer gets them along with the command, and colors them as
   it does in a script.
-- The bodies in a `COPY` or an `ADD` are the contents of files. When
-  there's one body, and the name of the file it goes to says what
-  language it's in, as in `COPY <<EOF /app/main.py`, the body is lexed in
-  that language. Otherwise it gets the string color, with colors for
-  the variables that BuildKit expands in it when the delimiter isn't
-  quoted.
+- The bodies in a `COPY` or an `ADD` are the contents of files.
+  BuildKit splits the arguments at blanks, and only copies a body for
+  a word that is a here-document on its own. So in `COPY << EOF /x`,
+  the body is lost, and `<<` and `EOF` are the names of files, which is
+  how we color them. When there's one body, and the name of the file
+  it goes to says what language it's in, as in
+  `COPY <<EOF /app/main.py`, the body is lexed in that language.
+  Otherwise it gets the string color. When the delimiter isn't quoted,
+  BuildKit expands the variables in the body and removes the `\` from
+  escapes such as `\$`, but leaves quotes alone. So the variables and
+  escapes get their own colors.
 
 The line that ends a body gets the attribute color, as in a shell
 script. After `<<-`, BuildKit removes the tabs at the start of each

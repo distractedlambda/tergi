@@ -59,7 +59,7 @@ pub fn lex(text: &str, out: &mut Tokens) {
     }
 }
 
-/// A line of the source, without its line break or the carriage return
+/// A line of the source, without its line break or the carriage returns
 /// before it.
 #[derive(Debug, Clone, Copy)]
 struct Line {
@@ -125,11 +125,11 @@ struct Instruction {
 /// A here-document, as `heredocsFromLine` and `ParseHeredoc` find it.
 #[derive(Debug)]
 struct Heredoc {
-    /// The whole word, such as `<<-"EOF"`.
+    /// The whole word, such as `<<-"EOF"` or `<< EOF`.
     word: Range<usize>,
-    /// Where the `<<` starts, after the number of a file descriptor.
-    op: usize,
-    /// Where the delimiter starts, after `<<` or `<<-`.
+    /// The `<<` or `<<-`, after the number of a file descriptor.
+    op: Range<usize>,
+    /// Where the delimiter starts, after the operator and any spaces.
     delimiter: usize,
     /// The delimiter without its quotes, which ends the body on a line of
     /// its own.
@@ -167,7 +167,8 @@ impl<'a> Lexer<'a> {
         let mut start = if src.starts_with('\u{feff}') { 3 } else { 0 };
         for line in src[start..].split_inclusive('\n') {
             let content = line.strip_suffix('\n').unwrap_or(line);
-            let content = content.strip_suffix('\r').unwrap_or(content);
+            // BuildKit removes all carriage returns at the end of a line.
+            let content = content.trim_end_matches('\r');
             lines.push(Line {
                 start,
                 end: start + content.len(),
@@ -296,7 +297,12 @@ impl<'a> Lexer<'a> {
             };
             let at = ins.text.s.len();
             let content = self.src[start..line.end].trim_end_matches([' ', '\t']);
-            let more = content.as_bytes().last() == Some(&self.escape);
+            // BuildKit's pattern for this wants something other than the
+            // escape character before it, so `a\\` at the end of a line
+            // doesn't go on.
+            let b = content.as_bytes();
+            let more =
+                b.last() == Some(&self.escape) && (b.len() == 1 || b[b.len() - 2] != self.escape);
             let end = if more {
                 let e = start + content.len() - 1;
                 self.out.push((e..e + 1, Kind::Escape));
@@ -324,13 +330,23 @@ impl<'a> Lexer<'a> {
     fn command(&mut self, ins: &Instruction, at: usize, next: usize, toks: &mut Out) -> usize {
         let s = &ins.text.s;
         let start = skip_blanks(s, at);
-        let end = word_end(s, start);
+        let mut end = word_end(s, start);
+        // BuildKit trims all whitespace from the ends of an instruction, so
+        // a name can end in a space such as U+00A0 when nothing follows.
+        if s[end..].trim().is_empty() {
+            end = start + s[start..end].trim_end().len();
+        }
         let name = s[start..end].to_ascii_lowercase();
         if !INSTRUCTIONS.contains(&name.as_str()) {
             return next;
         }
         toks.push((start..end, Kind::Keyword));
-        let a = flags(s, end, toks, |s, r, toks| self.word(s, r, toks));
+        let a = flags(s, end, self.escape, toks, |s, r, toks| {
+            self.word(s, r, toks)
+        });
+        // BuildKit trims all whitespace from the start of the arguments,
+        // even U+00A0.
+        let a = s.len() - s[a..].trim_start().len();
         self.arguments(ins, &name, a, next, toks)
     }
 
@@ -442,7 +458,7 @@ impl<'a> Lexer<'a> {
             return next;
         }
         let docs = heredocs(s, a);
-        let (bodies, next) = self.bodies(&docs, next);
+        let (bodies, next) = self.bodies(s, &docs, next);
         // When the command is just one here-document, BuildKit runs its
         // body as a script, with the program its `#!` line names if it has
         // one. Otherwise the shell reads the bodies. Either way the command
@@ -502,10 +518,11 @@ impl<'a> Lexer<'a> {
             }
             let start = r.start.max(a);
             let mut end = r.end;
-            // In `a\\` at the end of a line, BuildKit removes the second
-            // `\`, and the first escapes the start of the next line. With
-            // the `\` we put back, the shell would read an escaped `\`
-            // and end the command. So we leave the first one out too.
+            // With `` ` `` as the escape character, a line can end in
+            // ``a\` ``. BuildKit removes the `` ` ``, and the `\` escapes
+            // the start of the next line. With the `\` we put back, the
+            // shell would read an escaped `\` and end the command. So we
+            // leave the first one out too.
             let backslashes = s[start..end]
                 .bytes()
                 .rev()
@@ -545,13 +562,16 @@ impl<'a> Lexer<'a> {
         }
         let docs = heredocs(s, a);
         let words = blank_words(s, a);
+        // BuildKit splits the arguments at blanks, and only copies a
+        // here-document for a word that is one on its own. So in
+        // `COPY << EOF /x`, the body is lost, and `<<` and `EOF` are files.
         for w in &words {
             match docs.iter().find(|d| d.word == *w) {
                 Some(doc) => heredoc_word(doc, toks),
                 None => self.word(s, w.clone(), toks),
             }
         }
-        let (bodies, next) = self.bodies(&docs, next);
+        let (bodies, next) = self.bodies(s, &docs, next);
         // A single file whose name we know the language of, as in
         // `COPY <<EOF /app/main.py`, gets lexed in that language.
         let lang = match (&docs[..], words.last()) {
@@ -574,9 +594,20 @@ impl<'a> Lexer<'a> {
         next
     }
 
-    /// Find the bodies of here-documents, starting on line `next`, and
-    /// return them and the line after them.
-    fn bodies(&self, docs: &[Heredoc], mut next: usize) -> (Vec<Body>, usize) {
+    /// Find the bodies of the here-documents in the instruction `s`,
+    /// starting on line `next`, and return them and the line after them.
+    fn bodies(&self, s: &str, docs: &[Heredoc], mut next: usize) -> (Vec<Body>, usize) {
+        // BuildKit reads the instruction with its `shell` package to find
+        // the here-documents, and finds none if that fails. The words of
+        // the here-documents still get their colors, so that the colors of
+        // a line don't depend on the lines after it.
+        if !shell_reads(s) {
+            let none = || Body {
+                lines: next..next,
+                end: None,
+            };
+            return (docs.iter().map(|_| none()).collect(), next);
+        }
         let mut bodies = Vec::new();
         for doc in docs {
             let start = next;
@@ -642,8 +673,9 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Color a line of a here-document that holds text. Variables in it
-    /// are expanded unless the delimiter was quoted.
+    /// Color a line of a here-document that holds text. Unless the
+    /// delimiter was quoted, BuildKit expands the variables in it and
+    /// removes the `\` from escapes, but leaves quotes alone.
     fn text_body(&mut self, r: Range<usize>, expand: bool) {
         if !expand {
             self.out.push((r, Kind::String));
@@ -654,18 +686,11 @@ impl<'a> Lexer<'a> {
             s: self.src,
             b: self.src.as_bytes(),
             end: r.end,
-            escape: None,
+            escape: b'\\',
+            quotes: false,
             toks: &mut toks,
         };
-        let mut i = r.start;
-        while i < r.end {
-            if self.src.as_bytes()[i] == b'$' {
-                i = w.dollar(i, Some(Kind::String));
-            } else {
-                w.toks.push((i..i + 1, Kind::String));
-                i += 1;
-            }
-        }
+        w.run(r.start, b"", Some(Kind::String));
         self.out.extend(toks);
     }
 
@@ -705,7 +730,8 @@ impl<'a> Lexer<'a> {
             s,
             b: s.as_bytes(),
             end: r.end,
-            escape: Some(self.escape),
+            escape: self.escape,
+            quotes: true,
             toks,
         };
         w.run(r.start, b"", None);
@@ -718,8 +744,11 @@ struct Word<'a, 'o> {
     s: &'a str,
     b: &'a [u8],
     end: usize,
-    /// The escape character, or none in the body of a here-document.
-    escape: Option<u8>,
+    /// The escape character, `\\` or `` ` ``.
+    escape: u8,
+    /// Whether quotes are special, as they are everywhere but in the body
+    /// of a here-document.
+    quotes: bool,
     toks: &'o mut Out,
 }
 
@@ -746,10 +775,10 @@ impl Word<'_, '_> {
                 break;
             }
             i = match c {
-                b'\'' => self.single_quote(i),
-                b'"' => self.double_quote(i),
+                b'\'' if self.quotes => self.single_quote(i),
+                b'"' if self.quotes => self.double_quote(i),
                 b'$' => self.dollar(i, base),
-                c if Some(c) == self.escape => {
+                c if c == self.escape => {
                     if i + 1 < self.end {
                         let n = 1 + self.char_len(i + 1);
                         self.toks.push((i..i + n, Kind::Escape));
@@ -791,10 +820,10 @@ impl Word<'_, '_> {
                     return i + 1;
                 }
                 b'$' => i = self.dollar(i, Some(Kind::String)),
-                c if Some(c) == self.escape
+                c if c == self.escape
                     && self
                         .at(i + 1)
-                        .is_some_and(|n| n == b'"' || n == b'$' || Some(n) == self.escape) =>
+                        .is_some_and(|n| n == b'"' || n == b'$' || n == self.escape) =>
                 {
                     self.toks.push((i..i + 2, Kind::Escape));
                     i += 2;
@@ -917,8 +946,7 @@ fn blank_words(s: &str, a: usize) -> Vec<Range<usize>> {
 }
 
 /// The end of the word that starts at `i`, where whitespace in quotes and
-/// escaped whitespace don't end it. This is how `parseWords` and
-/// `extractBuilderFlags` find words.
+/// escaped whitespace don't end it. This is how `parseWords` finds words.
 fn quoted_word_end(s: &str, mut i: usize, escape: u8) -> usize {
     let b = s.as_bytes();
     let mut quote = None;
@@ -952,10 +980,11 @@ fn quoted_words(s: &str, a: usize, escape: u8) -> Vec<Range<usize>> {
 /// Color the flags after an instruction's name, such as
 /// `--mount=type=cache,target=/root/.cache`, and return where its
 /// arguments start. `extractBuilderFlags` reads them the same way for
-/// every instruction, with `\` as the escape character.
+/// every instruction.
 fn flags(
     s: &str,
     mut i: usize,
+    escape: u8,
     toks: &mut Out,
     mut value: impl FnMut(&str, Range<usize>, &mut Out),
 ) -> usize {
@@ -964,7 +993,7 @@ fn flags(
         if !s[i..].starts_with("--") {
             return i;
         }
-        let end = quoted_word_end(s, i, b'\\');
+        let end = flag_end(s, i, escape);
         // A `--` on its own ends the flags.
         if end == i + 2 {
             return skip_blanks(s, end);
@@ -977,7 +1006,9 @@ fn flags(
                 toks.push((eq..eq + 1, Kind::Operator));
                 // `--from` names a stage or an image, as `FROM` does.
                 let v = eq + 1..end;
-                if &s[i..eq] == "--from" && !s[v.clone()].contains(['$', '\'', '"', '\\']) {
+                if &s[i..eq] == "--from"
+                    && !s[v.clone()].contains(['$', '\'', '"', char::from(escape)])
+                {
                     toks.push((v, Kind::Identifier));
                 } else {
                     value(s, v, toks);
@@ -987,6 +1018,25 @@ fn flags(
         }
         i = end;
     }
+}
+
+/// The end of the flag that starts at `i`. Unlike in other words, the
+/// escape character escapes the next character even in single quotes.
+fn flag_end(s: &str, mut i: usize, escape: u8) -> usize {
+    let b = s.as_bytes();
+    let mut quote = None;
+    while i < b.len() {
+        let c = b[i];
+        match quote {
+            None if is_blank(c) => break,
+            None if c == b'\'' || c == b'"' => quote = Some(c),
+            Some(q) if c == q => quote = None,
+            _ if c == escape => i += 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    i.min(b.len())
 }
 
 /// Color the numbers in a word from `EXPOSE`, such as `8080/tcp`.
@@ -1011,27 +1061,34 @@ fn numbers(s: &str, r: Range<usize>, toks: &mut Out) {
 /// `["a", "b"]`. BuildKit tries to read them as a JSON array of strings,
 /// and takes them as a shell command when that fails. We only look at the
 /// first line, so that its colors don't depend on the lines after it. An
-/// array that is still fine where that line ends counts as JSON.
+/// array that is still fine where that line ends counts as JSON, unless
+/// the instruction ends there too.
 fn json_form(s: &str, a: usize) -> bool {
     let a = skip_blanks(s, a);
     let b = s.as_bytes();
     let stop = s[a..].find('\n').map_or(s.len(), |n| a + n);
+    // Whether the instruction goes on after this line. If it doesn't, the
+    // array has to end on it.
+    let open = stop < s.len();
     let ws = |mut i: usize| {
         while i < stop && matches!(b[i], b' ' | b'\t' | b'\r') {
             i += 1;
         }
         i
     };
+    // BuildKit trims all whitespace from the end of the arguments, and
+    // JSON allows its own whitespace before that.
+    let end = |i: usize| s[i..stop].trim().is_empty();
     if b.get(a) != Some(&b'[') {
         return false;
     }
     let mut i = ws(a + 1);
     if i < stop && b[i] == b']' {
-        return ws(i + 1) == stop;
+        return end(i + 1);
     }
     loop {
         if i == stop {
-            return true;
+            return open;
         }
         if b[i] != b'"' {
             return false;
@@ -1039,14 +1096,14 @@ fn json_form(s: &str, a: usize) -> bool {
         i += 1;
         loop {
             if i == stop {
-                return true;
+                return open;
             }
             match b[i] {
                 b'"' => break,
                 b'\\' => {
                     i += 1;
                     if i == stop {
-                        return true;
+                        return open;
                     }
                     match b[i] {
                         b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {}
@@ -1054,7 +1111,7 @@ fn json_form(s: &str, a: usize) -> bool {
                             for _ in 0..4 {
                                 i += 1;
                                 if i == stop {
-                                    return true;
+                                    return open;
                                 }
                                 if !b[i].is_ascii_hexdigit() {
                                     return false;
@@ -1071,11 +1128,11 @@ fn json_form(s: &str, a: usize) -> bool {
         }
         i = ws(i + 1);
         if i == stop {
-            return true;
+            return open;
         }
         match b[i] {
             b',' => i = ws(i + 1),
-            b']' => return ws(i + 1) == stop,
+            b']' => return end(i + 1),
             _ => return false,
         }
     }
@@ -1112,22 +1169,28 @@ fn runs_sh(json: &str) -> bool {
 
 /// Find the here-documents in the arguments from `a` on. As
 /// `heredocsFromLine` does, we split them into words and take each word
-/// such as `<<EOF`, `<<-EOF` or `<<"EOF"` as one. A word such as `<<`
-/// with the delimiter after a space, or `cat<<EOF`, isn't one.
+/// such as `<<EOF`, `<<-EOF`, `<<"EOF"` or `<< EOF` as one. BuildKit's
+/// `shell` package keeps the spaces after `<<` in the word. In `cat<<EOF`
+/// there is none, because the word doesn't start with `<<`.
 fn heredocs(s: &str, a: usize) -> Vec<Heredoc> {
     let b = s.as_bytes();
     let mut docs = Vec::new();
-    for w in quoted_words(s, a, b'\\') {
+    for w in heredoc_words(s, a) {
         let op = w.start
             + b[w.clone()]
                 .iter()
                 .take_while(|c| c.is_ascii_digit())
                 .count();
-        if !s[op..w.end].starts_with("<<") {
+        if !s[op..w.end].starts_with("<<") || forgets_start(&s[w.clone()]) {
             continue;
         }
         let strip_tabs = b.get(op + 2) == Some(&b'-');
-        let delimiter = op + 2 + usize::from(strip_tabs);
+        let op = op..op + 2 + usize::from(strip_tabs);
+        let delimiter = op.end
+            + b[op.end..w.end]
+                .iter()
+                .take_while(|&&c| matches!(c, b' ' | b'\t' | b'\r' | b'\n' | 0x0c))
+                .count();
         let rest = &s[delimiter..w.end];
         // A delimiter with a quote that goes on to the next line could
         // have a `<` there, which would make it not a delimiter. We don't
@@ -1138,7 +1201,7 @@ fn heredocs(s: &str, a: usize) -> Vec<Heredoc> {
         // Remove the quotes and escapes, as `ProcessWords` does.
         let mut name = String::new();
         let mut quoted = false;
-        let mut quote = None;
+        let mut quote: Option<char> = None;
         let mut chars = rest.chars().peekable();
         while let Some(c) = chars.next() {
             match (quote, c) {
@@ -1154,6 +1217,10 @@ fn heredocs(s: &str, a: usize) -> Vec<Heredoc> {
                 _ => name.push(c),
             }
         }
+        // BuildKit can't read a delimiter whose quote isn't closed.
+        if quote.is_some() {
+            continue;
+        }
         docs.push(Heredoc {
             word: w,
             op,
@@ -1166,10 +1233,199 @@ fn heredocs(s: &str, a: usize) -> Vec<Heredoc> {
     docs
 }
 
+/// Whether BuildKit's `shell` package forgets the start of a word, which
+/// it does at a `${` with an operator, as in `<<EOF${x:-y}`. To read the
+/// word after the operator, it calls a function that clears the buffer
+/// that holds the word so far.
+fn forgets_start(w: &str) -> bool {
+    let b = w.as_bytes();
+    let mut quote = None;
+    let mut i = 0;
+    while i < b.len() {
+        match (quote, b[i]) {
+            (None, b'\'' | b'"') => quote = Some(b[i]),
+            (Some(q), c) if c == q => quote = None,
+            (Some(b'\''), _) => {}
+            (_, b'\\') => i += 1,
+            (_, b'$') if b.get(i + 1) == Some(&b'{') => {
+                let n = name_len(&w[i + 2..]);
+                if b.get(i + 2 + n).is_some_and(|&c| c != b'}') {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// The words of the arguments from `a` on, as `ProcessWords` splits them
+/// for `heredocsFromLine`. Whitespace in quotes or after a `\\` doesn't
+/// end a word, and neither do the spaces and tabs right after `<<`.
+fn heredoc_words(s: &str, a: usize) -> Vec<Range<usize>> {
+    let b = s.as_bytes();
+    // `ProcessWords` splits words at any whitespace, such as U+00A0.
+    let skip = |i: usize| s.len() - s[i..].trim_start().len();
+    let mut words = Vec::new();
+    let mut i = skip(a);
+    while i < b.len() {
+        let start = i;
+        let mut quote = None;
+        while let Some(c) = s[i..].chars().next() {
+            match quote {
+                None if c.is_whitespace() => break,
+                None if c == '\'' || c == '"' => quote = Some(c),
+                None if b[i..].starts_with(b"<<") => {
+                    i += 2;
+                    while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\r') {
+                        i += 1;
+                    }
+                    continue;
+                }
+                Some(q) if c == q => quote = None,
+                _ if c == '\\' && quote != Some('\'') => {
+                    i += s[i + 1..].chars().next().map_or(0, char::len_utf8);
+                }
+                _ => {}
+            }
+            i += c.len_utf8();
+        }
+        words.push(start..i);
+        i = skip(i);
+    }
+    words
+}
+
+/// Whether BuildKit's `shell` package reads `s` without an error, with `\\`
+/// as the escape character, as `heredocsFromLine` has it read the whole
+/// instruction. It fails on a quote that isn't closed, and on some forms
+/// of `${...}` such as `${}` and `${x`.
+fn shell_reads(s: &str) -> bool {
+    let mut r = ShellReader {
+        c: s.chars().collect(),
+        i: 0,
+    };
+    r.read(None)
+}
+
+/// Follows `processStopOn` and the functions it calls in BuildKit's
+/// `shell` package, only to see whether they fail.
+struct ShellReader {
+    c: Vec<char>,
+    i: usize,
+}
+
+impl ShellReader {
+    fn peek(&self) -> Option<char> {
+        self.c.get(self.i).copied()
+    }
+
+    fn next(&mut self) -> Option<char> {
+        let c = self.peek();
+        if c.is_some() {
+            self.i += 1;
+        }
+        c
+    }
+
+    /// Read up to `stop`, or to the end if it's `None`.
+    fn read(&mut self, stop: Option<char>) -> bool {
+        while let Some(c) = self.next() {
+            let ok = match c {
+                c if Some(c) == stop => return true,
+                '$' => self.dollar(),
+                '\'' => self.single_quote(),
+                '"' => self.double_quote(),
+                '\\' => {
+                    self.next();
+                    true
+                }
+                _ => true,
+            };
+            if !ok {
+                return false;
+            }
+        }
+        stop.is_none()
+    }
+
+    fn single_quote(&mut self) -> bool {
+        loop {
+            match self.next() {
+                None => return false,
+                Some('\'') => return true,
+                Some(_) => {}
+            }
+        }
+    }
+
+    /// In double quotes, `\\` only escapes `"`, `$` and itself.
+    fn double_quote(&mut self) -> bool {
+        loop {
+            match self.next() {
+                None => return false,
+                Some('"') => return true,
+                Some('$') => {
+                    if !self.dollar() {
+                        return false;
+                    }
+                }
+                Some('\\') if matches!(self.peek(), Some('"' | '$' | '\\')) => self.i += 1,
+                Some(_) => {}
+            }
+        }
+    }
+
+    /// Read what follows a `$`.
+    fn dollar(&mut self) -> bool {
+        if self.peek() != Some('{') {
+            self.name();
+            return true;
+        }
+        self.i += 1;
+        if matches!(self.peek(), None | Some('{' | '}' | ':')) {
+            return false;
+        }
+        self.name();
+        match self.next() {
+            Some('}') => true,
+            // The character after the `:` can be anything, but `#` and `%`
+            // aren't allowed there.
+            Some(':') => !matches!(self.next(), Some('#' | '%')) && self.read(Some('}')),
+            Some('+' | '-' | '?' | '#' | '%') => self.read(Some('}')),
+            Some('/') => {
+                if self.peek() == Some('/') {
+                    self.i += 1;
+                }
+                self.read(Some('/')) && self.read(Some('}'))
+            }
+            _ => false,
+        }
+    }
+
+    /// Read a name, as `processName` does.
+    fn name(&mut self) {
+        match self.peek() {
+            Some(c) if c.is_ascii_digit() => {
+                while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                    self.i += 1;
+                }
+            }
+            Some('@' | '*' | '#' | '?' | '-' | '$' | '!') => self.i += 1,
+            _ => {
+                while self.peek().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                    self.i += 1;
+                }
+            }
+        }
+    }
+}
+
 /// Color a word such as `<<EOF` the way the shell lexer colors it.
 fn heredoc_word(doc: &Heredoc, toks: &mut Out) {
-    toks.push((doc.word.start..doc.op, Kind::Number));
-    toks.push((doc.op..doc.delimiter, Kind::Operator));
+    toks.push((doc.word.start..doc.op.start, Kind::Number));
+    toks.push((doc.op.clone(), Kind::Operator));
     toks.push((doc.delimiter..doc.word.end, Kind::Attribute));
 }
 
@@ -1275,6 +1531,17 @@ CMD ["x", "--serve"]
         );
         // BuildKit doesn't know these, so they're plain.
         assert_eq!(kinds_of("FORM a\nRUNX b\n", Kind::Keyword), [] as [&str; 0]);
+        // BuildKit trims all whitespace from the ends of an instruction and
+        // its arguments.
+        assert_eq!(kinds_of("RUN\u{a0}\n", Kind::Keyword), ["RUN"]);
+        assert_eq!(
+            kinds_of("HEALTHCHECK \u{a0}NONE\n", Kind::Keyword),
+            ["HEALTHCHECK", "NONE"]
+        );
+        assert_eq!(
+            kinds_of("SHELL [\"sh\"]\u{b}\n", Kind::Punctuation),
+            ["[", "]"]
+        );
     }
 
     #[test]
@@ -1333,10 +1600,16 @@ CMD ["x", "--serve"]
                 ("c\"", String),
             ]
         );
-        // In `a\\` at the end of a line, the first `\` escapes the start
-        // of the next line, and the command goes on.
-        let text = "RUN a\\\\\n b\n";
+        // A line that ends in `a\\` doesn't go on, because the second `\`
+        // is escaped.
+        let text = "ENV a=b\\\\\nRUN c\n";
+        assert_eq!(kinds_of(text, Keyword), ["ENV", "RUN"]);
         assert_eq!(kinds_of(text, Escape), ["\\\\"]);
+        // With `` ` `` as the escape character, the `\` in ``a\` `` at the
+        // end of a line escapes the start of the next line, and the
+        // command goes on.
+        let text = "# escape=`\nSHELL [\"sh\", \"-c\"]\nRUN a\\`\n b\n";
+        assert_eq!(kinds_of(text, Escape), ["\\`"]);
         assert_eq!(identifiers(text), ["a"]);
         // CRLF line breaks.
         assert_eq!(
@@ -1373,6 +1646,12 @@ CMD ["x", "--serve"]
         assert_eq!(identifiers(text), ["y", "b"]);
         assert_eq!(kinds_of(text, Punctuation), [] as [&str; 0]);
         assert_eq!(identifiers("ENTRYPOINT [\"a\", \"b\"]\n"), [] as [&str; 0]);
+        // An array that doesn't end on the instruction's last line isn't
+        // JSON.
+        assert_eq!(
+            kinds_of("CMD [\"a\", \"b\"\n", Punctuation),
+            [] as [&str; 0]
+        );
         // A JSON array that goes on over several lines.
         assert_eq!(
             tokens("CMD [\"a\", \\\n  \"b\"]\n"),
@@ -1467,8 +1746,32 @@ CMD ["x", "--serve"]
                 ("B", Attribute),
             ]
         );
-        // BuildKit only finds here-documents in words of their own.
-        assert_eq!(kinds_of("RUN cat << EOF\nEOF\n", Keyword), ["RUN"]);
+        // BuildKit finds here-documents in words that start with `<<`, and
+        // the spaces after `<<` are part of the word.
+        assert_eq!(
+            kinds_of("RUN cat << EOF\nRUN x\nEOF\n", Attribute),
+            ["EOF", "EOF"]
+        );
+        assert_eq!(
+            kinds_of("RUN cat<<EOF\nRUN x\nEOF\n", Keyword),
+            ["RUN", "RUN"]
+        );
+        // BuildKit's shell package forgets the start of a word at a `${`
+        // with an operator, so this word doesn't start with `<<` any more.
+        assert_eq!(
+            kinds_of("COPY <<EOF${x:-y} /x\nRUN y\nEOF\n", Keyword),
+            ["COPY", "RUN"]
+        );
+        // When BuildKit can't read the instruction, as with a quote that
+        // isn't closed, it finds no here-documents.
+        assert_eq!(
+            kinds_of("COPY <<EOF 'a /x\nRUN y\nEOF\n", Keyword),
+            ["COPY", "RUN"]
+        );
+        assert_eq!(
+            kinds_of("COPY <<EOF ${x /x\nRUN y\nEOF\n", Keyword),
+            ["COPY", "RUN"]
+        );
     }
 
     #[test]
@@ -1520,6 +1823,11 @@ CMD ["x", "--serve"]
         );
         // A body without its end goes on to the end of the file.
         assert_eq!(kinds_of("ADD <<EOF x\nRUN a\n", String), ["RUN a"]);
+        // BuildKit removes the `\` from escapes in a body that it expands,
+        // so `\$x` isn't a variable. It leaves quotes alone.
+        let text = "COPY <<EOF x\n\\$x a\\n '$y'\nEOF\n";
+        assert_eq!(kinds_of(text, Escape), ["\\$", "\\n"]);
+        assert_eq!(identifiers(text), ["y"]);
     }
 
     #[test]
@@ -1574,6 +1882,11 @@ CMD ["x", "--serve"]
                 ("}", Punctuation),
             ]
         );
+        // Flags use the file's escape character, which escapes the next
+        // character even in single quotes.
+        let text = "# escape=`\nCOPY --a='x`' y' --b=1 $c d\n";
+        assert_eq!(kinds_of(text, Attribute)[2..], ["--a", "--b"]);
+        assert_eq!(identifiers(text), ["c"]);
     }
 
     #[test]
@@ -1659,7 +1972,10 @@ CMD ["x", "--serve"]
             "<<'B'",
             "<<\"EOF\"",
             "3<<EOF",
+            "<< EOF",
+            "<<EOF${x:-y}",
             "<<",
+            "${",
             "cat",
             "&&",
             "||",
@@ -1693,6 +2009,7 @@ CMD ["x", "--serve"]
             "[\"/bin/sh\", \"-c\"]",
             "[\"cmd\"]",
             "\u{e9}",
+            "\u{a0}",
             "\r",
         ]);
         let end = prop::sample::select(vec!["", "", "", " \\", "\\", " \\  ", " `", "`"]);
