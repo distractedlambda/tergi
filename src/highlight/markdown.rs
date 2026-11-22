@@ -57,6 +57,7 @@ fn for_info(info: &str) -> Option<Language> {
     match word.as_str() {
         "javascript" => Some(Language::JavaScript),
         "llvm" => Some(Language::LlvmIr),
+        "python" | "python3" => Some(Language::Python),
         "rust" => Some(Language::Rust),
         "racket" => Some(Language::Racket),
         "scribble" => Some(Language::Scribble),
@@ -1852,6 +1853,10 @@ Setext
             assert_eq!(kinds_of(&text, String), ["/a/"]);
         }
         assert_eq!(kinds_of("```json\n{\"a\": 1}\n```", Number), ["1"]);
+        for lang in ["py", "python", "python3"] {
+            let text = format!("```{lang}\nmatch x:\n```");
+            assert_eq!(kinds_of(&text, Keyword), ["match"]);
+        }
         // A fence inside a list item ends with the item.
         assert_eq!(kinds_of("- ```\n  a\nb\n", String), ["a"]);
     }

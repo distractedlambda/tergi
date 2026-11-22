@@ -341,10 +341,10 @@ in the background, in a worker that `Highlighter::new` returns.
 Each language has its own lexer, written with Logos and kept in
 `src/highlight/`, one file per language: `c.rs` for C and C++,
 `cmake.rs` for CMake, `javascript.rs` for JavaScript, `json.rs` for
-JSON, `rust.rs` for Rust, `racket.rs` for Racket and Scribble,
-`shrubbery.rs` for Rhombus, `toml.rs` for TOML, `yaml.rs` for YAML,
-`zig.rs` for Zig, `llvm.rs` for LLVM IR, `markdown.rs` for Markdown,
-and `gitignore.rs` for `.gitignore` files.
+JSON, `python.rs` for Python, `rust.rs` for Rust, `racket.rs` for
+Racket and Scribble, `shrubbery.rs` for Rhombus, `toml.rs` for TOML,
+`yaml.rs` for YAML, `zig.rs` for Zig, `llvm.rs` for LLVM IR,
+`markdown.rs` for Markdown, and `gitignore.rs` for `.gitignore` files.
 A lexer turns text into `Tokens`: byte ranges, each with a `Kind` such as `Comment`,
 `Keyword` or `Escape`. Plain text has no token. An identifier that gets
 no other color is an `Identifier` token, which gets a color from its
@@ -932,6 +932,69 @@ on over lines as a string and a colon.
 `=`, `*` and `|` get the operator color. Other symbols get the
 punctuation color.
 
+### Python
+
+`python.rs` follows CPython's tokenizer, `Parser/lexer/lexer.c`. Files
+ending in `.py`, `.pyi` and `.pyw` are Python, and so are Markdown code
+blocks marked `py`, `python` or `python3`.
+
+Comments start with `#`. Strings can have a prefix such as `r`, `b` or
+`rb`. Escapes such as `\n`, `\x7f` and `\N{DASH}` get the escape
+color, except in raw strings. `\N`, `\u` and `\U` don't work in bytes,
+so they are plain string there. A backslash before any other character
+is plain string too. A string that isn't triple-quoted ends with its
+line, unless a backslash joins the next line to it.
+
+Since Python 3.12, the tokenizer splits the fields of an f-string into
+tokens like any other code. A field can hold strings with the same
+quotes as the f-string around it, and comments and line breaks, even
+in an f-string that isn't triple-quoted. So the lexer keeps a stack of
+the brackets and fields it's inside of, as the JavaScript lexer does
+for template literals. The text of an f-string gets the string color,
+and doubled braces such as `{{` get the escape color. The braces
+around a field get the punctuation color, and the code in it gets the
+usual colors. A `:` in a field, outside of any brackets, starts the
+format spec, as in `{x:>10}`. That's true even in `{x:=5}`, where the
+spec is `=5`. The spec is text, except that a `{` in it starts another
+field. A conversion such as `!r` gets the operator color. T-strings,
+which start with `t`, are lexed the same way.
+
+`True`, `False` and `None` get the constant color. So do `...`,
+`NotImplemented`, `Ellipsis` and `__debug__`, because Sublime Text
+colors them that way. Other keywords get the keyword color. Every
+other name is an identifier, including `self` and built-in functions
+such as `print`. A name after `.` is always an identifier.
+
+`match`, `case`, `type` and `lazy` are soft keywords. They are keywords
+in some statements and names everywhere else. The lexer guesses which
+from the tokens next to them on the same line. It doesn't look at later
+lines, because a line's colors must not depend on the lines after it.
+
+- `match` and `case` are keywords at the start of a statement, when
+  what follows them can start an expression or a pattern. That's a
+  name, a literal, a bracket, `-`, `*` or `not`. So `match x:` has a
+  keyword, and `match = 1` and `match.group()` don't. A bracket right
+  after a name usually calls it or indexes it, as in `match(x)`, while
+  people write a space before the brackets of a statement. So a bracket
+  without a space before it only makes a keyword if the line ends with
+  `:`, as in `match(x):`.
+- `type X = int` makes a type alias. Two names in a row are an error
+  anywhere else, so `type` is a keyword when a name follows it.
+- `lazy` is a keyword when `import` or `from` follows it, as in
+  `lazy import json`. Python 3.15 added these lazy imports.
+
+A decorator is a `@` at the start of a statement. The `@` and the
+dotted name after it, as in `@functools.cache`, get the attribute
+color. A decorator can be any expression, so a keyword ends the name,
+as in `@False or f`. Any other `@` multiplies matrices and gets the
+operator color.
+
+The tokenizer stops a number where it can't go on, and so does the
+lexer. So `1if` is the number `1` and the keyword `if`, and `0x1for`
+is `0x1f` and `or`. Brackets, `,`, `;`, `:` and `.` get the punctuation
+color. Other symbols, such as `->`, `:=` and `**=`, get the operator
+color.
+
 ### Rainbow identifiers
 
 With `rainbow_identifiers` on, which is the default, each `Identifier`
@@ -942,8 +1005,8 @@ uses the hash to pick one of the 16 colors in `Theme::identifiers`.
 The lexers only mark identifiers that get no other color, so keywords,
 and words such as `AND` in a CMake `if`, keep their usual colors.
 
-The C, C++, CMake, JavaScript, Rust, Zig, LLVM IR, Racket, Scribble
-and Rhombus lexers mark identifiers. TOML, YAML, JSON, Markdown and gitignore have
+The C, C++, CMake, JavaScript, Python, Rust, Zig, LLVM IR, Racket,
+Scribble and Rhombus lexers mark identifiers. TOML, YAML, JSON, Markdown and gitignore have
 nothing that is really a name in code, so they don't.
 
 `Theme::build` makes the 16 colors in Oklab, where the distance
@@ -1050,6 +1113,17 @@ leave that column blank.
   identifier starts and ends. LLVM's lexer reports errors in 575 of
   the files, which test errors or are templates that the tests fill
   in. The lexer agreed with it on every byte of the other 44,329.
+- `src/highlight/python.rs` has examples for each kind of Python
+  token, such as strings with prefixes, f-strings with fields and
+  format specs, and soft keywords. The dev image has no Python, so
+  nothing compares the lexer with Python automatically. When we wrote
+  it, we ran the tokenizer from Python 3.15.2 over 6,657 `.py` files
+  from CPython's source, Django, NumPy, pandas, requests and SymPy. We
+  checked whether each character was in a comment, a string, a number,
+  a name or an operator, and where each name started and ended. We also
+  checked each `match`, `case`, `type` and `lazy` against the
+  statements that Python's parser found. The lexer agreed on all of
+  them, except two of CPython's tests of how it handles errors.
 - `src/highlight/racket.rs` has examples for each kind of Racket token,
   such as `#;` comments, here strings, characters, and atoms that are
   numbers and atoms that aren't. It also has examples of @-forms in
@@ -1177,9 +1251,9 @@ leave that column blank.
   folds of a repository that moves to another folder are lost, as its
   hidden branches are.
 - A merge commit is diffed against its first parent only.
-- Only C, C++, CMake, JavaScript, Rust, Zig, LLVM IR, Racket, Rhombus,
-  Scribble, TOML, YAML, Markdown and `.gitignore` files are
-  highlighted. That leaves out JSX and TypeScript.
+- Only C, C++, CMake, JavaScript, JSON, Python, Rust, Zig, LLVM IR,
+  Racket, Rhombus, Scribble, TOML, YAML, Markdown and `.gitignore`
+  files are highlighted. That leaves out JSX and TypeScript.
 - The JavaScript lexer can guess wrong about a `/`. In a statement
   such as `a ? b : {} / 2`, it reads the `{}` as a block and the `/`
   as the start of a regular expression.
@@ -1220,6 +1294,15 @@ leave that column blank.
   lines, and that we don't have the full text for, doesn't know it's
   inside parentheses. So it reads a field at the start of a line, as
   in `file: !1,`, as the label of a basic block.
+- A `match` or `case` with a bracket right after it, as in `match(a,`,
+  is a name unless its line ends with `:`. So when the `:` is on a
+  later line, the lexer reads the statement as a call.
+- A hunk from the middle of a Python triple-quoted string that we
+  don't have the full text for reads the string as code, and its
+  closing quotes start a string. In the same way, a hunk from the
+  middle of an f-string field that goes on over several lines reads
+  the rest of the f-string as code, and its closing quote starts a
+  string.
 - A hunk from the middle of a Rhombus Scribble document that we don't
   have the full text for is lexed as Racket Scribble.
 - Other Racket languages with a reader of their own, such as

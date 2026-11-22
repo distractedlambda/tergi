@@ -18,6 +18,7 @@ mod javascript;
 mod json;
 mod llvm;
 mod markdown;
+mod python;
 mod racket;
 mod rust;
 mod shrubbery;
@@ -126,6 +127,7 @@ pub enum Language {
     Json,
     LlvmIr,
     Markdown,
+    Python,
     Racket,
     Rhombus,
     Rust,
@@ -172,6 +174,7 @@ impl Language {
             }
             "ll" => Some(Language::LlvmIr),
             "md" | "markdown" | "mdown" | "mkd" | "mkdn" | "mdwn" => Some(Language::Markdown),
+            "py" | "pyi" | "pyw" => Some(Language::Python),
             "rkt" | "rktl" | "rktd" => Some(Language::Racket),
             "rhm" => Some(Language::Rhombus),
             "rs" => Some(Language::Rust),
@@ -194,6 +197,7 @@ impl Language {
             Language::Json => json::lex(text, &mut out),
             Language::LlvmIr => llvm::lex(text, &mut out),
             Language::Markdown => markdown::lex(text, &mut out),
+            Language::Python => python::lex(text, &mut out),
             Language::Racket | Language::Rhombus | Language::Scribble => {
                 racket::lex(text, self, &mut out);
             }
@@ -400,6 +404,7 @@ mod tests {
         "a.json",
         "a.ll",
         "a.md",
+        "a.py",
         "a.rkt",
         "a.rhm",
         "a.rs",
@@ -496,6 +501,25 @@ mod tests {
         pieces.extend([
             "%x", "@\"a", "!0", "!dbg", "entry:", "\"a\":", "line: ", "i32", "cc10", "-0x1.p2",
             "+nan(0x", "#0", "\\0A",
+        ]);
+        // Pieces of Python, such as f-strings and soft keywords.
+        pieces.extend([
+            "f\"",
+            "rb'",
+            "'''",
+            "{x!r:>{w}}",
+            "{{",
+            "}}",
+            "\\N{DASH}",
+            "match ",
+            "case ",
+            "type X",
+            ":",
+            "@",
+            "lazy import",
+            "...",
+            "1j",
+            "\\",
         ]);
         // Pieces of gitignore patterns.
         pieces.extend(["!", "**/", "?", "[!a-]", "[[:alpha:]]", "\\#"]);
@@ -602,6 +626,8 @@ mod tests {
         assert_eq!(Language::for_path("src/a.zig"), Some(Language::Zig));
         assert_eq!(Language::for_path("build.zig.zon"), Some(Language::Zig));
         assert_eq!(Language::for_path("test/a.ll"), Some(Language::LlvmIr));
+        assert_eq!(Language::for_path("a/b.py"), Some(Language::Python));
+        assert_eq!(Language::for_path("a.pyi"), Some(Language::Python));
         assert_eq!(Language::for_path("a.lock"), None);
         assert_eq!(Language::for_path("a.b/c"), None);
         assert_eq!(Language::for_path("rs"), None);
