@@ -1426,8 +1426,26 @@ leave that column blank.
   any line doesn't change the colors of the lines before it. That
   found the shell lexer's problem with a line of a here-document that
   ends in `\`, which `todo/bugs.md` describes. The test leaves those
-  lines out until it's fixed. There's no check against BuildKit in
-  `dev/reference`.
+  lines out until it's fixed. `dev/reference/dockerfile` checks the
+  lexer against BuildKit 0.35.1's parser on the 440 Dockerfiles in
+  BuildKit's source and a few other projects, and on random texts.
+  BuildKit's parser only says which lines each instruction and
+  here-document covers, so the check follows its steps to find which
+  bytes it read as what. It checks the colors of directives, comments,
+  escape characters that join lines, instructions, flags, the ends of
+  here-documents and JSON arrays. It also checks that the variables in
+  each word that BuildKit expands are the ones that BuildKit's `shell`
+  package finds there. The check skips what follows from the known
+  differences above, such as a word that goes on over a line, and the
+  ends of here-documents that the shell lexer reads as the shell
+  would, for example after a `#` that starts a comment or when bash
+  can't parse the command. When we added the check, the lexer took a
+  line ending in `\\` as one that goes on, and didn't see `<< EOF`. It
+  read flags with `\` as the escape character even when the file chose
+  `` ` ``, and colored `\$x` in a `COPY` body as a variable. The check
+  also found here-documents where the `shell` package fails or forgets
+  the start of a word. After fixing those, it agreed on all the
+  Dockerfiles and on about 180,000 random texts.
 - `src/highlight/javascript.rs` has examples for each kind of
   JavaScript token, and a list of places where a `/` divides or starts
   a regular expression. `dev/reference/javascript` parses the 6,513

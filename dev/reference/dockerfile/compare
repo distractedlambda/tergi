@@ -1,0 +1,5 @@
+#!/bin/sh
+# Compares tergi's tokens with BuildKit's parser. The work is done by
+# dockerfile-check, which the Containerfile builds from main.go and
+# random.go. Usage: compare <work>
+exec /usr/local/bin/dockerfile-check compare "$1"

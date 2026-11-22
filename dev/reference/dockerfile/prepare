@@ -1,0 +1,5 @@
+#!/bin/sh
+# Unpacks the corpus and makes random Dockerfiles. The work is done by
+# dockerfile-check, which the Containerfile builds from main.go and
+# random.go. Usage: prepare <work>
+exec /usr/local/bin/dockerfile-check prepare "$1"

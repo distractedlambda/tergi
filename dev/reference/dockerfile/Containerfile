@@ -1,0 +1,34 @@
+# BuildKit 0.35.1's Dockerfile parser, in a small program that checks
+# tergi's colors, and the Dockerfiles to check them on. They are the
+# test files in BuildKit's own source and the Dockerfiles of a few
+# projects, each pinned to a commit.
+FROM docker.io/library/golang:1.26.11-trixie AS build
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY main.go random.go ./
+RUN CGO_ENABLED=0 go build -o /out/dockerfile-check . \
+    && cp -r "$(go list -m -f '{{.Dir}}' github.com/moby/buildkit)" /out/buildkit \
+    && chmod -R u+w /out/buildkit
+
+FROM docker.io/library/debian:trixie-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Each line of corpus.txt is a repository, a commit and the SHA-256 of
+# its tarball.
+COPY corpus.txt /opt/
+RUN set -eu; \
+    mkdir /opt/corpus; \
+    while read -r repo commit sum; do \
+        name=$(echo "$repo" | tr / -); \
+        curl -fsSL -o "/opt/corpus/$name.tar.gz" \
+            "https://github.com/$repo/archive/$commit.tar.gz"; \
+        echo "$sum  /opt/corpus/$name.tar.gz" | sha256sum -c -; \
+    done < /opt/corpus.txt
+
+COPY --from=build /out/buildkit /opt/corpus/buildkit
+COPY --from=build /out/dockerfile-check /usr/local/bin/

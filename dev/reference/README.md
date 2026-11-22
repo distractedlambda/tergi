@@ -40,6 +40,10 @@ that each check runs in a minute or two once its image is built.
 - `cmake`: CMake's own lexer, with its parser's steps, on random texts
   and the CMake files in CMake's source. Random `message()` calls run
   with `cmake -P` check escapes and variable references.
+- `dockerfile`: the Dockerfile parser of BuildKit 0.35.1, and its
+  `shell` package, on random texts and the Dockerfiles in BuildKit's
+  source and in a few projects, such as the official Python, PHP and
+  Node.js images.
 - `javascript`: acorn on the files of a few popular npm packages.
 - `llvm`: LLLexer from LLVM 23.1.6 on the `.ll` files in LLVM's
   tests.
