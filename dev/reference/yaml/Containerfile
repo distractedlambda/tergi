@@ -1,6 +1,6 @@
 # saphyr-parser 0.3.4, the version that tergi's property test for YAML
-# uses, in a small program that checks tergi's colors on many files. The
-# Rust version is the one in dev/Containerfile.
+# uses, in a small program that checks tergi's colors on many files, and
+# the files to check. The Rust version is the one in dev/Containerfile.
 FROM docker.io/library/rust:1.100.0-slim-trixie
 
 RUN apt-get update \
@@ -13,3 +13,7 @@ RUN cd /build \
     && cargo build --release --locked \
     && cp target/release/yaml-check /usr/local/bin/ \
     && rm -rf /build /usr/local/cargo/registry
+
+# The files that the lexer is checked on.
+COPY fetch /build/fetch
+RUN sh /build/fetch /opt/corpus && rm -r /build

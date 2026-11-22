@@ -1,59 +1,12 @@
-#!/usr/bin/env python3
-"""Fetches the Python files that the lexer is checked on.
+#!/bin/sh
+# Copies the Python files from the image into the work directory, where
+# the dev image can read them, and lists them in files.txt.
+#
+# Usage: prepare <work>
 
-They are CPython's source, and the packages Django, NumPy, pandas,
-requests and SymPy as pip downloads them. Usage: prepare <work>
-"""
-
-import hashlib
-import pathlib
-import subprocess
-import sys
-import tarfile
-import urllib.request
-import zipfile
-
-CPYTHON = "https://www.python.org/ftp/python/3.15.2/Python-3.15.2.tgz"
-CPYTHON_SHA256 = "f74e1db0eabd651cd01e4e2a00201bd41866abe74869ab716f9bf33cbbaa0943"
-PACKAGES = [
-    "django==6.1.3",
-    "numpy==2.5.5",
-    "pandas==3.1.1",
-    "requests==2.34.2",
-    "sympy==1.14.0",
-]
-
-work = pathlib.Path(sys.argv[1])
-corpus = work / "corpus"
-
-cpython = corpus / "cpython"
-if not cpython.exists():
-    data = urllib.request.urlopen(CPYTHON).read()
-    if hashlib.sha256(data).hexdigest() != CPYTHON_SHA256:
-        sys.exit(f"{CPYTHON} doesn't have the expected SHA-256 sum")
-    tgz = corpus / "cpython.tgz"
-    corpus.mkdir(parents=True, exist_ok=True)
-    tgz.write_bytes(data)
-    with tarfile.open(tgz) as t:
-        t.extractall(corpus / "cpython.tmp", filter="data")
-    tgz.unlink()
-    (corpus / "cpython.tmp").rename(cpython)
-
-# NumPy and pandas only have wheels for some platforms, but the Python
-# files in them are the same on each.
-packages = corpus / "packages"
-if not packages.exists():
-    wheels = corpus / "wheels"
-    subprocess.run(
-        ["pip", "download", "--quiet", "--disable-pip-version-check",
-         "--no-deps", "--only-binary", ":all:", "-d", wheels, *PACKAGES],
-        check=True,
-    )
-    for whl in sorted(wheels.glob("*.whl")):
-        with zipfile.ZipFile(whl) as z:
-            z.extractall(corpus / "packages.tmp" / whl.stem)
-    (corpus / "packages.tmp").rename(packages)
-
-files = sorted(str(p) for p in corpus.rglob("*.py") if p.is_file())
-(work / "files.txt").write_text("".join(f + "\n" for f in files))
-print(f"{len(files)} files")
+set -eu
+work=$1
+rm -rf "$work/corpus"
+cp -a /opt/corpus "$work/corpus"
+find "$work/corpus" -name '*.py' -type f | LC_ALL=C sort > "$work/files.txt"
+echo "$(wc -l < "$work/files.txt") files"

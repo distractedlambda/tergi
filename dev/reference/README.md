@@ -15,9 +15,11 @@ To run one, give its name to `run.sh`. You need podman.
 dev/reference/run.sh python
 ```
 
-The first run builds the images and downloads the corpus, which can
-take a few minutes. Later runs reuse them. Downloads and tokens go to
-`/tmp/tergi-reference/<name>`, or to `$TERGI_REFERENCE_DIR/<name>`.
+The first run builds the images, which can take a few minutes. Each
+image holds the real lexer and the files it's checked on, so later
+runs reuse them and need no network. Each run copies those files and
+writes tergi's tokens to `/tmp/tergi-reference/<name>`, or to
+`$TERGI_REFERENCE_DIR/<name>`.
 Checks that generate random texts read `CASES` for how many to make
 and `SEED` to choose them, so `CASES=100000 dev/reference/run.sh c`
 searches harder.
@@ -64,8 +66,10 @@ image with the real lexer, and two scripts that run in that image.
 
 1. It builds the dev image from `dev/Containerfile` and the check's
    image from its `Containerfile`.
-2. It runs `prepare <work>`, which downloads the corpus or generates
-   the random texts into the work directory. It writes their paths to
+2. It runs `prepare <work>`, which copies the corpus from the image
+   into the work directory, or generates the random texts there. The
+   dev image can't see inside the check's image, so the files have to
+   be in the work directory. It writes their paths to
    `<work>/files.txt`, one on each line.
 3. It runs the ignored test `highlight::reference::dump_tokens` in the
    dev image. That lexes each file in `files.txt` and writes its
@@ -85,6 +89,7 @@ guessing from its name. The names are those of `Language` in
 `src/highlight/mod.rs`.
 
 To add a check, make a directory with those three files and add its
-name to the list in the workflow. Pin the version of everything the
-image downloads, so that a check only starts failing when tergi
-changes.
+name to the list in the workflow. Download everything in the
+`Containerfile` rather than in `prepare`, so that podman caches it with
+the image. Pin the version of everything it downloads, so that a check
+only starts failing when tergi changes.

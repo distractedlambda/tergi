@@ -46,3 +46,15 @@ RUN mkdir -p inc/llvm/AsmParser \
     && g++ -O2 -Iinc $(llvm-config-23 --cxxflags | sed 's/-fno-exceptions//') \
         lexcheck.cpp LLLexer.cpp -o /usr/local/bin/lexcheck \
         $(llvm-config-23 --ldflags) -lLLVM-23
+
+# The files that the lexer is checked on: every .ll file in LLVM's test
+# directory. The release only has a tarball of the whole llvm-project,
+# so we keep just those files.
+ARG LLVM_SRC_SHA256=d3b86ab29cfb4445a6652e5c2642ccc75e04e38084dde3701d323320f35a31da
+RUN name=llvm-project-23.1.6.src \
+    && curl -fsSL -o /tmp/$name.tar.xz \
+        https://github.com/llvm/llvm-project/releases/download/$LLVM_TAG/$name.tar.xz \
+    && echo "$LLVM_SRC_SHA256  /tmp/$name.tar.xz" | sha256sum -c \
+    && tar -xJf /tmp/$name.tar.xz -C /tmp --wildcards "$name/llvm/test/*.ll" \
+    && mv /tmp/$name/llvm/test /opt/corpus \
+    && rm -rf /tmp/$name /tmp/$name.tar.xz

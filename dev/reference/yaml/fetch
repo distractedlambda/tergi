@@ -1,0 +1,35 @@
+#!/bin/sh
+# Fetches the YAML files that the lexer is checked on: the data release
+# of the YAML test suite, Ansible, the Kubernetes examples and the
+# OpenAPI specification, each at a fixed commit. The Containerfile runs
+# this, so that the image holds them.
+#
+# Usage: fetch <directory>
+
+set -eu
+corpus=$1
+mkdir -p "$corpus"
+
+# fetch <name> <GitHub repository> <tag or commit> <SHA-256 of the tarball>
+fetch() {
+    curl -fsSL -o "$corpus/$1.tar.gz" "https://github.com/$2/archive/$3.tar.gz"
+    echo "$4  $corpus/$1.tar.gz" | sha256sum -c --quiet -
+    rm -rf "$corpus/$1.tmp"
+    mkdir "$corpus/$1.tmp"
+    tar xzf "$corpus/$1.tar.gz" -C "$corpus/$1.tmp" --strip-components=1
+    rm "$corpus/$1.tar.gz"
+    mv "$corpus/$1.tmp" "$corpus/$1"
+}
+
+fetch yaml-test-suite yaml/yaml-test-suite refs/tags/data-2022-01-17 \
+    ccae49c1d010d27c20d315969a97752f95b14642fc1e73755db4eb2df4bb0256
+fetch ansible ansible/ansible f0d3af98967e19549d65342a632504fe58d9651d \
+    dbb58c1a97d88aef585737f48bb8bf31eeede175fb3a00172c47d92aed2180e0
+fetch kubernetes-examples kubernetes/examples 22934a040acbb0c0aa103023ccbd871507bf17f6 \
+    91ba0fa6737a417adf820672269fec6b7c2d5f1fd2077e9c63ae102cecdecd4b
+fetch openapi OAI/OpenAPI-Specification 4f86429f134f7e48b6351563549b4502fc69de52 \
+    c1684149dcd4bd3cbd6bfc412dfaa7e89f8de7997bbcaa5ec31fb8b34bc625da
+
+# Only the YAML files are checked, so the rest would only make the image
+# bigger.
+find "$corpus" -type f ! -name '*.yaml' ! -name '*.yml' -delete
