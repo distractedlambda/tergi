@@ -738,3 +738,73 @@ mod tests {
         }
     }
 }
+
+/// Writes out the tokens of a list of files, for the scripts in
+/// `dev/reference` that compare the lexers with the real ones. It is
+/// ignored, so `cargo test` skips it.
+///
+/// `LEX_FILES` names a file with one path on each line. A line can start
+/// with the name of a language and a tab, such as `Cpp\tfoo.h`, to lex
+/// the file as that language. Otherwise the language comes from the
+/// file's name. The tokens of the file on line `n`, counting from 0, go
+/// to `n.tok` in the directory `LEX_OUT`, one token on each line as its
+/// start, its end and its kind, such as `4 9 Keyword`. The offsets are in
+/// bytes. A file that isn't UTF-8 gets no `.tok` file.
+#[cfg(test)]
+mod reference {
+    use super::Language;
+
+    const LANGUAGES: [Language; 16] = [
+        Language::C,
+        Language::Cmake,
+        Language::Cpp,
+        Language::Gitignore,
+        Language::JavaScript,
+        Language::Json,
+        Language::LlvmIr,
+        Language::Markdown,
+        Language::Python,
+        Language::Racket,
+        Language::Rhombus,
+        Language::Rust,
+        Language::Scribble,
+        Language::Toml,
+        Language::Yaml,
+        Language::Zig,
+    ];
+
+    #[test]
+    #[ignore]
+    fn dump_tokens() {
+        use std::fmt::Write;
+        let var = |name| std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"));
+        let list = std::fs::read_to_string(var("LEX_FILES")).expect("reading LEX_FILES");
+        let out = std::path::PathBuf::from(var("LEX_OUT"));
+        std::fs::create_dir_all(&out).expect("creating LEX_OUT");
+        for (n, line) in list.lines().enumerate() {
+            let (lang, path) = match line.split_once('\t') {
+                Some((name, path)) => {
+                    let lang = LANGUAGES
+                        .into_iter()
+                        .find(|l| format!("{l:?}") == name)
+                        .unwrap_or_else(|| panic!("no language named {name}"));
+                    (lang, path)
+                }
+                None => {
+                    let lang = Language::for_path(line)
+                        .unwrap_or_else(|| panic!("no language for {line}"));
+                    (lang, line)
+                }
+            };
+            let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
+            let Ok(text) = String::from_utf8(bytes) else {
+                continue;
+            };
+            let mut s = String::new();
+            for (r, k) in &lang.lex(&text).0 {
+                writeln!(s, "{} {} {k:?}", r.start, r.end).expect("writing to a string");
+            }
+            std::fs::write(out.join(format!("{n}.tok")), s).expect("writing a .tok file");
+        }
+    }
+}
