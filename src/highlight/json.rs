@@ -1,9 +1,10 @@
 //! A lexer for JSON.
 //!
 //! It follows RFC 8259, and also reads `//` and `/* */` comments, which
-//! files such as `tsconfig.json` and VS Code's settings use. Keys are
-//! plain, like bare keys in TOML, so that the values stand out. A string
-//! is a key when a `:` follows it on the same line.
+//! files such as `tsconfig.json` and VS Code's settings use. The name in
+//! a key is an identifier, so it gets a color from its text, and its
+//! quotes are plain. A string is a key when a `:` follows it on the same
+//! line.
 
 use logos::{Lexer, Logos};
 
@@ -84,6 +85,9 @@ pub fn lex(text: &str, out: &mut Tokens) {
             Ok(Token::Str) => {
                 let rest = lex.remainder().trim_start_matches([' ', '\t']);
                 if rest.starts_with(':') {
+                    // A key ends with its quote, since a string that
+                    // doesn't would go on to the end of its line.
+                    out.push(span.start + 1..span.end - 1, Kind::Identifier);
                     continue;
                 }
                 for (part, r) in Part::lexer(lex.slice()).spanned() {
@@ -110,12 +114,18 @@ mod tests {
 
     use super::*;
 
-    /// Each token as its text and kind. Tokens of the same kind with
-    /// nothing between them come out as one.
+    /// Each token but the identifiers, as its text and kind. Tokens of
+    /// the same kind with nothing between them come out as one.
     fn tokens(text: &str) -> Vec<(&str, Kind)> {
         let mut out = Tokens::default();
         lex(text, &mut out);
-        out.0.iter().map(|(r, k)| (&text[r.clone()], *k)).collect()
+        out.colored(text)
+    }
+
+    fn identifiers(text: &str) -> Vec<&str> {
+        let mut out = Tokens::default();
+        lex(text, &mut out);
+        out.identifiers(text)
     }
 
     fn kinds_of(text: &str, kind: Kind) -> Vec<&str> {
@@ -165,11 +175,15 @@ mod tests {
     }
 
     #[test]
-    fn keys_are_plain() {
+    fn marks_plain_identifiers() {
         // A string is a key when a `:` follows it on its line, even
-        // outside of an object, as in a hunk from the middle of one.
+        // outside of an object, as in a hunk from the middle of one. The
+        // text between its quotes is an identifier, escapes and all, and
+        // the quotes are plain.
+        let text = "\"a\\\"b\" \t: \"c\":\"d\",\n\"e\"\n: 1, \"\": 2";
+        assert_eq!(identifiers(text), ["a\\\"b", "c"]);
         assert_eq!(
-            tokens("\"a\\\"b\" \t: \"c\":\"d\",\n\"e\"\n: 1"),
+            tokens(text),
             [
                 (":", Kind::Punctuation),
                 (":", Kind::Punctuation),
@@ -178,6 +192,9 @@ mod tests {
                 ("\"e\"", Kind::String),
                 (":", Kind::Punctuation),
                 ("1", Kind::Number),
+                (",", Kind::Punctuation),
+                (":", Kind::Punctuation),
+                ("2", Kind::Number),
             ]
         );
     }
@@ -244,6 +261,7 @@ mod tests {
         );
         // A comment between a key and its `:` makes the key a string.
         assert_eq!(kinds_of("\"a\" /**/ : 1", Kind::String), ["\"a\""]);
+        assert_eq!(identifiers("\"a\" /**/ : 1"), [] as [&str; 0]);
         // A lone slash is plain.
         assert_eq!(tokens("1 / 2"), [("1", Kind::Number), ("2", Kind::Number)]);
     }
@@ -303,9 +321,9 @@ mod tests {
         pick(&[&[], &[(" ", None)], &[("\t ", None)]])
     }
 
-    /// A string with the given kind, and escapes in it with the given
-    /// kind.
-    fn string(text: Option<Kind>, escape: Option<Kind>) -> BoxedStrategy<Doc> {
+    /// A string whose quotes have the kind `quote`, whose text has the
+    /// kind `text`, and whose escapes have the kind `escape`.
+    fn string(quote: Option<Kind>, text: Option<Kind>, escape: Option<Kind>) -> BoxedStrategy<Doc> {
         let part = prop::sample::select(vec![
             ("a", text),
             ("é 中👍", text),
@@ -324,11 +342,11 @@ mod tests {
         prop::collection::vec(part, 0..5)
             .prop_map(move |parts| {
                 let mut doc = Doc::default();
-                doc.push("\"", text);
+                doc.push("\"", quote);
                 for (t, k) in parts {
                     doc.push(t, k);
                 }
-                doc.push("\"", text);
+                doc.push("\"", quote);
                 doc
             })
             .boxed()
@@ -350,7 +368,7 @@ mod tests {
                 &[("false", K)],
                 &[("null", K)],
             ]),
-            string(Some(Kind::String), Some(Kind::Escape)),
+            string(Some(Kind::String), Some(Kind::String), Some(Kind::Escape)),
         ];
         scalar
             .prop_recursive(3, 16, 4, |inner| {
@@ -378,7 +396,7 @@ mod tests {
                     });
                 let entry = (
                     space(),
-                    string(None, None),
+                    string(None, Some(Kind::Identifier), Some(Kind::Identifier)),
                     inline_space(),
                     space(),
                     inner,

@@ -1838,6 +1838,7 @@ Setext
                 ("```", Punctuation),
                 ("toml", Attribute),
                 (">", Punctuation),
+                ("a", Identifier),
                 ("=", Operator),
                 ("1", Number),
                 (">", Punctuation),

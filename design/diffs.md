@@ -543,9 +543,17 @@ stack of the arrays and inline tables it's inside of, and it remembers
 whether a key or a value comes next. A key comes first on a line
 outside of brackets, and after `{` or a comma in an inline table. A
 value comes after `=`, and after `[` or a comma in an array. A line
-break outside of brackets starts a new key. Keys are plain, except that
-quoted keys get the string color and the dots between parts get the
-punctuation color.
+break outside of brackets starts a new key. Each part of a key is an
+identifier, so it gets a color from its name (see "Rainbow
+identifiers"). The quotes of a quoted part are plain and aren't part
+of its name, so `"name"` and `name` get the same color. The dots
+between parts get the punctuation color.
+
+A hunk from the middle of a multi-line array has values at the start
+of its lines, where the lexer expects a key. So a word or a quoted
+string is only a key when a `.` or `=` comes after it on its line, or
+when it starts or ends with a dot, as `.b` and `a.` do in `a .b = 1`
+and `a."b" = 1`. Otherwise it gets the color of the value it would be.
 
 A `[` where a key would start, outside of brackets, starts a table
 header. The whole header, such as `[server]` or `[[bin]]`, gets the
@@ -670,8 +678,10 @@ after a quoted scalar or a closing bracket, as in `{"a":1}`. The first
 node of each entry in a flow mapping is a key even without a `:`, and
 so is the node after a `?`.
 
-Keys are plain, like bare keys in TOML, and quoted keys get the string
-color. Values get the color of their type in YAML 1.2's core schema. So
+Keys are identifiers, as in TOML, and the quotes of a quoted key are
+plain. A quoted key that goes on over several lines gets the string
+color instead, since its name would be split over several tokens.
+Values get the color of their type in YAML 1.2's core schema. So
 `1.5`, `0x1F` and `.inf` get the number color, `true`, `null` and `~`
 get the constant color, and other plain scalars get the string color.
 Quoted scalars and the lines of block scalars get the string color,
@@ -828,9 +838,9 @@ files that end in `.json`, such as `tsconfig.json` and VS Code's
 settings, have `//` and `/* */` comments, so the lexer reads those in
 every JSON file. Nothing else in JSON can start with a `/`.
 
-Keys are plain, like bare keys in TOML and YAML, so that the values
-stand out. In JSON every key is quoted, so coloring keys as strings
-would color most of the file the same. A string is a key when a `:`
+Keys are identifiers, as in TOML and YAML, and their quotes are plain.
+In JSON every key is quoted, so coloring keys as strings would color
+most of the file the same. A string is a key when a `:`
 follows it on the same line, with nothing but spaces and tabs between
 them. That works in a hunk from the middle of an object too, where a
 stack of brackets wouldn't know that it's in an object.
@@ -1014,8 +1024,10 @@ The lexers only mark identifiers that get no other color, so keywords,
 and words such as `AND` in a CMake `if`, keep their usual colors.
 
 The C, C++, CMake, JavaScript, Python, Rust, Zig, LLVM IR, Racket,
-Scribble and Rhombus lexers mark identifiers. TOML, YAML, JSON, Markdown and gitignore have
-nothing that is really a name in code, so they don't.
+Scribble and Rhombus lexers mark identifiers. The TOML, YAML and JSON
+lexers mark the names in keys, so each key in a config file has the
+same color everywhere it appears. Markdown and gitignore have nothing
+that is really a name, so their lexers don't mark anything.
 
 `Theme::build` makes the 16 colors in Oklab, where the distance
 between two colors matches how different they look much better than
@@ -1206,7 +1218,7 @@ leave that column blank.
   as keys that look like values and strings that hold brackets. It
   parses them with `toml_edit`, which already reads the config file,
   and checks that each value has the color of its type and that each
-  key is plain, or a string if it's quoted.
+  key is an identifier, apart from its quotes.
 - `src/highlight/yaml.rs` has examples for each kind of YAML token,
   such as keys that look like values, plain scalars over several
   lines, escapes, block scalars with indicators, and tags. Its property
@@ -1214,8 +1226,8 @@ leave that column blank.
   collections, flow collections, scalars of every style, block
   scalars, anchors, aliases, comments and directives. It reads them
   with `saphyr-parser`, which passes the YAML test suite, and checks
-  each scalar against the parser's events. Plain keys must be plain,
-  other plain scalars must have the color of their type, other scalars
+  each scalar against the parser's events. Keys must be identifiers,
+  apart from their quotes, other plain scalars must have the color of their type, other scalars
   the string or escape color, aliases the attribute color, and nothing
   outside of a scalar may be a string, a number or a constant. It
   agreed on a million streams while we wrote the lexer. We also ran

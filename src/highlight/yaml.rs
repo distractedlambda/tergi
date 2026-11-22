@@ -8,7 +8,8 @@
 //! over several lines ends. And a word followed by `:` on the same line is
 //! a key, so the lexer remembers where each possible key starts.
 //!
-//! Keys are plain, like bare keys in TOML. Values get the color of the
+//! The names in keys are identifiers, so they get colors from their text.
+//! The quotes of a quoted key are plain. Values get the color of the
 //! type that YAML's core schema gives them, so `1.5` is a number, `true`
 //! and `null` are constants, and other plain scalars are strings.
 //!
@@ -94,11 +95,11 @@ enum Flow {
 #[derive(Debug)]
 struct Tok {
     r: Range<usize>,
-    /// None for a plain scalar that turned out to be a key.
+    /// None for a token that has no color, such as the quotes of a key.
     kind: Option<Kind>,
-    /// For a plain scalar, the flow level it's at, so that a `:` after it
-    /// can make it a key.
-    plain: Option<usize>,
+    /// For a plain or quoted scalar, the flow level it's at, so that a
+    /// `:` after it can make it a key.
+    scalar: Option<usize>,
 }
 
 struct Lexer<'a> {
@@ -184,7 +185,7 @@ impl Lexer<'_> {
         self.out.push(Tok {
             r,
             kind: Some(kind),
-            plain: None,
+            scalar: None,
         });
     }
 
@@ -452,11 +453,7 @@ impl Lexer<'_> {
             .take()
             .filter(|k| k.line == self.line && self.pos <= k.pos + 1024);
         if let Some(key) = key {
-            for t in &mut self.out[key.tok..] {
-                if t.plain == Some(level) {
-                    t.kind = None;
-                }
-            }
+            self.mark_key(key.tok, level);
             self.roll(key.column);
             self.allowed = false;
         } else {
@@ -465,6 +462,39 @@ impl Lexer<'_> {
         }
         self.key_next = false;
         self.indicator();
+    }
+
+    /// Make the scalar at flow level `level` among the tokens from `from`
+    /// on a key, which is an identifier. A quoted key's quotes are plain.
+    /// The key has to be on one line, so that the name is one token.
+    fn mark_key(&mut self, from: usize, level: usize) {
+        let Some(i) = (from..self.out.len()).find(|&i| self.out[i].scalar == Some(level)) else {
+            return;
+        };
+        // A key after `?` or at the start of an entry in a flow mapping
+        // was marked when we read it, before the `:` after it.
+        if self.out[i].kind == Some(Kind::Identifier) {
+            return;
+        }
+        let mut end = 0;
+        for t in &mut self.out[i..] {
+            if t.scalar == Some(level) {
+                end = t.r.end;
+                t.kind = None;
+            }
+        }
+        let mut r = self.out[i].r.start..end;
+        if let q @ (b'"' | b'\'') = self.s[r.start] {
+            r.start += 1;
+            if r.end > r.start && self.s[r.end - 1] == q {
+                r.end -= 1;
+            }
+        }
+        self.out[i] = Tok {
+            r,
+            kind: Some(Kind::Identifier),
+            scalar: Some(level),
+        };
     }
 
     /// A literal or folded block scalar, which starts with `|` or `>`.
@@ -567,7 +597,9 @@ impl Lexer<'_> {
     fn quoted(&mut self, quote: u8) {
         self.save_key();
         self.allowed = false;
-        self.key_next = false;
+        let key = std::mem::take(&mut self.key_next);
+        let first = self.out.len();
+        let line = self.line;
         let mut start = self.pos;
         self.pos += 1;
         loop {
@@ -598,6 +630,13 @@ impl Lexer<'_> {
             }
         }
         self.push(start..self.pos, Kind::String);
+        let level = self.level();
+        for t in &mut self.out[first..] {
+            t.scalar = Some(level);
+        }
+        if key && self.line == line {
+            self.mark_key(first, level);
+        }
         self.adjacent = true;
     }
 
@@ -657,7 +696,7 @@ impl Lexer<'_> {
 
     fn plain_line(&mut self, r: Range<usize>, key: bool, first: bool) {
         let kind = if key {
-            None
+            Some(Kind::Identifier)
         } else if !first {
             // Lines are joined with spaces, and no value in the schema
             // holds one.
@@ -671,7 +710,7 @@ impl Lexer<'_> {
         self.out.push(Tok {
             r,
             kind,
-            plain: Some(self.level()),
+            scalar: Some(self.level()),
         });
     }
 
@@ -709,12 +748,18 @@ mod tests {
 
     use super::*;
 
-    /// Each token as its text and kind. Tokens of the same kind with
-    /// nothing between them come out as one.
+    /// Each token but the identifiers, as its text and kind. Tokens of
+    /// the same kind with nothing between them come out as one.
     fn tokens(text: &str) -> Vec<(&str, Kind)> {
         let mut out = Tokens::default();
         lex(text, &mut out);
-        out.0.iter().map(|(r, k)| (&text[r.clone()], *k)).collect()
+        out.colored(text)
+    }
+
+    fn identifiers(text: &str) -> Vec<&str> {
+        let mut out = Tokens::default();
+        lex(text, &mut out);
+        out.identifiers(text)
     }
 
     fn kinds_of(text: &str, kind: Kind) -> Vec<&str> {
@@ -804,11 +849,13 @@ jobs:
     }
 
     #[test]
-    fn keys_are_plain() {
-        // Keys that look like values stay plain, and so do keys after `?`
-        // and the first node of each entry in a flow mapping.
+    fn marks_plain_identifiers() {
+        // Keys that look like values are identifiers, and so are keys
+        // after `?` and the first node of each entry in a flow mapping.
+        let text = "true: 1\n&a 2: b\n? null\n: x\n{c, d e: 3}";
+        assert_eq!(identifiers(text), ["true", "2", "null", "c", "d e"]);
         assert_eq!(
-            tokens("true: 1\n&a 2: b\n? null\n: x\n{c, d: 3}"),
+            tokens(text),
             [
                 (":", Kind::Punctuation),
                 ("1", Kind::Number),
@@ -825,29 +872,39 @@ jobs:
                 ("}", Kind::Punctuation),
             ]
         );
-        // Quoted keys are strings. In a flow collection, a `:` can follow
-        // one right away.
+        // The quotes of a quoted key are plain, and the text between them
+        // is an identifier, escapes and all. In a flow collection, a `:`
+        // can follow one right away.
+        let text = r#"{"a\tb":1, 'c''d':e, "":f, ? 'g', "h"}"#;
+        assert_eq!(identifiers(text), [r"a\tb", "c''d", "g", "h"]);
         assert_eq!(
-            tokens(r#"{"a\tb":1, 'c':d}"#),
+            tokens(text),
             [
                 ("{", Kind::Punctuation),
-                ("\"a", Kind::String),
-                ("\\t", Kind::Escape),
-                ("b\"", Kind::String),
                 (":", Kind::Punctuation),
                 ("1", Kind::Number),
                 (",", Kind::Punctuation),
-                ("'c'", Kind::String),
                 (":", Kind::Punctuation),
-                ("d", Kind::String),
+                ("e", Kind::String),
+                (",", Kind::Punctuation),
+                (":", Kind::Punctuation),
+                ("f", Kind::String),
+                (",", Kind::Punctuation),
+                ("?", Kind::Punctuation),
+                (",", Kind::Punctuation),
                 ("}", Kind::Punctuation),
             ]
         );
+        // A quoted key that goes on over several lines is a string, since
+        // its name would be split over several tokens.
+        assert_eq!(kinds_of("{\"a\n b\": 1}", Kind::String), ["\"a\n b\""]);
         // A `:` needs a space after it outside of flow collections, and a
         // key has to end on its own line.
         assert_eq!(kinds_of("a:b\nc\n: d", Kind::String), ["a:b", "c", "d"]);
+        assert_eq!(identifiers("a:b\nc\n: d"), [] as [&str; 0]);
         // Inside a flow collection used as a key, words are values.
         assert_eq!(kinds_of("[a, b]: c", Kind::String), ["a", "b", "c"]);
+        assert_eq!(identifiers("[a, b]: c"), [] as [&str; 0]);
     }
 
     #[test]
@@ -1313,7 +1370,18 @@ d: |
                 continue;
             }
             let ok = match style {
-                ScalarStyle::Plain if key => kinds[j].is_none(),
+                ScalarStyle::Plain if key => kinds[j] == Some(Kind::Identifier),
+                // A quoted key on one line is an identifier between plain
+                // quotes. One over several lines is a string.
+                ScalarStyle::SingleQuoted | ScalarStyle::DoubleQuoted
+                    if key && !text[i..r.end].contains('\n') =>
+                {
+                    if j == i || j + 1 == r.end {
+                        kinds[j].is_none()
+                    } else {
+                        kinds[j] == Some(Kind::Identifier)
+                    }
+                }
                 ScalarStyle::Plain if j < first_end => {
                     kinds[j] == Some(resolve(text[i..first_end].trim_end()))
                 }
@@ -1408,8 +1476,7 @@ d: |
 
     proptest! {
         /// In documents that saphyr-parser reads, every scalar has the
-        /// color of its style or its type, and keys are plain unless
-        /// they're quoted.
+        /// color of its style or its type, and keys are identifiers.
         #[test]
         fn agrees_with_saphyr(text in stream()) {
             check(&text)?;

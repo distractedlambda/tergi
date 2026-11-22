@@ -305,7 +305,8 @@ and save it to the config file, or Esc to go back.
 
 Names in C, C++, CMake, JavaScript, Python, Rust, Zig, LLVM IR, Racket,
 Rhombus and Scribble code get a color picked from the name itself, so
-each use of a variable has the same color. Keywords keep their own color. Each
+each use of a variable has the same color. So do the keys in JSON, TOML
+and YAML files. Keywords keep their own color. Each
 theme has its own set of these colors. To draw the other names in the
 text color instead, set `rainbow_identifiers = false`.
 

@@ -3,7 +3,7 @@
 //! It does what the property test in src/highlight/yaml.rs does, but on
 //! the files listed in <work>/files.txt, with tergi's tokens read from
 //! <work>/tokens. Files that saphyr-parser doesn't read without an error
-//! are skipped. In the others, plain keys must be plain, other plain
+//! are skipped. In the others, keys must be identifiers, other plain
 //! scalars must have the color of their type in YAML 1.2's core schema,
 //! other scalars must have the string or escape color, aliases must have
 //! the attribute color, and nothing outside of a scalar may be a string,
@@ -30,6 +30,7 @@ enum Kind {
     Number,
     Constant,
     Attribute,
+    Identifier,
     Other,
 }
 
@@ -40,6 +41,7 @@ fn kind(name: &str) -> Kind {
         "Number" => Kind::Number,
         "Constant" => Kind::Constant,
         "Attribute" => Kind::Attribute,
+        "Identifier" => Kind::Identifier,
         _ => Kind::Other,
     }
 }
@@ -146,7 +148,18 @@ fn check_scalar(
             continue;
         }
         let ok = match style {
-            ScalarStyle::Plain if key => kinds[j].is_none(),
+            ScalarStyle::Plain if key => kinds[j] == Some(Kind::Identifier),
+            // A quoted key on one line is an identifier between plain
+            // quotes. One over several lines is a string.
+            ScalarStyle::SingleQuoted | ScalarStyle::DoubleQuoted
+                if key && !text[i..r.end].contains('\n') =>
+            {
+                if j == i || j + 1 == r.end {
+                    kinds[j].is_none()
+                } else {
+                    kinds[j] == Some(Kind::Identifier)
+                }
+            }
             ScalarStyle::Plain if j < first_end => {
                 kinds[j] == Some(resolve(text[i..first_end].trim_end()))
             }

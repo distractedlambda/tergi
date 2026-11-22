@@ -4,8 +4,9 @@
 //! line breaks inside inline tables. Whether a word is a key or a value
 //! depends on where it is, since `true = 1` and `2024-01-01 = 1` are
 //! valid keys. So the lexer keeps track of the arrays and inline tables
-//! it's inside of, and whether a key or a value comes next. Bare keys are
-//! plain, and table headers such as `[server]` get the attribute color.
+//! it's inside of, and whether a key or a value comes next. The names in
+//! keys are identifiers, so they get colors from their text, and table
+//! headers such as `[server]` get the attribute color.
 
 use logos::{Lexer, Logos};
 
@@ -116,6 +117,13 @@ fn multiline_string(lex: &mut Lexer<Token>, quote: u8) {
     lex.bump(i.min(rest.len()));
 }
 
+/// Whether the rest of the line after a word in key position makes the
+/// word part of a key. Words in a hunk from the middle of a multi-line
+/// array are in key position too, but they are values.
+fn key_follows(rest: &str) -> bool {
+    rest.trim_start_matches([' ', '\t']).starts_with(['.', '='])
+}
+
 /// The pieces of a basic string. Anything else in one, such as a backslash
 /// before a character that can't be escaped, is plain string.
 #[derive(Logos, Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +195,36 @@ pub fn lex(text: &str, out: &mut Tokens) {
                 continue;
             }
             Token::Comment => Kind::Comment,
+            Token::Basic | Token::Literal
+                if expect == Expect::Key
+                    && !lex.slice().starts_with(r#"""""#)
+                    && !lex.slice().starts_with("'''")
+                    && key_follows(lex.remainder()) =>
+            {
+                // A quoted key ends with its quote, since one that doesn't
+                // would go on to the end of its line. The quotes are plain.
+                out.push(span.start + 1..span.end - 1, Kind::Identifier);
+                continue;
+            }
+            Token::Number | Token::Bool | Token::Word
+                if expect == Expect::Key
+                    && (lex.slice().starts_with('.')
+                        || lex.slice().ends_with('.')
+                        || key_follows(lex.remainder())) =>
+            {
+                // A key, maybe dotted, as in `a.b.c`. A word that starts
+                // or ends with a dot is part of a longer key, as in `a .b`
+                // or `a."b"`.
+                let mut start = span.start;
+                for (i, _) in lex.slice().match_indices('.') {
+                    let dot = span.start + i;
+                    out.push(start..dot, Kind::Identifier);
+                    out.push(dot..dot + 1, Kind::Punctuation);
+                    start = dot + 1;
+                }
+                out.push(start..span.end, Kind::Identifier);
+                continue;
+            }
             Token::Basic => {
                 for (part, r) in Part::lexer(lex.slice()).spanned() {
                     let kind = match part {
@@ -198,13 +236,6 @@ pub fn lex(text: &str, out: &mut Tokens) {
                 continue;
             }
             Token::Literal => Kind::String,
-            Token::Number | Token::Bool | Token::Word if expect == Expect::Key => {
-                // A key, maybe dotted, as in `a.b.c`.
-                for (i, _) in lex.slice().match_indices('.') {
-                    out.push(span.start + i..span.start + i + 1, Kind::Punctuation);
-                }
-                continue;
-            }
             Token::Number => Kind::Number,
             Token::Bool => Kind::Constant,
             Token::Word => continue,
@@ -267,12 +298,18 @@ mod tests {
 
     use super::*;
 
-    /// Each token as its text and kind. Tokens of the same kind with
-    /// nothing between them come out as one.
+    /// Each token but the identifiers, as its text and kind. Tokens of
+    /// the same kind with nothing between them come out as one.
     fn tokens(text: &str) -> Vec<(&str, Kind)> {
         let mut out = Tokens::default();
         lex(text, &mut out);
-        out.0.iter().map(|(r, k)| (&text[r.clone()], *k)).collect()
+        out.colored(text)
+    }
+
+    fn identifiers(text: &str) -> Vec<&str> {
+        let mut out = Tokens::default();
+        lex(text, &mut out);
+        out.identifiers(text)
     }
 
     fn kinds_of(text: &str, kind: Kind) -> Vec<&str> {
@@ -321,10 +358,12 @@ dependencies.logos = { version = \"0.16\", features = [] }
     }
 
     #[test]
-    fn keys_are_plain() {
+    fn marks_plain_identifiers() {
         // Bare keys can look like values.
+        let text = "true = 1\n2024-01-01 = inf\n1.5 = nan";
+        assert_eq!(identifiers(text), ["true", "2024-01-01", "1", "5"]);
         assert_eq!(
-            tokens("true = 1\n2024-01-01 = inf\n1.5 = nan"),
+            tokens(text),
             [
                 ("=", Kind::Operator),
                 ("1", Kind::Number),
@@ -335,18 +374,44 @@ dependencies.logos = { version = \"0.16\", features = [] }
                 ("nan", Kind::Number),
             ]
         );
-        // Quoted keys are strings.
+        // The quotes of a quoted key are plain, and the dots between the
+        // parts of a dotted key are punctuation.
+        let text = r#""a\tb".'c' . d .e. "".f."g" = 1"#;
+        assert_eq!(identifiers(text), ["a\\tb", "c", "d", "e", "f", "g"]);
         assert_eq!(
-            tokens(r#""a\tb".'c' = 1"#),
+            tokens(text),
             [
-                ("\"a", Kind::String),
-                ("\\t", Kind::Escape),
-                ("b\"", Kind::String),
                 (".", Kind::Punctuation),
-                ("'c'", Kind::String),
+                (".", Kind::Punctuation),
+                (".", Kind::Punctuation),
+                (".", Kind::Punctuation),
+                (".", Kind::Punctuation),
+                (".", Kind::Punctuation),
                 ("=", Kind::Operator),
                 ("1", Kind::Number),
             ]
+        );
+        // Keys in inline tables are identifiers too.
+        assert_eq!(identifiers("a = { b = 1, 'c' = [d] }"), ["a", "b", "c"]);
+        // A hunk from the middle of an array has values where a key would
+        // go. Without a `.` or `=` after them, they aren't keys.
+        assert_eq!(
+            tokens("  \"x\", 'y',\n  1, true, z\n]"),
+            [
+                ("\"x\"", Kind::String),
+                (",", Kind::Punctuation),
+                ("'y'", Kind::String),
+                (",", Kind::Punctuation),
+                ("1", Kind::Number),
+                (",", Kind::Punctuation),
+                ("true", Kind::Constant),
+                (",", Kind::Punctuation),
+                ("]", Kind::Punctuation),
+            ]
+        );
+        assert_eq!(
+            identifiers("  \"x\", 'y',\n  1, true, z\n]"),
+            [] as [&str; 0]
         );
     }
 
@@ -659,6 +724,24 @@ dependencies.logos = { version = \"0.16\", features = [] }
         Ok(())
     }
 
+    /// Check that a key is an identifier, except for its quotes if it
+    /// has them, or that it's part of a table header.
+    fn check_key(kinds: &[Option<Kind>], text: &str, r: Range<usize>) -> Result<(), TestCaseError> {
+        let quoted = text[r.clone()].starts_with(['"', '\'']);
+        for i in r.clone() {
+            let want = if quoted && (i == r.start || i + 1 == r.end) {
+                None
+            } else {
+                Some(Kind::Identifier)
+            };
+            let fine = kinds[i] == want
+                || kinds[i] == Some(Kind::Attribute)
+                || text.as_bytes()[i].is_ascii_whitespace();
+            prop_assert!(fine, "{:?} has {:?} at {i} in\n{text}", &text[r], kinds[i]);
+        }
+        Ok(())
+    }
+
     fn check_table(
         t: &dyn TableLike,
         kinds: &[Option<Kind>],
@@ -669,8 +752,7 @@ dependencies.logos = { version = \"0.16\", features = [] }
                 continue;
             };
             if let Some(r) = key.span() {
-                let ok = [Kind::String, Kind::Escape, Kind::Attribute];
-                check(kinds, text, r, &ok, true)?;
+                check_key(kinds, text, r)?;
             }
             match item {
                 Item::Value(v) => check_value(v, kinds, text)?,
@@ -707,7 +789,7 @@ dependencies.logos = { version = \"0.16\", features = [] }
 
     proptest! {
         /// In documents that toml_edit can parse, values get the color of
-        /// their type, and keys are plain, or strings if they're quoted.
+        /// their type, and keys are identifiers.
         #[test]
         fn agrees_with_toml_edit(text in document()) {
             let Ok(doc) = toml_edit::Document::parse(text.as_str()) else {
