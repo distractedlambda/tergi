@@ -1422,7 +1422,9 @@ leave that column blank.
   can go on on the next line. The shell lexer ends a plain word at a
   continuation, as in `then\`, so that its color doesn't depend on the
   next line. When that line starts with something other than a blank,
-  bash reads one longer word.
+  bash reads one longer word. In the same way, the lexer reads `>` at
+  the end of a line and `&` at the start of the next as two operators,
+  where bash reads `>&`.
 - A shell script that turns on `extglob` can run a command whose name
   is a pattern such as `!(a)`. The lexer reads `!` and a subshell
   there.

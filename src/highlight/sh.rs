@@ -991,6 +991,13 @@ impl<'a> Lexer<'a, '_> {
                 b'\'' => self.single_quote(),
                 b'"' => self.double_quote(),
                 b'`' => self.backquote(),
+                // In `$@(a)`, the `@(` starts a pattern, and the `$` is
+                // just a `$`.
+                b'$' if matches!(next, Some(b'@' | b'*' | b'?' | b'!'))
+                    && self.at(self.i + 2) == Some(b'(') =>
+                {
+                    self.i += 1;
+                }
                 b'$' => self.dollar(Ctx::Word),
                 b'<' | b'>' if next == Some(b'(') => self.process_substitution(),
                 b'@' | b'*' | b'+' | b'?' | b'!' if next == Some(b'(') => {
@@ -1210,6 +1217,9 @@ impl<'a> Lexer<'a, '_> {
                 .iter()
                 .take_while(|c| c.is_ascii_digit())
                 .count(),
+            // `${$(...)}` holds a command substitution, which is an
+            // error when it runs, but bash reads it.
+            Some(b'$') if matches!(self.at(self.i + 1), Some(b'(' | b'{' | b'[')) => 0,
             Some(c) if b"@*#?-$!".contains(&c) => 1,
             _ => 0,
         };
@@ -1398,9 +1408,15 @@ impl<'a> Lexer<'a, '_> {
             self.i += 1;
             return;
         }
-        self.take(2, Some(Kind::Punctuation));
         self.depth += 1;
-        self.commands(End::Paren);
+        // `parse_comsub` reads `<((` as it reads `$((`.
+        if self.at(self.i + 2) == Some(b'(') {
+            self.take(3, Some(Kind::Punctuation));
+            self.arith(ArithEnd::Parens(2));
+        } else {
+            self.take(2, Some(Kind::Punctuation));
+            self.commands(End::Paren);
+        }
         self.depth -= 1;
     }
 
@@ -2009,6 +2025,8 @@ done
             ]
         );
         assert_eq!(identifiers("a ${ b; }c"), ["a", "b"]);
+        // `<((` starts arithmetic, as `$((` does.
+        assert_eq!(kinds_of("a <((b + 1))", Kind::Operator), ["+"]);
         // Process substitutions can be in the middle of a word.
         assert_eq!(
             tokens("diff <(a) x>(b)"),
@@ -2279,6 +2297,8 @@ done
         use Kind::*;
         // The parentheses of a pattern belong to the word.
         assert_eq!(tokens("ls !(*.txt|\"a b\") @(x)y"), [("\"a b\"", String)]);
+        // A `$` before one is just a `$`.
+        assert_eq!(tokens("echo $@(a|b) $@"), [("$", Punctuation)]);
         // Only quotes nest in them, so the `)` in `${x:-)}` ends one.
         assert_eq!(
             tokens("ls @(${x:-)|y)"),
