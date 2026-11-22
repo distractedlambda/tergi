@@ -9,3 +9,4 @@ cc c89f4cc372ffa05530c860310f383868ee478f9fae3edb6f519678f0b5fbe89e # shrinks to
 cc 5199b577e5ce7f83a281ad21f132b78c7f826e3bda80d3e2ba6641c86b1e4103 # shrinks to path = "a.scrbl", (text, _) = ("|#|<@#;\n|#|<@#;\n|#|<@#;", "")
 cc 1ef3c7ed3f9e87038d9ffee01c529d53556cad17330d64a5bbbcfdf06b10a900 # shrinks to path = "a.yaml", (old, new) = ("\"\r\n\"\n\"\n\"\n\"\n\"\n\"\n\"\n\"\r\n\"\n\"\n\"\n\"\n\"\r\n\"\n\"", "\"\n\"\n\"\n\""), context = 0
 cc c47f170c3d83262e4926e4a25f7c96b8a136dcff621755f4c8f9741c796c1364 # shrinks to path = "a.ll", (old, new) = ("\t#[[+nan(0x[***\n)\r\n)", ")\r\n"), context = 0
+cc 6a8698d88145bccd555295ce016f0b337ab348aa1b1dfb53ae78207888ca4717 # shrinks to path = "a.yaml", (text, _) = ("[[\n|a[1]=$\"{x!r:>{w}}.inf|%:", "")

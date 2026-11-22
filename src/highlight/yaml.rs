@@ -476,12 +476,16 @@ impl Lexer<'_> {
         if self.out[i].kind == Some(Kind::Identifier) {
             return;
         }
+        // The key is the one scalar that starts there. Later scalars at
+        // the same level, as after a nested flow collection, aren't part
+        // of it.
         let mut end = 0;
-        for t in &mut self.out[i..] {
-            if t.scalar == Some(level) {
-                end = t.r.end;
-                t.kind = None;
-            }
+        for t in self.out[i..]
+            .iter_mut()
+            .take_while(|t| t.scalar == Some(level))
+        {
+            end = t.r.end;
+            t.kind = None;
         }
         let mut r = self.out[i].r.start..end;
         if let q @ (b'"' | b'\'') = self.s[r.start] {
