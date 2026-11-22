@@ -596,13 +596,14 @@ func (f *file) instruction(node *parser.Node, j *joined, lines []line, next int)
 	// That isn't always the way BuildKit reads them. The shell doesn't see
 	// a here-document in a comment, and it may not see one after a
 	// backquote. It reads `<<` in words such as `cat<<EOF`, where BuildKit
-	// doesn't, and it doesn't split words at spaces such as U+00A0. And
+	// doesn't, and it only splits words at spaces and tabs, where BuildKit
+	// also splits them at other whitespace such as CR or U+00A0. And
 	// when bash can't parse the script, it can read any line as part of
 	// something that isn't closed.
 	shell := name == "run" && sub.Next != nil && parser.MustParseHeredoc(sub.Next.Value) == nil
 	odd := shell && (strings.ContainsAny(sub.Next.Value, "`#") ||
 		strings.Count(sub.Next.Value, "<<") != len(node.Heredocs) ||
-		strings.ContainsFunc(sub.Next.Value, func(r rune) bool { return r > 0x7f && unicode.IsSpace(r) }) ||
+		strings.ContainsFunc(sub.Next.Value, func(r rune) bool { return unicode.IsSpace(r) && r != ' ' && r != '\t' }) ||
 		!bashParses(sub.Next.Value, node.Heredocs))
 	for _, doc := range node.Heredocs {
 		// And in a body that it expands, a line that ends in `\` goes on
@@ -752,6 +753,14 @@ func (f *file) node(node *parser.Node, j *joined, base int, x *expect) *parser.N
 			return node
 		}
 		typ := node.Next.Value
+		// parseHealthConfig looks for spaces one byte at a time, so it can
+		// take the byte 0xa0 in a character such as U+00A0 for one, and end
+		// the type in the middle of the character. tergi doesn't.
+		if !utf8.ValidString(typ) || (a+len(typ) < len(j.text) && j.text[a+len(typ)] >= 0x80) {
+			f.skip("HEALTHCHECK types that BuildKit ends inside a character")
+			x.maybe = append(x.maybe, [2]int{a, len(j.text)})
+			return node
+		}
 		if strings.EqualFold(typ, "cmd") || strings.EqualFold(typ, "none") {
 			x.keywords = append(x.keywords, [2]int{a, a + len(typ)})
 		}

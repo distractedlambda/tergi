@@ -1445,7 +1445,7 @@ leave that column blank.
   `` ` ``, and colored `\$x` in a `COPY` body as a variable. The check
   also found here-documents where the `shell` package fails or forgets
   the start of a word. After fixing those, it agreed on all the
-  Dockerfiles and on about 180,000 random texts.
+  Dockerfiles and on about 340,000 random texts.
 - `src/highlight/javascript.rs` has examples for each kind of
   JavaScript token, and a list of places where a `/` divides or starts
   a regular expression. `dev/reference/javascript` parses the 6,513
