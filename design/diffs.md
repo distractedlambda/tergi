@@ -1104,6 +1104,16 @@ leave that column blank.
 - `src/highlight/rust.rs` has examples for each kind of Rust token,
   such as nested comments, raw strings, escapes, characters next to
   lifetimes, and characters and escapes that rustc rejects.
+  `dev/reference/rust` runs rustc's lexer, as rust-analyzer publishes
+  it, over the 39,044 `.rs` files in Rust 1.100.0's source and over
+  random texts. It checks the color of each byte, escapes included,
+  and where each identifier starts and ends. The lexer agrees with it
+  on all of them, and on 600,000 random texts when we added the check.
+  The check skips the frontmatter of cargo scripts. Before the check,
+  the lexer split floats such as `1.` in two and only knew some
+  suffixes, so `1f16` was a number and a name. It also read shebang
+  lines as code, and read characters and escapes that rustc rejects
+  differently, which could change the colors of the rest of the line.
 - `src/highlight/zig.rs` has examples for each kind of Zig token, such
   as multiline strings, quoted identifiers, escapes, and numbers that
   only the compiler rejects. `dev/reference/zig` runs the tokenizer

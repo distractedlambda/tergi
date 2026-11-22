@@ -47,6 +47,9 @@ that each check runs in a minute or two once its image is built.
   source and a few large packages.
 - `racket`: Racket 9.3's reader and @-reader on random atoms, random
   texts, and the Racket, Scribble and at-exp files in Racket's source.
+- `rust`: rustc's lexer, from the crate `ra-ap-rustc_lexer` 0.183.0,
+  and its escapes, from `rustc-literal-escaper` 0.0.8, on random texts
+  and the `.rs` files in Rust 1.100.0's source.
 - `shrubbery`: the shrubbery lexer that DrRacket uses, on random texts
   and the Rhombus files in the Rhombus repository.
 - `yaml`: saphyr-parser on the YAML test suite and the YAML files of a
@@ -56,7 +59,7 @@ that each check runs in a minute or two once its image is built.
 
 The JSON, Markdown, TOML and `.gitignore` lexers have property tests
 in `cargo test` that check them against a model, a library or git, so
-they don't need a check here. The Rust lexer only has examples.
+they don't need a check here.
 `design/diffs.md` says what each check found when we wrote the
 lexers, and which differences are known.
 

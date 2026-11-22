@@ -1,0 +1,35 @@
+#!/bin/sh
+# Copies the .rs files of Rust's source into the work directory, where
+# the dev image can read them, writes random texts next to them, and
+# lists them all in files.txt.
+#
+# Usage: prepare <work>. CASES sets the number of random texts (default
+# 3000), and SEED the random seed (default 7).
+
+set -eu
+work=$1
+corpus=$work/corpus
+
+# The image has the files already, so this only saves the copy on reruns.
+if [ ! -d "$corpus" ]; then
+    rm -rf "$corpus.tmp"
+    cp -a /opt/corpus "$corpus.tmp"
+    mv "$corpus.tmp" "$corpus"
+fi
+
+cases=${CASES:-3000}
+seed=${SEED:-7}
+rm -rf "$work/texts"
+rust-check generate "$work/texts" "$cases" "$seed"
+
+# The language name keeps files such as build.rs from depending on
+# tergi's file name rules.
+{
+    find "$corpus" -type f -name '*.rs' | LC_ALL=C sort
+    i=0
+    while [ "$i" -lt "$cases" ]; do
+        echo "$work/texts/$i.rs"
+        i=$((i + 1))
+    done
+} | sed 's/^/Rust\t/' > "$work/files.txt"
+echo "$(wc -l < "$work/files.txt") files, $cases of them random texts with seed $seed"

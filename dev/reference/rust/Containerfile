@@ -1,0 +1,26 @@
+# rustc's lexer, as rust-analyzer publishes it, in a small program that
+# checks tergi's colors, and the source of Rust 1.100.0 to check them
+# on. The Rust version is the one in dev/Containerfile.
+FROM docker.io/library/rust:1.100.0-slim-trixie
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# The .rs files in Rust's source. Its tests hold many odd tokens on
+# purpose. This comes before the program, so that changing the program
+# doesn't download them again.
+RUN set -eu; \
+    curl -fsSL -o /tmp/rust.tar.gz https://github.com/rust-lang/rust/archive/refs/tags/1.100.0.tar.gz; \
+    echo "629bd2b2160e08616c405a56a1e2de339c3a231bd529a83493daaa3c2ed83827  /tmp/rust.tar.gz" \
+        | sha256sum -c -; \
+    mkdir /opt/corpus; \
+    tar xzf /tmp/rust.tar.gz -C /opt/corpus --strip-components=1 --wildcards '*.rs'; \
+    rm /tmp/rust.tar.gz
+
+COPY Cargo.toml Cargo.lock /build/
+COPY src /build/src
+RUN cd /build \
+    && cargo build --release --locked \
+    && cp target/release/rust-check /usr/local/bin/ \
+    && rm -rf /build /usr/local/cargo/registry

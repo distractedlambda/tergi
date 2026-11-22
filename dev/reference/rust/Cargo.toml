@@ -1,0 +1,15 @@
+# Checks tergi's Rust tokens against rustc's own lexer, as rust-analyzer
+# publishes it. It's a project of its own, so that it can't change
+# tergi's dependencies.
+[package]
+name = "rust-check"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ra-ap-rustc_lexer = "=0.183.0"
+rustc-literal-escaper = "=0.0.8"
+
+# The project sits inside tergi's directory, but isn't part of it.
+[workspace]

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Compares tergi's tokens with rustc's lexer. The work is done by
+# src/main.rs, which the Containerfile builds. Usage: compare <work>
+exec rust-check compare "$1"
