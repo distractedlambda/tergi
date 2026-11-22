@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+"""Compares tergi's C and C++ lexer with clang's raw lexer.
+
+For each file in files.txt, it runs `clang -cc1 -dump-raw-tokens`, as
+C23 or C++23, and reads tergi's tokens from tokens/<n>.tok. It only
+checks whether each byte is in a comment, a string, a number or none of
+these, because clang's raw lexer doesn't know keywords or types.
+
+Once the two lexers disagree on one token, everything after it can
+differ too. So we only look at the first difference in each file, and
+check whether it's one of the known differences listed in `excuse`.
+
+Usage: compare <work>
+"""
+
+import concurrent.futures
+import os
+import pathlib
+import re
+import subprocess
+import sys
+
+SHOW = 20
+
+work = pathlib.Path(sys.argv[1])
+entries = []
+for line in (work / "files.txt").read_text().splitlines():
+    lang, path = line.split("\t")
+    entries.append((lang, path))
+
+SPLICE = re.compile(rb"\\[ \t]*\r?\n")
+# The prefix of a string or character literal, raw or not.
+QUOTE = re.compile(r"(u8|[uUL])?R?[\"']")
+RAW = re.compile(rb'(u8|[uUL])?R"')
+# A user-defined suffix after a string in C++.
+SUFFIX = re.compile(rb"(?:[A-Za-z0-9_$\x80-\xff]|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})+$")
+LOC = re.compile(r"Loc=<[^:]*:(\d+):(\d+)>$")
+
+
+def run_clang(entry):
+    lang, path = entry
+    std = "-std=c23" if lang == "C" else "-std=c++23"
+    # The raw tokens go to stderr.
+    p = subprocess.run(
+        ["clang-19", "-cc1", std, "-dump-raw-tokens", path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if p.returncode != 0:
+        sys.exit(f"clang failed on {path}:\n{p.stdout.decode(errors='replace')}")
+    return p.stdout.decode("utf-8", "replace")
+
+
+def clang_tokens(text, dump):
+    """Returns clang's tokens as (kind, start, end) with byte offsets.
+
+    A token goes up to where the next one starts. Clang reports
+    whitespace as `unknown` tokens, so that doesn't add any space.
+    """
+    # Clang's columns count bytes, and it ends lines at \r\n, \n or \r.
+    starts = [0] + [m.end() for m in re.finditer(rb"\r\n|\n|\r", text)]
+    toks = []
+    entry = []
+    # A token's text can span several lines of the dump, and its
+    # location comes at the end.
+    for line in dump.split("\n"):
+        entry.append(line)
+        m = LOC.search(line)
+        if not m:
+            continue
+        kind = entry[0].split(" ", 1)[0]
+        body = entry[0][len(kind) + 2 :]
+        # Clang gives up on an unterminated string or comment and makes
+        # the rest of it an unknown token. tergi colors those on purpose.
+        if kind == "unknown" and QUOTE.match(body):
+            kind = "string_literal_unterminated"
+        elif kind == "unknown" and body.startswith("/*"):
+            kind = "comment"
+        toks.append([kind, starts[int(m.group(1)) - 1] + int(m.group(2)) - 1])
+        entry = []
+    return [(k, s, toks[i + 1][1] if i + 1 < len(toks) else len(text)) for i, (k, s) in enumerate(toks)]
+
+
+def clang_classes(text, toks, cpp):
+    exp = bytearray(b"." * len(text))
+    for kind, pos, end in toks:
+        if kind == "comment":
+            c = b"c"
+        elif "string_literal" in kind or "char_constant" in kind:
+            c = b"s"
+        elif kind == "numeric_constant":
+            c = b"n"
+        else:
+            continue
+        # tergi doesn't color a user-defined suffix as part of the string.
+        if c == b"s" and cpp and "unterminated" not in kind:
+            m = SUFFIX.search(text[pos:end])
+            if m and text[pos + m.start() - 1 : pos + m.start()] in (b'"', b"'"):
+                end = pos + m.start()
+        exp[pos:end] = c * (end - pos)
+    return exp
+
+
+def our_classes(text, n):
+    ours = bytearray(b"." * len(text))
+    classes = {"Comment": b"c", "String": b"s", "Escape": b"s", "Number": b"n"}
+    for line in (work / "tokens" / f"{n}.tok").read_text().splitlines():
+        start, end, kind = line.split()
+        c = classes.get(kind)
+        if c:
+            ours[int(start) : int(end)] = c * (int(end) - int(start))
+    return ours
+
+
+def strip_splices(tok):
+    """Removes the splices at the start of a clang token."""
+    while m := SPLICE.match(tok):
+        tok = tok[m.end() :]
+    return tok
+
+
+def excuse(text, toks, j, cpp):
+    """Says why a first difference at byte j is known, or returns None."""
+    i = next(i for i, t in enumerate(toks) if t[1] <= j < t[2])
+    kind, pos, end = toks[i]
+    tok = strip_splices(text[pos:end])
+    # The last token before this one that isn't only whitespace.
+    before = next((t for t in reversed(toks[:i]) if text[t[1] : t[2]].strip()), None)
+
+    # tergi only joins lines at a splice between tokens, or inside
+    # comments and strings. Clang joins them anywhere, even between `/`
+    # and `*`, or between `L` and a quote. When the lexers disagree on
+    # where a token ends, the first difference comes right after it, so
+    # the token before counts too.
+    for t in (toks[i], before):
+        if t and SPLICE.search(strip_splices(text[t[1] : t[2]])):
+            return "splice inside a token"
+
+    # The standard makes `1p-1` one preprocessing number. In C++, clang
+    # only takes in the sign after a `p` when the number is hexadecimal.
+    if cpp and text[j - 1 : j] in (b"p", b"P") and text[j : j + 1] in (b"-", b"+"):
+        if before and before[0] == "numeric_constant" and before[2] == j:
+            if not re.match(rb"0[xX]", strip_splices(text[before[1] : j])):
+                return "p- in a number"
+
+    if cpp and RAW.match(tok):
+        # The standard allows quotes in a raw string's delimiter, and so
+        # does clang. tergi leaves them out, so it reads the `R` as a
+        # name and the quote as the start of an ordinary string.
+        delim = tok[RAW.match(tok).end() :].split(b"(", 1)[0]
+        if kind == "string_literal" and b'"' in delim:
+            return "quote in a raw string delimiter"
+        # After a bad delimiter, clang skips to the next quote and makes
+        # everything up to it one unknown token.
+        if kind == "string_literal_unterminated":
+            return "clang's recovery from a bad raw string delimiter"
+
+    # A backslash that doesn't start an escape or a universal character
+    # name is an error. Clang skips just the backslash, so in `\u8'a'` the
+    # literal starts at the `u`. tergi's lexer skips the `u` or `U` and the
+    # hex digits after it along with the backslash, so it reads `'a'`, or
+    # in `\U` followed by `L'a'` or `R"(`, it sees a prefix that clang
+    # takes as part of a name.
+    for t in toks[: i + 1]:
+        if strip_splices(text[t[1] : t[2]]) == b"\\":
+            skipped = re.match(rb"[uU][0-9a-fA-F]*", text[t[2] :])
+            if skipped and t[2] <= j <= t[2] + skipped.end():
+                return "recovery from a stray backslash before u or U"
+
+    return None
+
+
+def show(path, lang, text, exp, ours, j):
+    line = text.count(b"\n", 0, j) + 1
+    col = j - (text.rfind(b"\n", 0, j) + 1) + 1
+    print(f"== {path} as {lang}, line {line} column {col}")
+    print(f"   text   {text[:j]!r} | {text[j:]!r}")
+    print(f"   clang  {exp[j:j + 20].decode()}")
+    print(f"   tergi  {ours[j:j + 20].decode()}")
+
+
+print(f"running clang on {len(entries)} files")
+with concurrent.futures.ThreadPoolExecutor(os.cpu_count()) as pool:
+    dumps = list(pool.map(run_clang, entries))
+
+compared = 0
+skipped = 0
+failed = 0
+excused = {}
+for n, ((lang, path), dump) in enumerate(zip(entries, dumps)):
+    text = pathlib.Path(path).read_bytes()
+    try:
+        text.decode("utf-8")
+    except UnicodeDecodeError:
+        # tergi doesn't lex files that aren't UTF-8.
+        skipped += 1
+        continue
+    compared += 1
+    cpp = lang == "Cpp"
+    toks = clang_tokens(text, dump)
+    exp = clang_classes(text, toks, cpp)
+    ours = our_classes(text, n)
+    # The bytes of a splice count as part of whichever token they're in,
+    # and whitespace has no color, so neither is compared.
+    ignore = set()
+    for m in SPLICE.finditer(text):
+        ignore.update(range(m.start(), m.end()))
+    diffs = [
+        j
+        for j in range(len(text))
+        if j not in ignore and text[j] not in b" \t\r\n\x0b\x0c" and exp[j] != ours[j]
+    ]
+    if not diffs:
+        continue
+    j = diffs[0]
+    why = excuse(text, toks, j, cpp)
+    if why:
+        excused[why] = excused.get(why, 0) + 1
+        continue
+    failed += 1
+    if failed <= SHOW:
+        show(path, lang, text, exp, ours, j)
+
+if failed > SHOW:
+    print(f"... and {failed - SHOW} more")
+print(f"compared {compared} files, skipped {skipped} that aren't UTF-8")
+for why, count in sorted(excused.items()):
+    print(f"known difference in {count} files: {why}")
+print(f"{failed} files differ")
+sys.exit(1 if failed else 0)

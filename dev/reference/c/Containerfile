@@ -1,0 +1,10 @@
+# clang 19.1.7 from Debian trixie, whose raw lexer src/highlight/c.rs is
+# checked against. The scripts here are in Python and only need its
+# standard library.
+FROM docker.io/library/debian:trixie-slim
+
+# The version glob keeps clang's own version fixed while letting Debian's
+# build number differ between architectures.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends 'clang-19=1:19.1.7-*' python3 \
+    && rm -rf /var/lib/apt/lists/*

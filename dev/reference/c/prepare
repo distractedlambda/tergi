@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Writes random texts for checking the C and C++ lexer against clang.
+
+Each text is a string of pieces that are likely to start or end tokens,
+or to confuse a lexer: quotes, raw string openings, comment markers,
+splices, number parts, escapes and so on. Each one is written twice, as
+a .c file and a .cpp file, and listed twice in files.txt, so that it's
+read as C and as C++.
+
+Usage: prepare <work>. CASES sets the number of texts (default 3000),
+and SEED the random seed (default 7).
+"""
+
+import os
+import pathlib
+import random
+import shutil
+import sys
+
+PIECES = [
+    '"', "'", 'R"x(', ')x"', 'R"(', ')"', '//', '/*', '*/', '\\', '\\\n',
+    '\\ \n', '\n', ' ', 'x', 'u8', 'L', 'U', 'R', '1', '0x', 'e+', '.',
+    "1'0", '\\n', '\\x41', '\\u00e9', 'p-', '_', 'é', '$', '?', ':', '<',
+    '>', '=', '-', '+', '.5', '...', '/', '*', '\\x{4', '}', '\r\n', '\t',
+    '0', "'a'", '"s"', 'int',
+]
+
+work = pathlib.Path(sys.argv[1])
+cases = int(os.environ.get("CASES") or 3000)
+seed = int(os.environ.get("SEED") or 7)
+
+texts = work / "texts"
+shutil.rmtree(texts, ignore_errors=True)
+texts.mkdir()
+rng = random.Random(seed)
+lines = []
+for i in range(cases):
+    text = "".join(rng.choice(PIECES) for _ in range(rng.randint(1, 30)))
+    for lang, ext in (("C", "c"), ("Cpp", "cpp")):
+        path = texts / f"{i}.{ext}"
+        # Write bytes so that "\r\n" stays as it is.
+        path.write_bytes(text.encode())
+        lines.append(f"{lang}\t{path}\n")
+(work / "files.txt").write_text("".join(lines))
+print(f"wrote {cases} random texts with seed {seed}")
