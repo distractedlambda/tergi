@@ -21,8 +21,11 @@ RUN set -eu; \
     tar xf /tmp/zig.tar.xz -C /opt/zig --strip-components=1; \
     rm /tmp/zig.tar.xz
 
+# Zig builds for the CPU it runs on unless told otherwise. CI caches this
+# image and reuses it on runners with other CPUs, where such a binary can
+# die with an illegal instruction, so it builds for a baseline CPU.
 COPY compare.zig /src/compare.zig
 RUN cd /src \
     && ZIG_GLOBAL_CACHE_DIR=/tmp/zig-cache /opt/zig/zig build-exe compare.zig -O ReleaseFast \
-       -femit-bin=/usr/local/bin/zig-compare \
+       -mcpu=baseline -femit-bin=/usr/local/bin/zig-compare \
     && rm -rf /tmp/zig-cache /src/.zig-cache
