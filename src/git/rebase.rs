@@ -391,7 +391,9 @@ pub async fn continue_rebase(git: &Git) -> Result<Outcome> {
 
 pub async fn skip_rebase(git: &Git) -> Result<Outcome> {
     if let Ok(dir) = git_dir(git).await {
-        drop_amend_line(&dir.join("rebase-merge"))?;
+        let dir = dir.join("rebase-merge");
+        drop_amend_line(&dir)?;
+        restart_fixup_chain(&dir)?;
     }
     let r = git.run(&[&REBASE[..], &["--skip"]].concat()).await;
     let r = r.map(|_| ());
@@ -420,6 +422,38 @@ fn drop_amend_line(dir: &Path) -> Result<()> {
         .position(|&b| b == b'\n')
         .map_or(&[][..], |i| &todo[i + 1..]);
     std::fs::write(dir.join("git-rebase-todo"), rest).context("could not write the todo list")
+}
+
+/// Git commits each fixup in a chain as it goes, and expects the message
+/// of every commit but the last to keep its comments. When the user skips
+/// a fixup in the middle of a chain, git reads the message so far back
+/// from HEAD. But `commit.cleanup=strip` has already removed the comments
+/// there, and git then loses the message, so continuing at a later
+/// conflict fails because the message is empty.
+///
+/// HEAD's message is already what the chain should end up with, so we
+/// make git start a new chain from it. Git counts the fixups in the chain
+/// by the lines of `current-fixups`, and starts a new chain when the file
+/// is missing. If the skipped fixup was the last of its chain, git needs
+/// the file to finish the chain, so we leave it alone then.
+fn restart_fixup_chain(dir: &Path) -> Result<()> {
+    let Ok(todo) = std::fs::read(dir.join("git-rebase-todo")) else {
+        return Ok(());
+    };
+    let next = todo
+        .split(|&b| b == b'\n')
+        .map(<[u8]>::trim_ascii)
+        .find(|l| !l.is_empty() && !l.starts_with(b"#") && !l.starts_with(b"\x01"));
+    let verb = next.and_then(|l| l.split(u8::is_ascii_whitespace).next());
+    if !matches!(verb, Some(b"fixup" | b"f" | b"squash" | b"s")) {
+        return Ok(());
+    }
+    match std::fs::remove_file(dir.join("current-fixups")) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(e).context("could not reset the fixup chain")
+        }
+        _ => Ok(()),
+    }
 }
 
 pub async fn abort_rebase(git: &Git) -> Result<()> {
