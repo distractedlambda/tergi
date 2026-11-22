@@ -1,0 +1,22 @@
+#!/bin/sh
+# Copies the .zig and .zon files from Zig's lib directory into the work
+# directory, where the dev image can read them, and lists them in
+# files.txt. Usage: prepare <work>
+
+set -eu
+work=$1
+corpus=$work/lib
+
+# The image has the files already, so this only saves the copy on reruns.
+if [ ! -d "$corpus" ]; then
+    rm -rf "$corpus.tmp"
+    mkdir -p "$corpus.tmp"
+    cd /opt/zig/lib
+    find . -type f \( -name '*.zig' -o -name '*.zon' \) -exec cp --parents -t "$corpus.tmp" {} +
+    mv "$corpus.tmp" "$corpus"
+fi
+
+# The language name keeps .zon files from depending on tergi's file
+# name rules.
+find "$corpus" -type f | LC_ALL=C sort | sed 's/^/Zig\t/' > "$work/files.txt"
+echo "$(wc -l < "$work/files.txt") files"

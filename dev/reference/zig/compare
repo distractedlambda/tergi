@@ -1,0 +1,4 @@
+#!/bin/sh
+# Compares tergi's tokens with Zig's tokenizer. The work is done by
+# compare.zig, which the Containerfile builds. Usage: compare <work>
+exec /usr/local/bin/zig-compare "$1"
