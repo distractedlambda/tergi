@@ -13,6 +13,7 @@
 
 mod c;
 mod cmake;
+mod dockerfile;
 mod gitignore;
 mod javascript;
 mod json;
@@ -123,6 +124,7 @@ pub enum Language {
     C,
     Cmake,
     Cpp,
+    Dockerfile,
     Gitignore,
     JavaScript,
     Json,
@@ -157,6 +159,12 @@ impl Language {
         }
         if matches!(name, "composer.lock" | "flake.lock" | "Pipfile.lock") {
             return Some(Language::Json);
+        }
+        if matches!(
+            name,
+            "Dockerfile" | "Containerfile" | "dockerfile" | "containerfile"
+        ) {
+            return Some(Language::Dockerfile);
         }
         // Startup files of bash and other shells, and Arch Linux and
         // Alpine package builds, which are bash scripts.
@@ -201,6 +209,19 @@ impl Language {
             "yaml" | "yml" => Some(Language::Yaml),
             // `.zon` files, such as `build.zig.zon`, hold Zig values.
             "zig" | "zon" => Some(Language::Zig),
+            // Such as `dev.Dockerfile`.
+            ext if ext.eq_ignore_ascii_case("dockerfile")
+                || ext.eq_ignore_ascii_case("containerfile") =>
+            {
+                Some(Language::Dockerfile)
+            }
+            // Variants such as `Dockerfile.dev`. `Dockerfile.dockerignore`
+            // lists the files that the build of `Dockerfile` ignores.
+            ext if (name.starts_with("Dockerfile.") || name.starts_with("Containerfile."))
+                && ext != "dockerignore" =>
+            {
+                Some(Language::Dockerfile)
+            }
             _ => None,
         }
     }
@@ -255,6 +276,7 @@ impl Language {
         match self {
             Language::C | Language::Cpp => c::lex(text, self, &mut out),
             Language::Cmake => cmake::lex(text, &mut out),
+            Language::Dockerfile => dockerfile::lex(text, &mut out),
             Language::Gitignore => gitignore::lex(text, &mut out),
             Language::JavaScript => javascript::lex(text, &mut out),
             Language::Json => json::lex(text, &mut out),
@@ -495,6 +517,7 @@ mod tests {
         "a.c",
         "CMakeLists.txt",
         "a.cpp",
+        "Dockerfile",
         ".gitignore",
         "a.js",
         "a.json",
@@ -657,6 +680,33 @@ mod tests {
             "${ ",
             "\\",
         ]);
+        // Pieces of Dockerfiles, such as instructions, flags, the JSON form
+        // of commands and here-documents.
+        pieces.extend([
+            "FROM ",
+            "RUN ",
+            "CMD ",
+            "COPY ",
+            "ENV ",
+            "ARG ",
+            "LABEL ",
+            "ONBUILD ",
+            "HEALTHCHECK CMD ",
+            "SHELL [\"cmd\"]",
+            " AS ",
+            "--mount=",
+            "--from=",
+            "[\"a\", ",
+            "\"]",
+            "<<EOF",
+            "<<-\"EOF\"",
+            "EOF",
+            "#!/usr/bin/env python3",
+            "a=b",
+            "${a:-b}",
+            "# escape=`",
+            "# syntax=x",
+        ]);
         // Pieces of gitignore patterns.
         pieces.extend(["!", "**/", "?", "[!a-]", "[[:alpha:]]", "\\#"]);
         // Lines that choose how the rest of a Racket file is read.
@@ -768,6 +818,28 @@ mod tests {
         assert_eq!(Language::for_path("a.bash"), Some(Language::Shell));
         assert_eq!(Language::for_path("~/.bashrc"), Some(Language::Shell));
         assert_eq!(Language::for_path("x/PKGBUILD"), Some(Language::Shell));
+        assert_eq!(
+            Language::for_path("x/Dockerfile"),
+            Some(Language::Dockerfile)
+        );
+        assert_eq!(
+            Language::for_path("Containerfile"),
+            Some(Language::Dockerfile)
+        );
+        assert_eq!(
+            Language::for_path("Dockerfile.alpine"),
+            Some(Language::Dockerfile)
+        );
+        assert_eq!(
+            Language::for_path("dev.Dockerfile"),
+            Some(Language::Dockerfile)
+        );
+        assert_eq!(
+            Language::for_path("a.containerfile"),
+            Some(Language::Dockerfile)
+        );
+        assert_eq!(Language::for_path("Dockerfile.dockerignore"), None);
+        assert_eq!(Language::for_path("dockerfile.rs"), Some(Language::Rust));
         assert_eq!(Language::for_path("a.lock"), None);
         assert_eq!(Language::for_path("a.b/c"), None);
         assert_eq!(Language::for_path("rs"), None);
@@ -975,10 +1047,11 @@ mod tests {
 mod reference {
     use super::Language;
 
-    const LANGUAGES: [Language; 17] = [
+    const LANGUAGES: [Language; 18] = [
         Language::C,
         Language::Cmake,
         Language::Cpp,
+        Language::Dockerfile,
         Language::Gitignore,
         Language::JavaScript,
         Language::Json,

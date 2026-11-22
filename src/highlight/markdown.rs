@@ -64,6 +64,7 @@ fn for_info(info: &str) -> Option<Language> {
         "rhombus" => Some(Language::Rhombus),
         "markdown" => Some(Language::Markdown),
         "shell" => Some(Language::Shell),
+        "docker" => Some(Language::Dockerfile),
         // Otherwise, a file extension such as `rs` or `toml`.
         _ => Language::for_path(&format!("a.{word}")),
     }

@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 920688a49d41d3dd9d5c2d8f61ce8efd497e1f2e7d452faa78ce83d54a601fbe # shrinks to lines = ["ENV \"]--  \\", "FROM --mount=type=cache"]
+cc 0fd866acb4ee8b0e52d39936b848f4e536b81fc2f07c0c8f2a1546762f64bfd7 # shrinks to lines = ["RUN <<EOF&& \\", "FROM "]
+cc 6d0de39455d2b6f14609a6b52da4f47141d7d3d927e7c35dcf09579ea4ff532e # shrinks to lines = ["RUN 3<<EOF&& \\\\", "EOF\\", "FROM "]

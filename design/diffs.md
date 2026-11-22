@@ -343,7 +343,7 @@ Each language has its own lexer, written with Logos and kept in
 `cmake.rs` for CMake, `javascript.rs` for JavaScript, `json.rs` for
 JSON, `python.rs` for Python, `rust.rs` for Rust, `racket.rs` for
 Racket and Scribble, `shrubbery.rs` for Rhombus, `sh.rs` for shell
-scripts, `toml.rs` for TOML, `yaml.rs` for YAML, `zig.rs` for Zig,
+scripts, `dockerfile.rs` for Dockerfiles, `toml.rs` for TOML, `yaml.rs` for YAML, `zig.rs` for Zig,
 `llvm.rs` for LLVM IR,
 `markdown.rs` for Markdown, and `gitignore.rs` for `.gitignore` files.
 A lexer turns text into `Tokens`: byte ranges, each with a `Kind` such as `Comment`,
@@ -1111,6 +1111,86 @@ only looks ahead on the current line, for `((` and for subscripts.
 Expansions and quotes can nest, and each level takes some stack, so
 beyond 64 levels the lexer reads them as plain text.
 
+### Dockerfiles
+
+`dockerfile.rs` follows BuildKit's Dockerfile parser in
+`frontend/dockerfile/parser`, and the way BuildKit then reads the
+arguments of each instruction. Files named `Dockerfile` or
+`Containerfile`, variants such as `Dockerfile.dev` and `dev.Dockerfile`,
+and files ending in `.dockerfile` or `.containerfile` are Dockerfiles.
+So are Markdown code blocks marked `dockerfile`, `containerfile` or
+`docker`.
+
+A line that ends with the escape character goes on on the next one.
+BuildKit skips comment lines and blank lines inside such an
+instruction, even inside quotes. So the lexer first gathers the lines
+of an instruction, colors its comment lines, and joins the rest with
+line feeds. Then it lexes the joined text, and maps the colors back to
+the lines they came from. The escape character is `\` unless an
+`escape` directive at the top of the file makes it `` ` ``.
+
+Instructions such as `FROM` and `RUN` get the keyword color, and so do
+`AS` in `FROM`, and `CMD` and `NONE` in `HEALTHCHECK`. Instructions
+that BuildKit doesn't know are plain. Flags such as `--mount=...` get
+the attribute color. The names that `ARG`, `ENV` and `LABEL` set are
+identifiers, and so are variables such as `$x` and `${x:-y}`, so a
+variable gets the same color where it's set, where the Dockerfile uses
+it and where a shell command uses it. Images and stage names in `FROM`
+and `--from` are identifiers too, so a stage gets the same color where
+it's named and where it's used. Quotes, escapes and variables are read
+the way BuildKit's `shell` package reads them, and ports in `EXPOSE`
+get the number color. Parser directives such as
+`# syntax=docker/dockerfile:1` get the attribute color, and only count
+at the top of the file, before any other line.
+
+`RUN`, `CMD`, `ENTRYPOINT` and `HEALTHCHECK CMD` hold commands. In the
+shell form, they're lexed with the shell lexer. We give it the joined
+lines with a `\` and a line feed between them, so that it reads them as
+one command with line continuations. A command in the JSON form, such
+as `CMD ["a", "b"]`, is lexed as JSON. BuildKit takes the arguments as
+JSON when they read as a JSON array of strings, and as a shell command
+otherwise, as in `RUN [ -f a ] && b`. We only look at the first line of
+the array, and take it as JSON if it's fine up to the end of that line.
+A `SHELL` instruction that names a shell outside the sh family, such as
+`powershell` or `cmd`, makes the commands after it plain until the next
+`FROM`. We can't tell whether an image is for Windows, where the shell
+is `cmd`. But Dockerfiles for Windows almost always make `` ` `` the
+escape character, so with that, commands are plain until a `SHELL`
+names a shell in the sh family.
+
+`RUN`, `COPY` and `ADD` can read here-documents. BuildKit finds them in
+words of their own such as `<<EOF`, `<<-EOF` or `<<"EOF"`, so in
+`cat << EOF` and `cat<<EOF`, it doesn't see one, and neither do we. The
+bodies start on the line after the instruction. They are colored as
+follows:
+
+- When a `RUN` is just one here-document, BuildKit runs its body as a
+  script. We lex it as shell code, or in the language that its `#!`
+  line names, such as Python.
+- Otherwise the shell reads the bodies of a `RUN`'s here-documents, so
+  the shell lexer gets them along with the command, and colors them as
+  it does in a script.
+- The bodies in a `COPY` or an `ADD` are the contents of files. When
+  there's one body, and the name of the file it goes to says what
+  language it's in, as in `COPY <<EOF /app/main.py`, the body is lexed in
+  that language. Otherwise it gets the string color, with colors for
+  the variables that BuildKit expands in it when the delimiter isn't
+  quoted.
+
+The line that ends a body gets the attribute color, as in a shell
+script. After `<<-`, BuildKit removes the tabs at the start of each
+line of a body, and so do we before we lex it in another language.
+
+BuildKit joins the lines of an instruction with nothing between them,
+so a word can go on on the next line. We join them with a line feed, so
+that a line's colors don't depend on the line after it. For the same
+reason, a few decisions only look at the first line:
+whether `ENV` uses its old form, `ENV name value`, depends on whether
+its first word has an `=` on that line, and a delimiter with a quote
+that goes on to the next line isn't one. Whether a `RUN` is just one
+here-document can depend on later lines, so the shell lexer colors the
+command either way, and only the body's colors depend on it.
+
 ### Rainbow identifiers
 
 With `rainbow_identifiers` on, which is the default, each `Identifier`
@@ -1122,7 +1202,9 @@ The lexers only mark identifiers that get no other color, so keywords,
 and words such as `AND` in a CMake `if`, keep their usual colors.
 
 The C, C++, CMake, JavaScript, Python, Rust, shell, Zig, LLVM IR,
-Racket, Scribble and Rhombus lexers mark identifiers. The TOML, YAML and JSON
+Racket, Scribble and Rhombus lexers mark identifiers. The Dockerfile
+lexer marks variables, the names that `ARG`, `ENV` and `LABEL` set,
+and images and stages. The TOML, YAML and JSON
 lexers mark the names in keys, so each key in a config file has the
 same color everywhere it appears. Markdown and gitignore have nothing
 that is really a name, so their lexers don't mark anything.
@@ -1315,6 +1397,17 @@ leave that column blank.
   parts of a word, because bash's positions slip there and the lexer
   ends a plain word at a continuation. When we wrote the lexer, it
   agreed on all 2,310 scripts and on about 73,000 random texts.
+- `src/highlight/dockerfile.rs` has examples for each instruction,
+  directives, line continuations with comment lines inside them, the
+  shell and JSON forms of commands, `SHELL`, variables, stages and
+  here-documents in `RUN` and `COPY`. Its property test builds random
+  Dockerfiles from instructions, flags, words, line continuations,
+  comments and here-documents. It checks that cutting the text after
+  any line doesn't change the colors of the lines before it. That
+  found the shell lexer's problem with a line of a here-document that
+  ends in `\`, which `todo/bugs.md` describes. The test leaves those
+  lines out until it's fixed. There's no check against BuildKit in
+  `dev/reference`.
 - `src/highlight/javascript.rs` has examples for each kind of
   JavaScript token, and a list of places where a `/` divides or starts
   a regular expression. `dev/reference/javascript` parses the 6,513
@@ -1390,8 +1483,8 @@ leave that column blank.
   hidden branches are.
 - A merge commit is diffed against its first parent only.
 - Only C, C++, CMake, JavaScript, JSON, Python, Rust, shell scripts,
-  Zig, LLVM IR, Racket, Rhombus, Scribble, TOML, YAML, Markdown and
-  `.gitignore` files are highlighted. That leaves out JSX, TypeScript
+  Dockerfiles, Zig, LLVM IR, Racket, Rhombus, Scribble, TOML, YAML,
+  Markdown and `.gitignore` files are highlighted. That leaves out JSX, TypeScript
   and zsh.
 - The JavaScript lexer can guess wrong about a `/`. In a statement
   such as `a ? b : {} / 2`, it reads the `{}` as a block and the `/`
@@ -1441,6 +1534,16 @@ leave that column blank.
 - A hunk from the middle of a shell here-document, or of a quoted
   string over several lines, that we don't have the full text for
   reads the text as commands.
+- A hunk from the middle of a Dockerfile instruction that goes on over
+  several lines, or from a here-document's body, that we don't have
+  the full text for reads each line as an instruction. Lines such as
+  `&& make` don't start with one, so they're plain.
+- A Dockerfile's colors come from its own instructions. A `SHELL` in
+  the base image, or a Windows image without `` ` `` as the escape
+  character, can make `RUN` use a shell other than the one we assume.
+- A Dockerfile command in the JSON form whose first line reads as JSON
+  but whose later lines don't is still lexed as JSON. BuildKit reads it
+  as a shell command.
 - Bash expands aliases while it reads, and an alias can change how
   the rest of a line reads. The shell lexer doesn't know them.
 - Bash removes a line continuation before it reads words, so a word
