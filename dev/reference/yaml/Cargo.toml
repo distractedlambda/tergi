@@ -1,0 +1,16 @@
+# Checks tergi's YAML colors against saphyr-parser on a corpus of files.
+# It's a project of its own, so that it can't change tergi's
+# dependencies. saphyr-parser has the same version as in tergi's
+# Cargo.lock, which its property test uses.
+[package]
+name = "yaml-check"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+regex = "=1.13.1"
+saphyr-parser = "=0.3.4"
+
+# The project sits inside tergi's directory, but isn't part of it.
+[workspace]

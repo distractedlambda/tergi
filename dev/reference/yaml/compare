@@ -1,0 +1,6 @@
+#!/bin/sh
+# Checks tergi's YAML colors against saphyr-parser with the program that
+# the Containerfile builds from src/main.rs.
+#
+# Usage: compare <work>
+exec yaml-check "$1"
