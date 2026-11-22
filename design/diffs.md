@@ -778,10 +778,11 @@ path wouldn't work for every name. `git cat-file` reads one name per
 line, and a path like `1:x` names a stage of the index.
 
 The language is chosen by the file's extension, in
-`Language::for_path`. A file whose name doesn't give a language can
-still be a Python script. `Language::for_shebang` looks for a `#!`
-line that runs Python, such as `#!/usr/bin/env python3` or
-`#!/usr/bin/env -S uv run --script`. We check the first line of both
+`Language::for_path`. Scripts often have no extension, so when the
+name doesn't give a language, `Language::for_shebang` looks for a `#!`
+line that runs Python, a shell in the sh family, or Node. Examples are
+`#!/usr/bin/env python3`, `#!/usr/bin/env -S uv run --script`,
+`#!/bin/sh` and `#!/usr/bin/env node`. We check the first line of both
 sides of the diff. Without the full text of a side, we only see its
 first line if a hunk shows it. Files in other languages aren't
 highlighted.
@@ -789,7 +790,8 @@ highlighted.
 ### JavaScript
 
 `javascript.rs` follows the ECMAScript standard. Files ending in `.js`,
-`.mjs` and `.cjs` are JavaScript.
+`.mjs` and `.cjs` are JavaScript, and so are scripts that start with
+a `#!` line that runs `node`.
 
 A `/` can start a regular expression or divide, and only a parser can
 tell which. The lexer guesses from the token before it. After a name,
@@ -1027,8 +1029,9 @@ color.
 `read_token_word` and `parse_matched_pair` in `parse.y`. Files ending
 in `.sh` and `.bash` are shell scripts, and so are bash's startup files
 such as `.bashrc` and `.profile`, and the `PKGBUILD` and `APKBUILD`
-files of Arch Linux and Alpine. So are Markdown code blocks marked
-`sh`, `bash` or `shell`. Scripts for POSIX sh, dash and ksh mostly use
+files of Arch Linux and Alpine. So are scripts that start with a `#!`
+line that runs sh, bash, dash, ash, ksh, mksh or zsh, and Markdown code
+blocks marked `sh`, `bash` or `shell`. Scripts for POSIX sh, dash and ksh mostly use
 a part of bash's syntax, so they get the same colors.
 
 Whether a word is a reserved word, such as `if` or `done`, depends on

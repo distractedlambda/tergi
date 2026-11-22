@@ -206,7 +206,7 @@ impl Language {
     }
 
     /// The language of a script from its `#!` line, such as
-    /// `#!/usr/bin/env python3`. Only Python is recognized.
+    /// `#!/usr/bin/env python3` or `#!/bin/sh`.
     pub fn for_shebang(line: &str) -> Option<Language> {
         fn base(path: &str) -> &str {
             path.rsplit('/').next().unwrap_or(path)
@@ -218,17 +218,31 @@ impl Language {
         if program == "env" {
             program = base(words.find(|w| !w.starts_with('-') && !w.contains('='))?);
         }
+        match program {
+            // The lexer follows bash, but the other shells in the sh
+            // family read scripts in much the same way.
+            "sh" | "bash" | "dash" | "ash" | "ksh" | "mksh" | "zsh" => {
+                return Some(Language::Shell);
+            }
+            "node" | "nodejs" => return Some(Language::JavaScript),
+            // `uv run --script` runs a Python script with the packages
+            // it lists at the top.
+            "uv" => {
+                let script = words.next() == Some("run") && words.any(|w| w == "--script");
+                return script.then_some(Language::Python);
+            }
+            _ => {}
+        }
         // Names such as `python3.12`, `pypy3` and the free-threaded
         // `python3.13t`.
         let version = program
             .strip_prefix("python")
-            .or_else(|| program.strip_prefix("pypy"))
-            .map(|v| v.strip_suffix('t').unwrap_or(v));
-        let python = version.is_some_and(|v| v.bytes().all(|b| b.is_ascii_digit() || b == b'.'));
-        // `uv run --script` runs a Python script with the packages it
-        // lists at the top.
-        let uv = program == "uv" && words.next() == Some("run") && words.any(|w| w == "--script");
-        (python || uv).then_some(Language::Python)
+            .or_else(|| program.strip_prefix("pypy"))?;
+        let version = version.strip_suffix('t').unwrap_or(version);
+        version
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b == b'.')
+            .then_some(Language::Python)
     }
 
     pub fn lex(self, text: &str) -> Tokens {
@@ -755,40 +769,55 @@ mod tests {
     }
 
     #[test]
-    fn finds_python_by_shebang() {
-        for line in [
-            "#!/usr/bin/python",
-            "#!/usr/bin/python3",
-            "#!/usr/local/bin/python3.12",
-            "#! /usr/bin/env python",
-            "#!/usr/bin/env python3\r",
-            "#!/usr/bin/env -S python3 -u",
-            "#!/usr/bin/env -S PYTHONPATH=lib python3",
-            "#!/usr/bin/env pypy3",
-            "#!/usr/bin/python3.13t",
-            "#!python",
-            "#!/usr/bin/env -S uv run --script",
-            "#!/usr/bin/env -S uv run --quiet --script",
-        ] {
-            assert_eq!(
-                Language::for_shebang(line),
+    fn finds_languages_by_shebang() {
+        let cases = [
+            ("#!/usr/bin/python", Some(Language::Python)),
+            ("#!/usr/bin/python3", Some(Language::Python)),
+            ("#!/usr/local/bin/python3.12", Some(Language::Python)),
+            ("#! /usr/bin/env python", Some(Language::Python)),
+            ("#!/usr/bin/env python3\r", Some(Language::Python)),
+            ("#!/usr/bin/env -S python3 -u", Some(Language::Python)),
+            (
+                "#!/usr/bin/env -S PYTHONPATH=lib python3",
                 Some(Language::Python),
-                "{line}"
-            );
-        }
-        for line in [
-            "#!/bin/sh",
-            "#!/usr/bin/env bash",
-            "#!/usr/bin/env node",
-            "#!/usr/bin/python-config",
-            "#!/usr/bin/env -S uv run",
-            "#!/usr/bin/env",
-            "#!",
-            "# /usr/bin/python",
-            " #!/usr/bin/python",
-            "python",
-        ] {
-            assert_eq!(Language::for_shebang(line), None, "{line}");
+            ),
+            ("#!/usr/bin/env pypy3", Some(Language::Python)),
+            ("#!/usr/bin/python3.13t", Some(Language::Python)),
+            ("#!python", Some(Language::Python)),
+            ("#!/usr/bin/env -S uv run --script", Some(Language::Python)),
+            (
+                "#!/usr/bin/env -S uv run --quiet --script",
+                Some(Language::Python),
+            ),
+            ("#!/bin/sh", Some(Language::Shell)),
+            ("#!/bin/sh -e", Some(Language::Shell)),
+            ("#!/usr/bin/env bash", Some(Language::Shell)),
+            ("#!/bin/bash\r", Some(Language::Shell)),
+            (
+                "#!/usr/bin/env -S bash -euo pipefail",
+                Some(Language::Shell),
+            ),
+            ("#!/bin/dash", Some(Language::Shell)),
+            ("#!/bin/ksh", Some(Language::Shell)),
+            ("#!/usr/bin/env zsh", Some(Language::Shell)),
+            ("#!/usr/bin/env node", Some(Language::JavaScript)),
+            (
+                "#!/usr/bin/env -S node --no-warnings",
+                Some(Language::JavaScript),
+            ),
+            ("#!/usr/bin/nodejs", Some(Language::JavaScript)),
+            ("#!/usr/bin/python-config", None),
+            ("#!/usr/bin/env -S uv run", None),
+            ("#!/usr/bin/env perl", None),
+            ("#!/bin/bash5", None),
+            ("#!/usr/bin/env", None),
+            ("#!", None),
+            ("# /usr/bin/python", None),
+            (" #!/bin/sh", None),
+            ("python", None),
+        ];
+        for (line, lang) in cases {
+            assert_eq!(Language::for_shebang(line), lang, "{line}");
         }
     }
 
