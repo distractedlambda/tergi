@@ -1,0 +1,43 @@
+# Racket 9.3 with shrubbery-lib, whose lexer DrRacket colors Rhombus with.
+#
+# Rhombus isn't part of the Racket 9.3 distribution, so we install
+# shrubbery-lib from a fixed commit of the Rhombus repository. That
+# commit's source also gives us the Rhombus files to compare on. The
+# official installers come for both x86_64 and aarch64, unlike the
+# racket/racket images, which are only built for x86_64.
+
+FROM docker.io/library/debian:trixie-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG RACKET=9.3
+RUN set -eu; \
+    arch=$(uname -m); \
+    case "$arch" in \
+        x86_64) sum=8f469b7e93645fc876594470d884775aafff7688f530fd38be873fb44c71ca6a ;; \
+        aarch64) sum=221a1f77ba11ab090ec5ff77c5a95abfe1f72d3b8b879d694fc5d807567015be ;; \
+        *) echo "no Racket installer for $arch" >&2; exit 1 ;; \
+    esac; \
+    file=racket-minimal-$RACKET-$arch-linux-cs.tgz; \
+    curl -fsSL -o /tmp/racket.tgz "https://download.racket-lang.org/releases/$RACKET/installers/$file"; \
+    echo "$sum  /tmp/racket.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/racket.tgz -C /opt; \
+    rm /tmp/racket.tgz
+ENV PATH=/opt/racket/bin:$PATH
+
+# This comes from the release's own catalog, so it's the 9.3 version.
+RUN raco pkg install --auto --scope installation syntax-color-lib
+
+# The Rhombus commit that the lexer was first checked against.
+ARG RHOMBUS=a11ee17e39d5c4509e587b194f4ea84ec9dca5c0
+RUN set -eu; \
+    curl -fsSL -o /tmp/rhombus.tgz "https://github.com/racket/rhombus/archive/$RHOMBUS.tar.gz"; \
+    echo "b1905836e3161e51816d112143710513189b428d2b8627e04a4ee7a9c2163b3c  /tmp/rhombus.tgz" \
+        | sha256sum -c -; \
+    mkdir /opt/rhombus; \
+    tar -xzf /tmp/rhombus.tgz -C /opt/rhombus --strip-components=1; \
+    rm /tmp/rhombus.tgz; \
+    raco pkg install --scope installation --copy --no-docs /opt/rhombus/shrubbery-lib
+ENV TERGI_RHOMBUS=$RHOMBUS

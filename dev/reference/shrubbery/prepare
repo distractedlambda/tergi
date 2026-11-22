@@ -1,0 +1,105 @@
+#!/usr/bin/env racket
+#lang racket/base
+;; Collects the texts that the shrubbery lexer is checked on: the Rhombus
+;; files in the Rhombus repository that the image installed shrubbery-lib
+;; from, and random texts made of pieces of shrubbery notation. CASES says
+;; how many random texts to make (4,000 by default), and SEED how to
+;; choose them.
+;;
+;; Usage: prepare <work>
+
+(require racket/file
+         racket/path
+         racket/string
+         "common.rkt")
+
+(define work (simplify-path (path->complete-path (vector-ref (current-command-line-arguments) 0))))
+
+(define (env-number name default)
+  (define v (getenv name))
+  (if (and v (not (string=? v ""))) (string->number v) default))
+(define cases (env-number "CASES" 4000))
+(define seed (env-number "SEED" 1))
+
+;; The corpus. Like the Racket lexer in tergi, we only take files whose
+;; first line is a `#lang` line for a shrubbery language.
+(define source "/opt/rhombus")
+(define corpus (build-path work "corpus"))
+(define stamp (build-path corpus ".rhombus-commit"))
+(define commit (or (getenv "TERGI_RHOMBUS") "unknown"))
+(unless (and (file-exists? stamp) (equal? (file->string stamp) commit))
+  (delete-directory/files corpus #:must-exist? #f)
+  (for ([f (in-directory source)]
+        #:when (regexp-match? #rx"[.](rhm|scrbl|rkt)$" (path->string f))
+        #:when (file-exists? f))
+    (define bytes (file->bytes f))
+    (define text (with-handlers ([exn:fail? (lambda (e) #f)]) (bytes->string/utf-8 bytes)))
+    (define-values (name end) (if text (lang-line text) (values #f #f)))
+    (when (and name (reader name))
+      (define dest (build-path corpus (find-relative-path source f)))
+      (make-directory* (path-only dest))
+      (call-with-output-file dest (lambda (o) (write-bytes bytes o)))))
+  (call-with-output-file stamp (lambda (o) (void (write-string commit o)))))
+(define corpus-files
+  (sort (for/list ([f (in-directory corpus)]
+                   #:when (regexp-match? #rx"[.](rhm|scrbl|rkt)$" (path->string f)))
+          (path->string f))
+        string<?))
+
+;; The random texts, from two lists of pieces. The first has a bit of
+;; everything, including much that the real lexer rejects. The second
+;; has more indentation, group comments and `#{...}`, so it tries harder
+;; to find where a `#//` comment ends.
+(define pieces1
+  '("x" "foo" "_a1" "#%x" "1" "1.5" "0x1F" "1_000" "1e5" "-1" "+.5" ".5" "1/2" "1/0"
+    "1." "1..2" "1x" "1.x" "+" "-" "." ".." "/" "//" "/*" "*/" "::" ":=" "|>" "~" "#'" "#:"
+    "\"a\"" "\"\\n\\u12345\"" "\"\\q\"" "\"un" "#\"b\"" "// c" "/* c */" "#//" "@//" "(" ")" "[" "]"
+    "{" "}" "\u00AB" "\u00BB" "'" "@" "@foo" "@foo{" "@{" "|<{" "}>|" "|<@" "@(" "@//{" "~kw" "#{x}"
+    "~#{x}" "#{(a b)}" "#true" "#inf" "#void" "#lang" "#x" "#!" "\n" "\n" "\n  " "\n    " "\n\t"
+    "\t" " " " " "  " "\u00E9" "\u4E2D" "\U1F44D" "\u00A9\uFE0F" "\u00A9" "\u00B2" "\\" "," ";" ":" "|"
+    "a.b" "@a.b(1)" "=" "+/" "\r\n" "1_" "#/" "*" "-x" "x-1" "\"" "@x[1]{t}" "}{" "@|{" "|{" "1//2"
+    "a:b" "#//\n"))
+(define pieces2
+  '("#//" "#// " "x" "f(1)" ":" " | " "|" "\n" "\n  " "\n    " "\n      " "\n\t" "\t" " " "  "
+    "\u00AB" "\u00BB" "'" "(" ")" "[" "]" "{" "}" "," ";" "// c" "/* c\n */" "#{(a\n b)}" "#{x}"
+    "@foo{t}" "@//{c}" "@{\n a}" "1" "+" "def x:" "match y" "\r\n" "\U1F44D" "a\u0301"
+    "\u00A9\uFE0Fx" "@//c\n" "#{x \n}" "#{ x\n  }" "#{(a ; c\n)\n}" "#{x\n}y" "#{\n}"))
+
+(define rng (make-pseudo-random-generator))
+(parameterize ([current-pseudo-random-generator rng])
+  (random-seed seed))
+(define (pick lst) (list-ref lst (random (length lst) rng)))
+
+;; Returns a text and whether it's in text mode.
+(define (generate i)
+  (define-values (pieces most text-share)
+    (if (even? i) (values pieces1 40 0.3) (values pieces2 50 0.15)))
+  (define text (string-append* (for/list ([_ (add1 (random most rng))]) (pick pieces))))
+  (define text-mode? (< (random rng) text-share))
+  (if (and (not text-mode?) (lang-line-before? text))
+      (generate i)
+      (values text text-mode?)))
+
+(define random-dir (build-path work "random"))
+(delete-directory/files random-dir #:must-exist? #f)
+(make-directory* random-dir)
+(define random-files
+  (for/list ([i cases])
+    (define-values (text text-mode?) (generate i))
+    (define path (path->string (build-path random-dir (format "~a.rhm" i))))
+    ;; tergi only reads a whole file as text after a `#lang` line, so a
+    ;; text in text mode gets one. The linefeed after it becomes part of
+    ;; the text.
+    (call-with-output-file path
+      (lambda (o)
+        (when text-mode? (write-string "#lang rhombus/scribble/manual\n" o))
+        (write-string text o)))
+    path))
+
+(call-with-output-file (build-path work "files.txt") #:exists 'truncate
+  (lambda (o)
+    (for ([f (append corpus-files random-files)])
+      (write-string f o)
+      (newline o))))
+(printf "~a files from Rhombus ~a, and ~a random texts with seed ~a\n"
+        (length corpus-files) commit cases seed)

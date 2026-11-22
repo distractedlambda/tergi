@@ -1,0 +1,193 @@
+#!/usr/bin/env racket
+#lang racket/base
+;; Checks the colors of tergi's shrubbery lexer against the lexer that
+;; DrRacket colors shrubbery with: `lex.rkt` in shrubbery-lib, wrapped in
+;; `lex-comment.rkt`, which finds where each `#//` group comment ends.
+;;
+;; We don't use the invisible parenthesis layer that DrRacket puts on top
+;; of those, because it loses track of the text in @-forms, and tergi
+;; doesn't follow it either.
+;;
+;; Each character that isn't whitespace gets a class from each lexer, and
+;; they have to be the same. A symbol in the real lexer can be plain, a
+;; keyword or an identifier in tergi, because tergi colors some symbols
+;; as keywords and the real lexer has no keywords.
+;;
+;; Usage: compare <work>
+
+(require racket/file
+         racket/list
+         racket/string
+         shrubbery/lex-comment
+         (only-in shrubbery/lex make-in-text-status lex-nested-status?)
+         syntax-color/racket-lexer
+         "common.rkt")
+
+(define work (vector-ref (current-command-line-arguments) 0))
+(define show-at-most 10)
+
+;; The class of each character of `s` in the real lexer, as a string of
+;; the same length. Whitespace is `_`, which isn't compared.
+(define (real-classes s text-mode?)
+  (define in (open-input-string s))
+  (port-count-lines! in)
+  (define n (string-length s))
+  ;; Racket counts CRLF as one position when it counts lines.
+  (define pos->idx (make-vector (+ n 2) n))
+  (let loop ([i 0] [p 1])
+    (when (<= i n)
+      (vector-set! pos->idx p i)
+      (cond
+        [(= i n) (void)]
+        [(and (char=? (string-ref s i) #\return)
+              (< (add1 i) n)
+              (char=? (string-ref s (add1 i)) #\newline))
+         (loop (+ i 2) (add1 p))]
+        [else (loop (add1 i) (add1 p))])))
+  (define out (make-string n #\_))
+  (define (lexer in pos status)
+    (lex/comment/status in pos (or status (if text-mode? (make-in-text-status) #f))
+                        racket-lexer*/status))
+  ;; Whether the lexer is inside a group comment comes from the status of
+  ;; `lex.rkt`, which `lex-comment.rkt` wraps in a prefab struct.
+  (define (unwrap st)
+    (if (and st (not (symbol? st)))
+        (let ([v (struct->vector st)])
+          (if (eq? (vector-ref v 0) 'struct:comment-tracked) (vector-ref v 1) st))
+        st))
+  (let loop ([status #f])
+    (define st (unwrap status))
+    (define nested-before (and st (lex-nested-status? st)))
+    (define-values (tok type paren start end backup new-status) (lexer in 0 status))
+    (when (and (eqv? start end) (not (eq? type 'eof)))
+      (error "the lexer returned an empty token"))
+    (unless (eq? type 'eof)
+      (define nst (unwrap new-status))
+      (define nested-after (and nst (lex-nested-status? nst)))
+      (define t (if (hash? type) (hash-ref type 'type) type))
+      (define comment? (and (hash? type) (hash-ref type 'comment? #f)))
+      (define si (vector-ref pos->idx start))
+      (define ei (vector-ref pos->idx end))
+      (define text (substring s si ei))
+      (define class
+        (cond
+          [(eq? t 'white-space) #\_]
+          ;; Inside `#{...}`, the tokens come from Racket's lexer, and the
+          ;; racket check covers those. Here we only compare comments and
+          ;; `#:` keywords.
+          [(and nested-before nested-after)
+           (cond [comment? #\C] [(eq? t 'hash-colon-keyword) #\K] [else #\_])]
+          [(or comment? (eq? t 'comment)) #\C]
+          [else
+           (case t
+             [(string) #\S]
+             [(constant) #\N]
+             [(parenthesis) #\P]
+             [(symbol) #\y]
+             [(hash-colon-keyword) #\K]
+             [(operator) #\O]
+             [(block-operator bar-operator continue-operator separator) #\P]
+             [(at) #\K]
+             [(text) #\.]
+             ;; tergi colors an unfinished string or block comment as one.
+             [(error) (cond [(regexp-match? #rx"^#?\"" text) #\S]
+                            [(regexp-match? #rx"^/[*]" text) #\C]
+                            [else #\.])]
+             [else #\?])]))
+      (for ([i (in-range si ei)])
+        (string-set! out i (if (char-whitespace? (string-ref s i)) #\_ class)))
+      (loop new-status)))
+  out)
+
+;; The class of each character of `s` in tergi, from its tokens, which
+;; count bytes. Characters outside tokens are `.`.
+(define (tergi-classes s tok-file)
+  (define byte-class (make-vector (bytes-length (string->bytes/utf-8 s)) #\.))
+  (for ([line (file->lines tok-file)])
+    (define parts (string-split line))
+    (define class
+      (case (list-ref parts 2)
+        [("Comment") #\C]
+        [("String" "Escape") #\S]
+        [("Number" "Constant") #\N]
+        [("Punctuation") #\P]
+        [("Keyword") #\K]
+        [("Operator") #\O]
+        [("Identifier") #\I]
+        [else #\?]))
+    (for ([b (in-range (string->number (car parts)) (string->number (cadr parts)))])
+      (vector-set! byte-class b class)))
+  (define out (make-string (string-length s)))
+  (for/fold ([b 0]) ([c (in-string s)] [i (in-naturals)])
+    (string-set! out i (vector-ref byte-class b))
+    (+ b (char-utf-8-length c)))
+  out)
+
+(define (agree? real ours)
+  (or (char=? real #\_)
+      (char=? real ours)
+      (and (char=? real #\y) (memv ours '(#\. #\K #\I)))))
+
+;; Prints the line of `s` around position `i`, with both lexers' classes
+;; under it. `start` is where the text that the lexers saw starts.
+(define (show-line path s start i real ours)
+  (define line-start (let loop ([j i]) (if (and (> j 0) (not (char=? (string-ref s (sub1 j)) #\newline))) (loop (sub1 j)) j)))
+  (define line-end (let loop ([j i]) (if (and (< j (string-length s)) (not (char=? (string-ref s j) #\newline))) (loop (add1 j)) j)))
+  (define from (max line-start start (- i 60)))
+  (define to (min line-end (+ i 60)))
+  (define line (add1 (for/sum ([c (in-string s 0 i)]) (if (char=? c #\newline) 1 0))))
+  (define (part classes) (substring classes (- from start) (- to start)))
+  (printf "~a:~a:~a\n" path line (add1 (- i line-start)))
+  (printf "  text  ~s\n" (substring s from to))
+  (printf "  real   ~a\n  tergi  ~a\n" (part real) (part ours)))
+
+(define files (file->lines (build-path work "files.txt")))
+(define compared 0)
+(define disagree 0)
+(define failures (make-hash))
+(define corpus-failures 0)
+(for ([path files] [n (in-naturals)])
+  (define tok-file (build-path work "tokens" (format "~a.tok" n)))
+  (define s (file->string path))
+  (define random? (regexp-match? #rx"/random/[0-9]+[.]rhm$" path))
+  (define-values (name end) (lang-line s))
+  (define mode (if name (reader name) 'shrubbery))
+  (unless (and mode (file-exists? tok-file))
+    (error 'compare "can't tell how to read ~a" path))
+  (define start (or end 0))
+  (define body (substring s start))
+  (define real
+    (with-handlers ([exn:fail? (lambda (e) e)])
+      (real-classes body (eq? mode 'text))))
+  (cond
+    [(exn? real)
+     ;; Many random texts make the real lexer fail, for example on a `²`
+     ;; followed by a letter, which no rule of its lexer matches, or on
+     ;; `1/0_0`, which it divides by zero. tergi colors those texts as
+     ;; it can, and there's nothing to compare them with.
+     (define message (car (string-split (exn-message real) "\n")))
+     (cond
+       [random?
+        (hash-update! failures message add1 0)]
+       [else
+        (set! corpus-failures (add1 corpus-failures))
+        (printf "~a: the real lexer failed: ~a\n" path message)])]
+    [else
+     (set! compared (add1 compared))
+     (define ours (substring (tergi-classes s tok-file) start))
+     (define bad (for/first ([r (in-string real)] [o (in-string ours)] [i (in-naturals)]
+                             #:unless (agree? r o))
+                   i))
+     (when bad
+       (set! disagree (add1 disagree))
+       (when (<= disagree show-at-most)
+         (show-line path s start (+ start bad) real ours)))]))
+
+(define failed (for/sum ([v (in-hash-values failures)]) v))
+(unless (zero? failed)
+  (printf "The real lexer failed on ~a random texts. The most common reasons:\n" failed)
+  (for ([p (take (sort (hash->list failures) > #:key cdr) (min 5 (hash-count failures)))])
+    (printf "  ~a  ~a\n" (cdr p) (car p))))
+(printf "Compared ~a files: ~a disagree.\n" compared disagree)
+(unless (and (zero? disagree) (zero? corpus-failures))
+  (exit 1))
