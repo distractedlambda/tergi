@@ -1,0 +1,42 @@
+# CMake's lexer from its source at the commit that src/highlight/cmake.rs
+# follows, built into a program that prints its tokens, and a released
+# CMake 3.31.6 for checking escapes and variable references with
+# `cmake -P`. The source tarball also holds the CMake files that the
+# lexer is checked on.
+FROM docker.io/library/debian:trixie-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl gcc libc6-dev python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG CMAKE_COMMIT=83b59ddfd7d84046fb027e8e63a020f3a69c45bb
+ARG CMAKE_SHA256=e538d5aa10db4d49537ea3eba4abee59d1fa4e8be0a39cc4685779c9b4f49103
+RUN curl -fsSL -o /opt/cmake-src.tar.gz \
+        https://github.com/Kitware/CMake/archive/$CMAKE_COMMIT.tar.gz \
+    && echo "$CMAKE_SHA256  /opt/cmake-src.tar.gz" | sha256sum -c -
+
+# The lexer includes headers from KWSys and KWIML, which CMake builds
+# itself. The stubs stand in for the little of them that it needs.
+COPY tokens.c /build/
+COPY stub /build/stub
+RUN mkdir /build/src \
+    && tar xzf /opt/cmake-src.tar.gz -C /build/src --strip-components=1 \
+        --wildcards '*/Source/*' \
+    && cc -O2 -w -I /build/stub -I /build/src/Source -I /build/src/Source/LexerParser \
+        -o /usr/local/bin/cmake-tokens /build/tokens.c \
+    && rm -rf /build
+
+RUN case "$(uname -m)" in \
+        x86_64) sha=5a1133ff103c71eb5120e2cc3de922733e7d8a26a98ae716397e8676adb367bf ;; \
+        aarch64) sha=b4cc788d63112b2749b40627e719eb5d3b8ed8f00c36d77189f4019cfe64bc9e ;; \
+        *) echo "no CMake release for $(uname -m)"; exit 1 ;; \
+    esac \
+    && name=cmake-3.31.6-linux-$(uname -m) \
+    && curl -fsSL -o /tmp/cmake.tar.gz \
+        https://github.com/Kitware/CMake/releases/download/v3.31.6/$name.tar.gz \
+    && echo "$sha  /tmp/cmake.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/cmake.tar.gz -C /opt \
+        --exclude="$name/doc" --exclude="$name/man" --exclude="$name/share/cmake-3.31/Help" \
+    && mv /opt/$name /opt/cmake \
+    && ln -s /opt/cmake/bin/cmake /usr/local/bin/cmake \
+    && rm /tmp/cmake.tar.gz

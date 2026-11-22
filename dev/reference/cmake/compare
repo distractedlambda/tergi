@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""Checks tergi's CMake lexer against CMake itself, in two ways.
+
+First, it runs CMake's own lexer on every file, through cmake-tokens, and
+follows the steps of CMake's parser on its tokens. That says which color
+each byte should get, up to where the parser would give up. Comments and
+brackets, command names, parentheses and the operators of if() must get
+their colors. Quoted arguments must start and end with the string color.
+
+Second, for the random scripts that print one quoted argument, it runs
+them with cmake -P. CMake only reads escapes and variable references when
+it runs a command. With no variables defined, tergi's colors say whether
+CMake reports an error, and if it doesn't, exactly what it prints.
+
+Usage: compare <work>
+"""
+
+import collections
+import concurrent.futures
+import os
+import pathlib
+import re
+import subprocess
+import sys
+
+SHOW = 15
+
+KEYWORDS = {"if", "elseif", "else", "endif", "foreach", "endforeach", "while",
+            "endwhile", "function", "endfunction", "macro", "endmacro", "block",
+            "endblock", "break", "continue", "return"}
+OPERATORS = set("""AND OR NOT COMMAND DEFINED DIAGNOSTIC EXISTS IS_ABSOLUTE
+IS_DIRECTORY IS_EXECUTABLE IS_NEWER_THAN IS_READABLE IS_SYMLINK IS_WRITABLE
+POLICY RULE TARGET TEST EQUAL LESS LESS_EQUAL GREATER GREATER_EQUAL STREQUAL
+STRLESS STRLESS_EQUAL STRGREATER STRGREATER_EQUAL VERSION_EQUAL VERSION_LESS
+VERSION_LESS_EQUAL VERSION_GREATER VERSION_GREATER_EQUAL PATH_EQUAL
+PATH_IS_PREFIX MATCHES IN_LIST""".split())
+
+# The token types in cmListFileLexer.h, in order.
+(NONE, SPACE, NEWLINE, IDENT, PL, PR, UNQ, QUOTED, BRACKET, CBRACKET, BADCHAR,
+ BADBRACKET, BADSTRING) = range(13)
+
+# The prepare script writes the random scripts with the same prefix.
+PREFIX = "cmake_policy(VERSION 3.31)\nmessage(\""
+
+work = pathlib.Path(sys.argv[1])
+entries = [l.split("\t")[-1] for l in (work / "files.txt").read_text().splitlines()]
+
+
+def kinds_of(n, size):
+    """tergi's kind for each byte of file n, or None if it has no tokens
+    because it isn't UTF-8."""
+    tok = work / "tokens" / f"{n}.tok"
+    if not tok.exists():
+        return None
+    kinds = [None] * size
+    for l in tok.read_text().splitlines():
+        s, e, k = l.split()
+        kinds[int(s):int(e)] = [k] * (int(e) - int(s))
+    return kinds
+
+
+# ------------------------------------------------------- the lexer check
+
+def read_blocks(data):
+    """CMake's tokens for each file, from the output of cmake-tokens."""
+    blocks = []
+    cur = None
+    for raw in data.split(b"\n"):
+        l = raw.decode("utf-8", "surrogateescape")
+        if l.startswith("FILE "):
+            cur = []
+            blocks.append(cur)
+        elif l in ("END", "") or cur is None:
+            continue
+        else:
+            cur.append(l)
+    return blocks
+
+
+def expected(conv, toks):
+    """The kinds that each byte of the text may get, as a set, up to where
+    CMake's parser gives up. The text has its CRLFs turned into LFs, as
+    CMake reads it. "WS" allows a space to stay plain."""
+    base = 3 if conv.startswith(b"\xef\xbb\xbf") else 0
+    starts = [base]
+    for i, c in enumerate(conv):
+        if i >= base and c == 10:
+            starts.append(i + 1)
+    off = lambda l, c: starts[l - 1] + c - 1
+    spans = []
+    for t in toks:
+        typ, l0, c0, l1, c1 = t[0]
+        spans.append((typ, off(l0, c0), off(l1, c1), t[1]))
+    exp = [None] * len(conv)
+    # The lexer skips line comments without making tokens of them.
+    for i in range(base, len(conv)):
+        exp[i] = {"Comment", "WS"}
+    stop = len(conv)
+
+    def setr(a, b, kinds):
+        for i in range(a, min(b, len(conv))):
+            exp[i] = kinds
+
+    # This follows cmListFileParser::Parse and ParseFunction in
+    # cmListFileCache.cxx.
+    i = 0
+    have_newline = True
+    cmd = None  # [depth, whether it's a condition]
+    while i < len(spans):
+        typ, a, b, text = spans[i]
+        if typ in (BADCHAR, BADBRACKET, BADSTRING):
+            stop = a
+            break
+        if typ in (SPACE, NEWLINE):
+            setr(a, b, {None})
+            if typ == NEWLINE and cmd is None:
+                have_newline = True
+        elif typ == CBRACKET:
+            setr(a, b, {"Comment", "WS"})
+            if cmd is None:
+                have_newline = False
+        elif cmd is None:
+            if typ == IDENT and have_newline:
+                have_newline = False
+                j = i + 1
+                while j < len(spans) and spans[j][0] == SPACE:
+                    setr(spans[j][1], spans[j][2], {None})
+                    j += 1
+                if j == len(spans) or spans[j][0] != PL:
+                    stop = a
+                    break
+                lower = text.lower()
+                setr(a, b, {"Keyword"} if lower in KEYWORDS else {"Identifier"})
+                setr(spans[j][1], spans[j][2], {"Punctuation"})
+                cmd = [0, lower in ("if", "elseif", "while")]
+                i = j
+            else:
+                stop = a
+                break
+        else:
+            if typ == PL:
+                cmd[0] += 1
+                setr(a, b, {"Punctuation"})
+            elif typ == PR:
+                setr(a, b, {"Punctuation"})
+                if cmd[0] == 0:
+                    cmd = None
+                else:
+                    cmd[0] -= 1
+            elif typ == IDENT:
+                setr(a, b, {"Operator"} if cmd[1] and text in OPERATORS else {"Identifier"})
+            elif typ == UNQ:
+                setr(a, b, {None, "String", "Escape", "Attribute", "Punctuation"})
+            elif typ == QUOTED:
+                setr(a, b, {"String", "Escape", "Attribute", "Punctuation"})
+                exp[a] = {"String"}
+                exp[b - 1] = {"String"}
+            elif typ == BRACKET:
+                setr(a, b, {"String"})
+            else:
+                stop = a
+                break
+        i += 1
+    return exp[:stop]
+
+
+def check_lexer():
+    listing = "".join(p + "\n" for p in entries).encode()
+    out = subprocess.run(["cmake-tokens"], input=listing, capture_output=True, check=True)
+    refs = read_blocks(out.stdout)
+    assert len(refs) == len(entries)
+    files = bad = compared = size = 0
+    for n, (path, ref) in enumerate(zip(entries, refs)):
+        orig = pathlib.Path(path).read_bytes()
+        kinds = kinds_of(n, len(orig))
+        if kinds is None:
+            continue
+        # CMake reads CRLF as LF. `where` maps offsets in the converted
+        # text back to the original.
+        conv = bytearray()
+        where = []
+        for i, c in enumerate(orig):
+            if c == 13 and orig[i + 1:i + 2] == b"\n":
+                continue
+            conv.append(c)
+            where.append(i)
+        toks = []
+        for l in ref:
+            if l.startswith("T "):
+                toks[-1][1] = l[2:]
+            elif l == "ERROR":
+                sys.exit(f"cmake-tokens can't open {path}")
+            else:
+                toks.append([list(map(int, l.split()))[:5], ""])
+        exp = expected(bytes(conv), toks)
+        files += 1
+        compared += sum(1 for e in exp if e is not None)
+        size += len(conv)
+        for ci, allowed in enumerate(exp):
+            if allowed is None:
+                continue
+            k = kinds[where[ci]]
+            ws = conv[ci] in b" \t\r\n"
+            if k in allowed or ("WS" in allowed and ws and k is None):
+                continue
+            bad += 1
+            if bad <= SHOW:
+                lo = max(0, where[ci] - 30)
+                print(f"{path}: byte {where[ci]} {conv[ci:ci+1]!r} is {k}, "
+                      f"want {sorted(allowed, key=str)}\n"
+                      f"    {orig[lo:where[ci] + 30]!r}")
+            break
+    print(f"Lexer: {files} files, {bad} differ, {compared} of {size} bytes compared")
+    return bad
+
+
+# ---------------------------------------------------- the message() check
+
+def predict(t, kinds):
+    """What tergi's colors say message() prints for the text t, or None if
+    they say CMake reports an error. `kinds` has a kind for each byte of
+    t."""
+    out = bytearray()
+    b = t.encode()
+    i = 0
+    while i < len(b):
+        k = kinds[i]
+        if k == "Attribute":
+            # A reference to a variable that isn't defined is empty.
+            while i < len(b) and kinds[i] == "Attribute":
+                i += 1
+            continue
+        if b[i] == ord("\\"):
+            if k != "Escape":
+                return None
+            c = b[i + 1]
+            n = 1
+            while (i + 1 + n < len(b) and kinds[i + 1 + n] == "Escape"
+                   and 0x80 <= b[i + 1 + n] < 0xc0):
+                n += 1
+            if c == ord(";"):
+                out += b"\\;"
+            else:
+                out += {ord("t"): b"\t", ord("n"): b"\n", ord("r"): b"\r"}.get(c, b[i + 1:i + 1 + n])
+            i += 1 + n
+            continue
+        if b[i] == ord("$"):
+            rest = b[i + 1:]
+            if rest.startswith((b"{", b"ENV{", b"CACHE{")):
+                return None
+            if re.match(rb"[A-Za-z0-9/_.+-]+\{", rest):
+                return None
+        out.append(b[i])
+        i += 1
+    return bytes(out)
+
+
+def run_cmake(path):
+    p = subprocess.run(["cmake", "-P", path], capture_output=True)
+    return p.returncode, p.stderr
+
+
+def check_message():
+    scripts = [(n, p) for n, p in enumerate(entries) if "/random/scripts/" in p]
+    with concurrent.futures.ThreadPoolExecutor(os.cpu_count()) as pool:
+        results = list(pool.map(run_cmake, [p for _, p in scripts]))
+    bad = 0
+    stats = collections.Counter()
+    for (n, path), (code, body) in zip(scripts, results):
+        text = pathlib.Path(path).read_text(encoding="utf-8")
+        t = text[len(PREFIX):-3]
+        start = len(PREFIX.encode())
+        tb = t.encode()
+        kinds = kinds_of(n, len(text.encode()))[start:start + len(tb)]
+        want = predict(t, kinds)
+        if want is None:
+            if code == 0:
+                bad += 1
+                if bad <= SHOW:
+                    print(f"{path}: {t!r}: cmake accepts it and prints {body!r}, "
+                          "but the colors say it's an error")
+            else:
+                stats["error"] += 1
+            continue
+        stats["ok"] += 1
+        if code != 0 or body != want + b"\n":
+            bad += 1
+            if bad <= SHOW:
+                print(f"{path}: {t!r}: the colors say it prints {want!r}, "
+                      f"but cmake gives {code} {body[:200]!r}")
+    print(f"message(): {len(scripts)} scripts, {bad} differ, "
+          f"{stats['ok']} print something, {stats['error']} are errors")
+    return bad
+
+
+bad = check_lexer() + check_message()
+sys.exit(1 if bad else 0)
