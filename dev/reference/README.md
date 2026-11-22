@@ -7,9 +7,11 @@ its tokens with tergi's. They need software that the dev image doesn't
 have, such as LLVM or Racket, so they run in containers of their own
 and aren't part of `cargo test`. The `Reference lexers` workflow in
 `.github/workflows/reference.yml` runs them in CI when the lexers
-change.
+change. It runs them with docker rather than podman, and keeps the
+layers of the images in the Actions cache.
 
-To run one, give its name to `run.sh`. You need podman.
+To run one, give its name to `run.sh`. You need podman, or docker
+with `PODMAN=docker`.
 
 ```sh
 dev/reference/run.sh python

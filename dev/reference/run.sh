@@ -28,8 +28,27 @@ mkdir -p "$work"
 rm -rf "$work/tokens"
 
 mkdir -p "$root/target"
-"$podman" build -t localhost/tergi-dev "$root/dev"
-"$podman" build -t "localhost/tergi-reference-$name" "$here/$name"
+
+# CI runs this with docker and sets TERGI_REFERENCE_CACHE to a cache
+# backend of docker buildx, such as type=gha. Each image gets its own
+# scope there, because images that share a scope replace each other's
+# cache. Buildx needs a builder of its own to export the cache, and that
+# builder keeps the image unless we pass --load. Writing the cache isn't
+# allowed in some pull requests, so a failed write doesn't stop the run.
+build() {
+    tag=$1
+    dir=$2
+    if [ -n "${TERGI_REFERENCE_CACHE:-}" ]; then
+        set -- --load \
+            --cache-from "$TERGI_REFERENCE_CACHE,scope=$tag" \
+            --cache-to "$TERGI_REFERENCE_CACHE,scope=$tag,mode=max,ignore-error=true"
+    else
+        set --
+    fi
+    "$podman" build "$@" -t "localhost/$tag" -f "$dir/Containerfile" "$dir"
+}
+build tergi-dev "$root/dev"
+build "tergi-reference-$name" "$here/$name"
 
 # Both images see the project and the work directory at the same paths as
 # here, so that the paths in files.txt work everywhere. CASES and SEED pass
