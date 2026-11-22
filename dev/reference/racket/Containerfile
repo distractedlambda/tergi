@@ -1,0 +1,40 @@
+# Racket 9.3, the newest release, and a copy of the @-reader from its
+# at-exp-lib package that marks where each piece of text came from.
+#
+# Minimal Racket has the plain reader, and the @-reader needs nothing
+# else. The source archive has the whole distribution's sources, which
+# are the corpus. Python runs the scripts here.
+FROM docker.io/library/python:3.15.2-slim-trixie
+
+# The download server turns away Python's own User-Agent header, so
+# fetch sends another.
+RUN set -eu; \
+    fetch() { \
+        python3 -c 'import hashlib, sys, urllib.request; \
+request = urllib.request.Request(sys.argv[1], headers={"User-Agent": "fetch"}); \
+data = urllib.request.urlopen(request).read(); \
+hashlib.sha256(data).hexdigest() == sys.argv[2] or sys.exit(sys.argv[1] + " has the wrong SHA-256 sum"); \
+open(sys.argv[3], "wb").write(data)' "$@"; \
+    }; \
+    url=https://download.racket-lang.org/releases/9.3/installers; \
+    case "$(uname -m)" in \
+    x86_64) arch=x86_64 sum=8f469b7e93645fc876594470d884775aafff7688f530fd38be873fb44c71ca6a ;; \
+    aarch64) arch=aarch64 sum=221a1f77ba11ab090ec5ff77c5a95abfe1f72d3b8b879d694fc5d807567015be ;; \
+    *) echo "Racket has no Linux build for $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    fetch "$url/racket-minimal-9.3-$arch-linux-buster-cs.tgz" "$sum" /tmp/racket.tgz; \
+    tar xzf /tmp/racket.tgz -C /opt; \
+    rm /tmp/racket.tgz; \
+    fetch "$url/racket-9.3-src.tgz" \
+        14f974b12c55357a20d187bce3137f999f001d011d81fcae0fdbb287dbfe5afd \
+        /opt/racket-9.3-src.tgz
+ENV PATH=/opt/racket/bin:$PATH
+
+COPY patch-reader.py facts.rkt /opt/check/
+# Compile facts.rkt next to it rather than wherever PLTCOMPILEDROOTS
+# points, so that the image has the compiled code. Minimal Racket has no
+# `raco make`.
+RUN tar xzf /opt/racket-9.3-src.tgz -O racket-9.3/share/pkgs/at-exp-lib/scribble/reader.rkt \
+        | python3 /opt/check/patch-reader.py > /opt/check/at-reader.rkt \
+    && env -u PLTCOMPILEDROOTS racket -l racket/base -l compiler/cm \
+        -e '(managed-compile-zo "/opt/check/facts.rkt")'

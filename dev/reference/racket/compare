@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+"""Compares tergi's tokens with what Racket's reader reads.
+
+facts.rkt runs Racket 9.3's reader, or a copy of its @-reader, over each
+file and lists the atoms it read: numbers, strings, characters,
+booleans, keywords, symbols, and pieces of text in @-forms. Then we
+check that
+
+- every number, string, character, boolean and keyword gets its color
+  over its whole length,
+- symbols get none of those colors, and text gets no color at all,
+- every number and constant token starts inside an atom of the reader,
+- comments cover nothing that the reader read,
+- in plain Racket, every character outside the atoms that isn't
+  whitespace gets some color, and
+- one atom on a line is a number exactly when the reader says so.
+
+Files that the reader fails on are skipped, since the reader says
+nothing about them. Usage: compare <work>
+"""
+
+import collections
+import pathlib
+import subprocess
+import sys
+
+SHOW = 12
+
+work = pathlib.Path(sys.argv[1])
+modes = [line.split("\t", 1) for line in (work / "modes.txt").read_text().splitlines()]
+facts = subprocess.run(
+    ["racket", "/opt/check/facts.rkt", str(work / "modes.txt")],
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout.splitlines()
+if len(facts) != len(modes):
+    sys.exit(f"facts.rkt printed {len(facts)} lines for {len(modes)} files")
+
+
+def group(mode, path):
+    if path.startswith(str(work / "random")):
+        name = pathlib.Path(path).name
+        if name.startswith("numbers-"):
+            return "random atoms"
+        if name.startswith("plain-"):
+            return "random plain texts"
+        return f"random @-reader texts ({mode})"
+    return f"Racket source ({mode})"
+
+
+def tokens(n):
+    path = work / "tokens" / f"{n}.tok"
+    out = []
+    for line in path.read_text().splitlines():
+        a, b, k = line.split()
+        out.append((int(a), int(b), k))
+    return out
+
+
+def colors(size, toks):
+    """The kind of token at each byte, or None."""
+    out = [None] * size
+    for a, b, k in toks:
+        out[a:b] = [k] * (b - a)
+    return out
+
+
+def offsets(text):
+    """The byte offset where each reader position starts.
+
+    The reader counts characters, except that a CRLF counts as one.
+    """
+    off = [0]
+    j = 0
+    while j < len(text):
+        n = 2 if text[j] == "\r" and text[j + 1 : j + 2] == "\n" else 1
+        off.append(off[-1] + len(text[j : j + n].encode()))
+        j += n
+    return off
+
+
+def check_numbers(data, bits, color):
+    problems = []
+    lines = data.split(b"\n")[:-1]
+    if len(lines) != len(bits):
+        return [f"the reader read {len(bits)} lines and there are {len(lines)}"], 0
+    pos = 0
+    for line, bit in zip(lines, bits):
+        kinds = set(color[pos : pos + len(line)])
+        if bit == "1" and kinds != {"Number"}:
+            problems.append(f"{line.decode()!r} is a number and gets {sorted(map(str, kinds))}")
+        elif bit == "0" and "Number" in kinds:
+            problems.append(f"{line.decode()!r} is a symbol and gets {sorted(map(str, kinds))}")
+        pos += len(line) + 1
+    return problems, len(bits)
+
+
+WANT = {
+    "number": {"Number"},
+    "string": {"String", "Escape"},
+    "char": {"Constant"},
+    "bool": {"Constant"},
+    "keyword": {"Keyword"},
+}
+NOT_SYMBOL = {"Number", "String", "Escape", "Constant", "Comment"}
+
+
+def check_atoms(mode, data, fact, toks, color):
+    text = data.decode()
+    off = offsets(text)
+    atoms = []
+    for f in fact.split(",")[1:]:
+        k, p, s = f.split(" ")
+        if p == "#f":
+            continue
+        p, s = int(p) - 1, int(s)
+        a, b = off[min(p, len(off) - 1)], off[min(p + s, len(off) - 1)]
+        # A span can't end between the CR and LF of a CRLF, because the
+        # reader counts them as one. Where it reads only the CR, as in
+        # `#\` before a CRLF, the lexer ends the token after the CR too.
+        if data[a:b].endswith(b"\r\n"):
+            b -= 1
+        # The reader counts the linefeed after the terminator of a here
+        # string as part of it, and the lexer doesn't. That changes no
+        # colors. (Before a CRLF, both end after the CR.)
+        if data[a : a + 3] == b"#<<" and data[b - 1 : b] == b"\n":
+            b -= 1
+        # In `#3(1)`, the reader fills the vector with the last element,
+        # and for `#3()` with zeros that it gives the position of the
+        # whole vector.
+        if data[a : a + 1] == b"#" and data[a + 1 : a + 2].isdigit():
+            continue
+        atoms.append((k, a, b))
+
+    problems = []
+
+    def problem(a, what):
+        line = data.count(b"\n", 0, a) + 1
+        start = data.rfind(b"\n", 0, a) + 1
+        col = len(data[start:a].decode()) + 1
+        problems.append(f"{line}:{col}: {what}")
+
+    def show(a, b):
+        return repr(data[a:b].decode(errors="replace"))
+
+    for k, a, b in atoms:
+        kinds = set(color[a:b])
+        if k in WANT:
+            if not kinds <= WANT[k]:
+                problem(a, f"the {k} {show(a, b)} gets {sorted(map(str, kinds))}")
+        elif k == "symbol":
+            if kinds & NOT_SYMBOL:
+                problem(a, f"the symbol {show(a, b)} gets {sorted(map(str, kinds))}")
+        elif k == "text":
+            if kinds - {None}:
+                problem(a, f"the text {show(a, b)} gets {sorted(map(str, kinds))}")
+
+    inside = [False] * len(data)
+    for _, a, b in atoms:
+        inside[a:b] = [True] * (b - a)
+    for a, b, k in toks:
+        if k in ("Number", "Constant") and not inside[a]:
+            problem(a, f"{show(a, b)} is a {k} token, and the reader read no atom there")
+        if k == "Comment":
+            for kk, x, y in atoms:
+                # A hash table or prefab structure stands for the keys in
+                # it, which have no position of their own. A comment can
+                # be between them.
+                if x < b and y > a and kk not in ("hash", "prefab"):
+                    problem(a, f"the comment {show(a, b)} covers the {kk} {show(x, y)}")
+                    break
+
+    if mode in ("r", "p"):
+        pos = 0
+        for c in text:
+            n = len(c.encode())
+            if not inside[pos] and not c.isspace() and c != "\ufeff" and color[pos] is None:
+                problem(pos, f"{c!r} gets no color, and it isn't in an atom")
+                break
+            pos += n
+    return problems, len(atoms)
+
+
+stats = collections.defaultdict(collections.Counter)
+shown = 0
+bad = 0
+for n, ((mode, path), fact) in enumerate(zip(modes, facts)):
+    g = stats[group(mode, path)]
+    g["files"] += 1
+    if fact == "ERR":
+        g["reader errors"] += 1
+        continue
+    data = pathlib.Path(path).read_bytes()
+    toks = tokens(n)
+    color = colors(len(data), toks)
+    if mode == "n":
+        problems, count = check_numbers(data, fact.split(" ", 1)[1], color)
+    else:
+        problems, count = check_atoms(mode, data, fact, toks, color)
+    g["atoms"] += count
+    if problems:
+        g["files that disagree"] += 1
+        bad += 1
+        if shown < SHOW:
+            shown += 1
+            print(path)
+            if path.startswith(str(work / "random")) and mode != "n":
+                print(f"    text: {data.decode()!r}")
+            for p in problems[:5]:
+                print(f"    {p}")
+            if len(problems) > 5:
+                print(f"    and {len(problems) - 5} more")
+
+print()
+for name in sorted(stats):
+    g = stats[name]
+    print(
+        f"{name}: {g['files']} files, {g['reader errors']} that the reader fails on, "
+        f"{g['atoms']} atoms checked, {g['files that disagree']} files that disagree"
+    )
+sys.stdout.flush()
+if bad:
+    sys.exit(f"{bad} files disagree")
+print("All files agree.")

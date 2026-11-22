@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Collects the Racket files that the lexer is checked on.
+
+There are three kinds:
+
+- Random texts for the plain reader and for the @-reader, CASES of them
+  in all (4,000 by default), made from SEED (1 by default).
+- Random atoms, one per line, to check which ones are numbers.
+- The Scribble and `#lang at-exp` files in Racket 9.3's source, and its
+  files in `#lang racket` and `#lang racket/base`.
+
+It writes their paths to <work>/files.txt for the dump, and to
+<work>/modes.txt with the letter that tells facts.rkt how to read each.
+Usage: prepare <work>
+"""
+
+import os
+import pathlib
+import re
+import shutil
+import sys
+import tarfile
+
+# The project is mounted read only, so don't try to cache bytecode there.
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gen_at  # noqa: E402
+import gen_numbers  # noqa: E402
+import gen_plain  # noqa: E402
+
+work = pathlib.Path(sys.argv[1])
+cases = int(os.environ.get("CASES") or 4000)
+seed = int(os.environ.get("SEED") or 1)
+
+# The image has the source archive, but the dump runs in another image,
+# so the files it reads must be in the work directory.
+src = work / "racket-9.3"
+done = work / "racket-9.3.done"
+if not done.exists():
+    shutil.rmtree(src, ignore_errors=True)
+    with tarfile.open("/opt/racket-9.3-src.tgz") as t:
+        members = [
+            m
+            for m in t.getmembers()
+            if m.isfile()
+            and re.match(r"racket-9\.3/(collects|share/pkgs)/", m.name)
+            and m.name.endswith((".rkt", ".scrbl"))
+        ]
+        t.extractall(work, members=members, filter="data")
+    done.touch()
+
+modes = []
+
+random_dir = work / "random"
+shutil.rmtree(random_dir, ignore_errors=True)
+random_dir.mkdir()
+
+
+def write(name, text):
+    path = random_dir / name
+    path.write_bytes(text.encode())
+    return str(path)
+
+
+for k, text in enumerate(gen_plain.generate(seed, cases // 2)):
+    modes.append(("r", write(f"plain-{k}.rkt", text)))
+
+# The dump finds the reader from the `#lang` line, and facts.rkt skips
+# that line and reads the rest.
+PREFIX = {"a": "#lang at-exp racket\n", "i": "#lang scribble/base\n", "r": ""}
+for k, (mode, text) in enumerate(gen_at.generate(seed, cases - cases // 2)):
+    modes.append((mode, write(f"at-{k}.rkt", PREFIX[mode] + text)))
+
+for name, atoms in [
+    ("scrambled", gen_numbers.scrambled(seed, 10 * cases)),
+    ("mutated", gen_numbers.mutated(seed, 15 * cases)),
+]:
+    modes.append(("n", write(f"numbers-{name}.rkt", "".join(a + "\n" for a in atoms))))
+
+# A file joins the corpus by its first line, so that we know which reader
+# Racket uses for it.
+for path in sorted(src.rglob("*")):
+    if path.suffix not in (".rkt", ".scrbl"):
+        continue
+    try:
+        text = path.read_bytes().decode()
+    except UnicodeDecodeError:
+        continue
+    if "\0" in text:
+        continue
+    first = text.partition("\n")[0]
+    if re.fullmatch(r"#lang scribble/\S+\s*", first) and not first.rstrip().endswith("/reader"):
+        modes.append(("i", str(path)))
+    elif re.fullmatch(r"#lang at-exp \S+\s*", first):
+        modes.append(("a", str(path)))
+    elif re.fullmatch(r"#lang racket(/base)?\s*", first):
+        modes.append(("p", str(path)))
+
+(work / "files.txt").write_text("".join(f"{p}\n" for _, p in modes))
+(work / "modes.txt").write_text("".join(f"{m}\t{p}\n" for m, p in modes))
+counts = {}
+for m, _ in modes:
+    counts[m] = counts.get(m, 0) + 1
+print(f"{len(modes)} files:", ", ".join(f"{n} {m}" for m, n in sorted(counts.items())))
