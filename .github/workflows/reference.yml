@@ -1,0 +1,32 @@
+name: Reference lexers
+
+# Compares tergi's lexers with the real ones, through the scripts in
+# dev/reference. Each check builds its own images and fetches its own
+# corpus, which takes a while, so this only runs when something they
+# depend on changes.
+on:
+  push:
+    paths:
+      - "src/highlight/**"
+      - "dev/**"
+      - "Cargo.lock"
+      - ".github/workflows/reference.yml"
+  pull_request:
+    paths:
+      - "src/highlight/**"
+      - "dev/**"
+      - "Cargo.lock"
+      - ".github/workflows/reference.yml"
+  workflow_dispatch:
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [c, cmake, javascript, llvm, python, racket, shrubbery, yaml, zig]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: podman --version
+      - run: dev/reference/run.sh ${{ matrix.name }}
