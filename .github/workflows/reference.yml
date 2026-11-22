@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: [c, cmake, javascript, llvm, python, racket, rust, shrubbery, yaml, zig]
+        name: [c, cmake, javascript, llvm, python, racket, rust, sh, shrubbery, yaml, zig]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

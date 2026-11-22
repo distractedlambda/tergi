@@ -1289,7 +1289,19 @@ leave that column blank.
   such as reserved words in and out of place, quotes and escapes,
   parameter expansions, command substitutions, arithmetic,
   here-documents, assignments, redirections, `case` patterns and
-  conditional commands.
+  conditional commands. `dev/reference/sh` builds bash 5.3 with a
+  patch that makes its parser report where each token, comment and
+  here-document is. It parses bash's own tests and examples, git's
+  shell scripts, bash-completion and random texts with `bash -n`. It
+  checks that reserved words, operators, comments, the names in
+  assignments, arithmetic commands and the lines that end
+  here-documents get their colors, and that nothing else gets the
+  keyword or comment color. Bash only parses what's inside backquotes
+  and a here-document's body when it runs them, so the check skips
+  those. It also skips files where a line continuation joins two
+  parts of a word, because bash's positions slip there and the lexer
+  ends a plain word at a continuation. When we wrote the lexer, it
+  agreed on all 2,310 scripts and on about 73,000 random texts.
 - `src/highlight/javascript.rs` has examples for each kind of
   JavaScript token, and a list of places where a `/` divides or starts
   a regular expression. `dev/reference/javascript` parses the 6,513

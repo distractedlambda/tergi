@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Collects the shell scripts that the lexer is checked on.
+
+They are the tests and examples in bash's source, the shell scripts in
+git's source, the scripts of bash-completion, and random texts made of
+pieces that are tricky for the lexer. Bash stops at the first syntax
+error, so only the files that it parses without one are kept. CASES sets
+how many random texts to make (20,000 by default), and SEED makes them
+different. Bash parses about one in seven of them.
+
+Usage: prepare <work>
+"""
+
+import concurrent.futures
+import os
+import pathlib
+import random
+import shutil
+import subprocess
+import sys
+import tarfile
+
+work = pathlib.Path(sys.argv[1])
+seed = int(os.environ.get("SEED") or 1)
+cases = int(os.environ.get("CASES") or 20000)
+
+
+def extract(name, tarball):
+    """Unpack a tarball into the work directory once, and return where."""
+    dest = work / "corpus" / name
+    if not dest.exists():
+        tmp = work / "corpus" / f"{name}.tmp"
+        shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True)
+        with tarfile.open(tarball) as t:
+            t.extractall(tmp, filter="data")
+        (top,) = tmp.iterdir()
+        top.rename(dest)
+        tmp.rmdir()
+    return dest
+
+
+bash = extract("bash", "/opt/bash.tar.gz")
+git = extract("git", "/opt/git.tar.gz")
+completion = extract("bash-completion", "/opt/bash-completion.tar.xz")
+
+corpus = [p for p in (bash / "tests").iterdir() if p.suffix in (".tests", ".sub")]
+# The loadable builtins are C.
+corpus += [p for p in (bash / "examples").rglob("*") if "loadables" not in p.parts]
+corpus += list(git.rglob("*.sh"))
+corpus += list((completion / "completions").iterdir())
+corpus += [completion / "bash_completion"]
+corpus += list(completion.rglob("*.sh")) + list(completion.rglob("*.bash"))
+corpus = sorted({p for p in corpus if p.is_file() and not p.name.startswith("Makefile")})
+
+# Random texts. Words that are reserved words in some places and not in
+# others are as likely as the pieces.
+
+WORDS = [
+    "a", "x", "if", "then", "fi", "do", "done", "in", "case", "esac", "for",
+    "while", "time", "!", "{", "}", "[[", "]]", "function", "select",
+    "coproc", "local", "export", "echo", "-f", "-p", "--", "=~", "==", "2", "1",
+]
+PIECES = [
+    " ", " ", " ", "\n", "\n", ";", ";;", ";&", "&&", "||", "|", "&", "(",
+    ")", "((", "))", "<", ">", ">>", "<<EOF", "<<-EOF", "<<'EOF'", "<<\\E",
+    "EOF", "\tEOF", "E", "<<<", "2>&1", ">&-", "&>", "{fd}>", "<(", ">(",
+    "$(", "${", "}", "$((", "$[", "]", "`", "\"", "'", "$'", "$\"", "\\",
+    "\\\n", "#", "# c", "$x", "$1", "$@", "$#", "${#x}", "${x:-", "${x/",
+    "/", "a=", "a+=", "a[1]=", "a=(", "[k]=", "@(", "*", "?", "[", "=",
+    "+", "-", ",", ":", "%", "^", "x y", "$( (", "${ ", "${|", "é", "\t",
+]
+
+
+def text(r):
+    parts = []
+    for _ in range(r.randint(1, 25)):
+        parts.append(r.choice(WORDS) if r.random() < 0.4 else r.choice(PIECES))
+        if r.random() < 0.5:
+            parts.append(" ")
+    return "".join(parts) + r.choice(["", "\n"])
+
+
+randoms = work / "random"
+shutil.rmtree(randoms, ignore_errors=True)
+randoms.mkdir(parents=True)
+r = random.Random(f"sh {seed}")
+generated = []
+for i in range(cases):
+    t = text(r)
+    # With extglob, which the check turns on so that bash reads patterns
+    # such as `@(a|b)`, bash reads `!(` as a pattern even where a command
+    # starts. tergi reads `!` and a subshell there, as bash does without
+    # it.
+    if "!(" in t:
+        continue
+    p = randoms / f"{i}.sh"
+    p.write_bytes(t.encode())
+    generated.append(p)
+
+
+def parses(path):
+    try:
+        run = subprocess.run(["bash-tokens", "-O", "extglob", "-n", str(path)],
+                             capture_output=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        return False
+    return run.returncode == 0
+
+
+with concurrent.futures.ThreadPoolExecutor(os.cpu_count()) as pool:
+    corpus = [p for p, ok in zip(corpus, pool.map(parses, corpus)) if ok]
+    generated = [p for p, ok in zip(generated, pool.map(parses, generated)) if ok]
+
+# The names of most of these files don't tell tergi their language.
+(work / "files.txt").write_text("".join(f"Shell\t{p}\n" for p in corpus + generated))
+print(f"{len(corpus)} scripts and {len(generated)} random texts that bash parses")

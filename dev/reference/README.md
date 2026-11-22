@@ -50,6 +50,9 @@ that each check runs in a minute or two once its image is built.
 - `rust`: rustc's lexer, from the crate `ra-ap-rustc_lexer` 0.183.0,
   and its escapes, from `rustc-literal-escaper` 0.0.8, on random texts
   and the `.rs` files in Rust 1.100.0's source.
+- `sh`: bash 5.3, patched to report where its tokens are, on random
+  texts, bash's own tests and examples, and the shell scripts in git's
+  source and bash-completion.
 - `shrubbery`: the shrubbery lexer that DrRacket uses, on random texts
   and the Rhombus files in the Rhombus repository.
 - `yaml`: saphyr-parser on the YAML test suite and the YAML files of a

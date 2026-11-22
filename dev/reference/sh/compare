@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""Checks tergi's shell lexer against bash's parser.
+
+It runs bash-tokens, which is bash patched by instrument.py, over each
+file with -n, so that bash only parses it. Bash reports where each token
+that it reads starts and ends, and where comments and here-documents
+are. Then:
+
+- Each reserved word gets the keyword color, or the punctuation color
+  for `{` and `}` and the operator color for `!`.
+- Every keyword that tergi colors is a reserved word to bash.
+- Operators and parentheses get the operator or punctuation color, and a
+  number before a redirection, as in `2>`, gets the number color.
+- Each comment gets the comment color, and nothing else does.
+- The name in each assignment is an identifier, and the `=` or `+=`
+  after it gets the operator or punctuation color.
+- The line that ends a here-document starts with its delimiter in the
+  attribute color.
+- An arithmetic command starts and ends with the punctuation color.
+
+Bash only parses what's inside backquotes, and the expansions in a
+here-document, when it runs them. So tergi's keywords and comments there
+have nothing to compare with. Two more differences are known:
+
+- Bash's positions slip when it reads past a line continuation to see
+  where a token ends, so tokens next to one aren't checked. tergi ends a
+  plain word or an operator at a continuation, so files where bash joins
+  one to the next line aren't checked at all.
+- tergi colors all of a here-document's delimiter, even a command
+  substitution in it, so bash's tokens inside one aren't checked.
+
+Usage: compare <work>
+"""
+
+import collections
+import concurrent.futures
+import os
+import pathlib
+import subprocess
+import sys
+
+SHOW = 15
+
+RESERVED = {
+    "IF", "THEN", "ELSE", "ELIF", "FI", "CASE", "ESAC", "FOR", "SELECT",
+    "WHILE", "UNTIL", "DO", "DONE", "FUNCTION", "COPROC", "COND_START",
+    "COND_END", "IN", "TIME", "'{'", "'}'", "BANG",
+}
+OPERATORS = {
+    "AND_AND", "OR_OR", "GREATER_GREATER", "LESS_LESS", "LESS_AND",
+    "LESS_LESS_LESS", "GREATER_AND", "SEMI_SEMI", "SEMI_AND", "SEMI_SEMI_AND",
+    "LESS_LESS_MINUS", "AND_GREATER", "AND_GREATER_GREATER", "LESS_GREATER",
+    "GREATER_BAR", "BAR_AND", "'|'", "'&'", "';'", "'<'", "'>'", "'('", "')'",
+    "'-'",
+}
+CONTINUATION = b"\\\n"
+NAME = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+
+work = pathlib.Path(sys.argv[1])
+paths = [pathlib.Path(l.split("\t")[-1]) for l in (work / "files.txt").read_text().splitlines()]
+out = work / "bash"
+out.mkdir(exist_ok=True)
+
+
+def run_bash(n):
+    env = dict(os.environ, TERGI_TOKENS=str(out / f"{n}.tok"))
+    subprocess.run(["bash-tokens", "-O", "extglob", "-n", str(paths[n])],
+                   env=env, capture_output=True, timeout=60)
+
+
+with concurrent.futures.ThreadPoolExecutor(os.cpu_count()) as pool:
+    list(pool.map(run_bash, range(len(paths))))
+
+
+def tokens(path):
+    # Bash only writes the file when it has a token to report.
+    if not path.exists():
+        return []
+    return [(int(s), int(e), k) for s, e, k in (l.split() for l in path.read_text().splitlines())]
+
+
+def joins(text):
+    """Whether a line continuation joins two parts of a word or an
+    operator."""
+    i = text.find(CONTINUATION)
+    while i >= 0:
+        if i > 0 and text[i - 1:i] not in b" \t\n" and text[i + 2:i + 3] not in b" \t\n":
+            return True
+        i = text.find(CONTINUATION, i + 2)
+    return False
+
+
+def check(n):
+    """The disagreements in file n, as (kind, line, message), or None if
+    the file can't be checked."""
+    text = paths[n].read_bytes()
+    tok = work / "tokens" / f"{n}.tok"
+    # The file isn't UTF-8, or a word or an operator goes on over a line
+    # continuation.
+    if not tok.exists() or joins(text):
+        return None
+    kinds = [None] * (len(text) + 1)
+    for s, e, k in tokens(tok):
+        kinds[s:e] = [k] * (e - s)
+    # Where bash doesn't parse before it runs the script.
+    skip = [False] * (len(text) + 1)
+    ticks = [i for s, e, k in tokens(tok) if k == "Punctuation"
+             for i in range(s, e) if text[i:i + 1] == b"`"]
+    for a, b in zip(ticks[::2], ticks[1::2]):
+        skip[a:b] = [True] * (b - a)
+    reserved = [False] * (len(text) + 1)
+    comment = [False] * (len(text) + 1)
+    found = []
+    for s, e, k in tokens(out / f"{n}.tok"):
+        # Positions that slipped past the end of the file.
+        if not 0 <= s <= e <= len(text):
+            continue
+        piece = text[s:e]
+        if k == "HEREDOC_BODY":
+            skip[s:e] = [True] * (e - s)
+            continue
+        if "Attribute" in kinds[s:e] and k != "HEREDOC_END":
+            continue
+        if k == "COMMENT":
+            comment[s:e] = [True] * (e - s)
+            end = s + len(piece.rstrip())
+            if any(kinds[i] != "Comment" for i in range(s, end)):
+                found.append(("comment", s, f"{piece[:40]!r} is {kinds[s]}"))
+            continue
+        if CONTINUATION in text[max(s - 1, 0):e + 1]:
+            continue
+        if k in RESERVED:
+            reserved[s:e] = [True] * (e - s)
+            want = {"'{'": "Punctuation", "'}'": "Punctuation", "BANG": "Operator"}.get(k, "Keyword")
+            if any(kinds[i] != want for i in range(s, e)):
+                found.append(("reserved word", s, f"{k} {piece!r} is {kinds[s]}"))
+        elif k in OPERATORS:
+            if any(kinds[i] not in ("Operator", "Punctuation") for i in range(s, e)):
+                found.append(("operator", s, f"{k} {piece!r} is {kinds[s]}"))
+        elif k == "NUMBER":
+            if any(kinds[i] != "Number" for i in range(s, e)):
+                found.append(("number", s, f"{piece!r} is {kinds[s]}"))
+        elif k == "ASSIGNMENT_WORD" and not piece.startswith(b"["):
+            name = len(piece) - len(piece.lstrip(NAME))
+            if any(kinds[i] != "Identifier" for i in range(s, s + name)) \
+                    or kinds[s + name] not in ("Operator", "Punctuation") \
+                    or (s > 0 and kinds[s - 1] == "Identifier"):
+                found.append(("assignment", s, f"{piece[:40]!r} starts {kinds[s:s + name + 1]}"))
+        elif k == "HEREDOC_END":
+            d = piece.lstrip(b"\t").rstrip(b"\n")
+            ds = s + len(piece) - len(piece.lstrip(b"\t"))
+            if any(kinds[i] != "Attribute" for i in range(ds, ds + len(d))):
+                found.append(("here-document", s, f"end {d[:30]!r} is {kinds[ds]}"))
+        elif k == "ARITH_CMD":
+            if kinds[s] != "Punctuation" or kinds[e - 1] != "Punctuation":
+                found.append(("arithmetic", s, f"{piece[:30]!r} is {kinds[s]}"))
+    i = 0
+    while i < len(text):
+        k = kinds[i]
+        j = i
+        while j < len(text) and kinds[j] == k:
+            j += 1
+        # Bash's position for a keyword right before a continuation
+        # slipped, so it wasn't marked above.
+        if not skip[i] and k == "Keyword" and not all(reserved[i:j]) \
+                and text[j:j + 2] != CONTINUATION:
+            found.append(("extra keyword", i, f"{text[i:j]!r}"))
+        if not skip[i] and k == "Comment" and not all(comment[i:j]):
+            found.append(("extra comment", i, f"{text[i:j][:40]!r}"))
+        i = j
+    return [(kind, text[:s].count(b"\n") + 1, msg) for kind, s, msg in found]
+
+
+counts = collections.Counter()
+files = 0
+shown = 0
+for n in range(len(paths)):
+    found = check(n)
+    if found is None:
+        continue
+    files += 1
+    for kind, line, msg in found:
+        counts[kind] += 1
+        if shown < SHOW:
+            shown += 1
+            print(f"{paths[n]}:{line}: {kind}: {msg}")
+
+total = sum(counts.values())
+skipped = len(paths) - files
+print(f"{files} files checked, {skipped} skipped, {total} disagreements"
+      + "".join(f", {n} {k}" for k, n in counts.items()))
+sys.exit(1 if total else 0)
