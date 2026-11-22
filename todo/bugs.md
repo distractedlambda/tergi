@@ -86,3 +86,16 @@ always dropped, so the watcher doesn't see the deletion. And
 `Watches::update` only walks the tree again when the ignored folders
 change, which they don't here. macOS watches the whole tree, so it only
 misses the deletion itself.
+
+## A UI test of the message box can fail under load
+
+`ui::commits_and_amends_from_the_message_box` in `tests/ui.rs` commits
+from the message box, waits until the history shows three commits, and
+then checks that the message box is empty. The message box is only
+cleared when the app handles the commit's `OpDone` event
+(`After::ClearMessage` in `on_op_done` in `src/app/mod.rs`). The file
+watcher can see the new commit and reload the history before that
+event arrives, so the check runs too early and fails. It failed once
+in a full `cargo test` while other containers kept the machine busy,
+and passed when run on its own. Waiting for the message box to empty,
+or for `ops_done` to go up, would fix it.
