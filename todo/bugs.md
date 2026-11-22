@@ -99,3 +99,39 @@ event arrives, so the check runs too early and fails. It failed once
 in a full `cargo test` while other containers kept the machine busy,
 and passed when run on its own. Waiting for the message box to empty,
 or for `ops_done` to go up, would fix it.
+
+## Continuing after a skip in a chain of fixups fails
+
+Say a rebase melds several commits into one with fixups. One of them
+in the middle conflicts, and the user skips it. A later one in the same
+chain then conflicts too, and the user resolves it and continues. Git
+refuses with "Aborting commit due to empty commit message", and the
+rebase stays stopped at the same commit. Continuing again fails the
+same way.
+
+To see it with git alone, make commits 1 to 6 that each add a file of
+their own. Commits 1, 3 and 4 also change the same line of a shared
+file. Then run `git -c commit.cleanup=strip rebase -i` on commit 0 with
+this todo list:
+
+```
+pick 6
+fixup 2
+fixup 3
+fixup 5
+fixup 4
+pick 1
+```
+
+Commit 3 conflicts. Skip it. Commit 4 conflicts. Take our side, add the
+file and continue with the same `-c` setting. Git fails as above.
+Without `commit.cleanup=strip` the rebase finishes, and the melded
+commit gets the message of commit 6.
+
+The cause is the `commit.cleanup=strip` that `REBASE` in
+`src/git/rebase.rs` passes to every `git rebase`. To commit the
+resolved fixup, git uses the message it has built for the chain. After
+the skip, every line of that message is a comment, and stripping them
+leaves nothing. It doesn't matter whether the comment character is `#`
+or the `\x01` that tergi uses. `tests/rebase_stop_props.rs` found this,
+and `proptest-regressions/rebase_stop_props.txt` has the case.
