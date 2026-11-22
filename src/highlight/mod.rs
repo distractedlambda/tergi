@@ -205,6 +205,32 @@ impl Language {
         }
     }
 
+    /// The language of a script from its `#!` line, such as
+    /// `#!/usr/bin/env python3`. Only Python is recognized.
+    pub fn for_shebang(line: &str) -> Option<Language> {
+        fn base(path: &str) -> &str {
+            path.rsplit('/').next().unwrap_or(path)
+        }
+        let mut words = line.strip_prefix("#!")?.split_whitespace();
+        let mut program = base(words.next()?);
+        // `env` finds the program on the PATH. Skip its options, such as
+        // `-S`, and the variables it sets.
+        if program == "env" {
+            program = base(words.find(|w| !w.starts_with('-') && !w.contains('='))?);
+        }
+        // Names such as `python3.12`, `pypy3` and the free-threaded
+        // `python3.13t`.
+        let version = program
+            .strip_prefix("python")
+            .or_else(|| program.strip_prefix("pypy"))
+            .map(|v| v.strip_suffix('t').unwrap_or(v));
+        let python = version.is_some_and(|v| v.bytes().all(|b| b.is_ascii_digit() || b == b'.'));
+        // `uv run --script` runs a Python script with the packages it
+        // lists at the top.
+        let uv = program == "uv" && words.next() == Some("run") && words.any(|w| w == "--script");
+        (python || uv).then_some(Language::Python)
+    }
+
     pub fn lex(self, text: &str) -> Tokens {
         let mut out = Tokens::default();
         match self {
@@ -285,11 +311,43 @@ async fn worker(
         if !files.is_current(job.key.generation) {
             continue;
         }
-        let Some(lang) = Language::for_path(&job.path) else {
+        let Some(lang) = language(&job) else {
             continue;
         };
         let done = done.clone();
         crate::util::blocking(move || done(job.key, highlight_job(lang, &job))).await;
+    }
+}
+
+/// The language of a job's file, from its name, or else from a `#!`
+/// line at the top of either side.
+fn language(job: &Job) -> Option<Language> {
+    Language::for_path(&job.path).or_else(|| {
+        [
+            first_line(job, job.new.as_deref(), |l| l.new_no),
+            first_line(job, job.old.as_deref(), |l| l.old_no),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(Language::for_shebang)
+    })
+}
+
+/// The first line of one side of a job's file. Without the full text of
+/// the side, we only have it if a hunk shows it.
+fn first_line<'a>(
+    job: &'a Job,
+    text: Option<&'a str>,
+    no: fn(&DiffLine) -> Option<u32>,
+) -> Option<&'a str> {
+    match text {
+        Some(t) => t.lines().next(),
+        None => job
+            .hunks
+            .iter()
+            .flat_map(|h| &h.lines)
+            .find(|l| no(l) == Some(1))
+            .map(|l| l.text.as_str()),
     }
 }
 
@@ -694,6 +752,68 @@ mod tests {
         assert_eq!(Language::for_path("a.lock"), None);
         assert_eq!(Language::for_path("a.b/c"), None);
         assert_eq!(Language::for_path("rs"), None);
+    }
+
+    #[test]
+    fn finds_python_by_shebang() {
+        for line in [
+            "#!/usr/bin/python",
+            "#!/usr/bin/python3",
+            "#!/usr/local/bin/python3.12",
+            "#! /usr/bin/env python",
+            "#!/usr/bin/env python3\r",
+            "#!/usr/bin/env -S python3 -u",
+            "#!/usr/bin/env -S PYTHONPATH=lib python3",
+            "#!/usr/bin/env pypy3",
+            "#!/usr/bin/python3.13t",
+            "#!python",
+            "#!/usr/bin/env -S uv run --script",
+            "#!/usr/bin/env -S uv run --quiet --script",
+        ] {
+            assert_eq!(
+                Language::for_shebang(line),
+                Some(Language::Python),
+                "{line}"
+            );
+        }
+        for line in [
+            "#!/bin/sh",
+            "#!/usr/bin/env bash",
+            "#!/usr/bin/env node",
+            "#!/usr/bin/python-config",
+            "#!/usr/bin/env -S uv run",
+            "#!/usr/bin/env",
+            "#!",
+            "# /usr/bin/python",
+            " #!/usr/bin/python",
+            "python",
+        ] {
+            assert_eq!(Language::for_shebang(line), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn finds_scripts_by_first_line() {
+        let script = "#!/usr/bin/env python3\nprint(1)\n";
+        let edited = "#!/usr/bin/env python3\nprint(2)\n";
+        let lang = |path, old: &str, new: &str, full: bool| {
+            let hunks = diff_texts(old.as_bytes(), new.as_bytes(), 3);
+            language(&job(path, &hunks, full.then_some(old), full.then_some(new)))
+        };
+        for full in [true, false] {
+            assert_eq!(lang("bin/x", script, edited, full), Some(Language::Python));
+            // Only one side has to be a Python script.
+            assert_eq!(lang("bin/x", "", script, full), Some(Language::Python));
+            assert_eq!(lang("bin/x", script, "", full), Some(Language::Python));
+            assert_eq!(lang("bin/x", "x\n", "y\n", full), None);
+            // The name comes first.
+            assert_eq!(lang("x.sh", script, edited, full), Some(Language::Shell));
+        }
+        // Without the full text, a hunk has to show the first line.
+        let long = format!("{script}{}", "x\n".repeat(10));
+        let changed = format!("{long}y\n");
+        assert_eq!(lang("bin/x", &long, &changed, true), Some(Language::Python));
+        assert_eq!(lang("bin/x", &long, &changed, false), None);
     }
 
     #[test]

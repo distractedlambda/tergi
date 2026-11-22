@@ -778,7 +778,13 @@ path wouldn't work for every name. `git cat-file` reads one name per
 line, and a path like `1:x` names a stage of the index.
 
 The language is chosen by the file's extension, in
-`Language::for_path`. Files in other languages aren't highlighted.
+`Language::for_path`. A file whose name doesn't give a language can
+still be a Python script. `Language::for_shebang` looks for a `#!`
+line that runs Python, such as `#!/usr/bin/env python3` or
+`#!/usr/bin/env -S uv run --script`. We check the first line of both
+sides of the diff. Without the full text of a side, we only see its
+first line if a hunk shows it. Files in other languages aren't
+highlighted.
 
 ### JavaScript
 
@@ -954,8 +960,9 @@ punctuation color.
 ### Python
 
 `python.rs` follows CPython's tokenizer, `Parser/lexer/lexer.c`. Files
-ending in `.py`, `.pyi` and `.pyw` are Python, and so are Markdown code
-blocks marked `py`, `python` or `python3`.
+ending in `.py`, `.pyi` and `.pyw` are Python, and so are scripts that
+start with a `#!` line that runs Python, and Markdown code blocks marked
+`py`, `python` or `python3`.
 
 Comments start with `#`. Strings can have a prefix such as `r`, `b` or
 `rb`. Escapes such as `\n`, `\x7f` and `\N{DASH}` get the escape
