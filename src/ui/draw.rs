@@ -15,7 +15,7 @@ use crate::app::cmd::{ActionDef, Cmd, Context, Overlay, SideKey, SideRow};
 use crate::app::doc::{Row, Section, Source};
 use crate::app::input::{Target, palette_filter};
 use crate::app::planner::PlanAction;
-use crate::app::{App, Drag, Focus, HISTORY_ROW_HEIGHT, Level, Splitter};
+use crate::app::{App, DETAIL_GRACE, Drag, Focus, HISTORY_ROW_HEIGHT, Level, Splitter};
 use crate::git::diff::{DiffLine, FileStatus, LineKind};
 use crate::git::graph::DOWN;
 use crate::git::log::CommitInfo;
@@ -33,6 +33,7 @@ const SPINNER: [char; 8] = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '�
 pub fn draw(app: &mut App, f: &mut Frame) {
     let area = f.area();
     app.size = (area.width, area.height);
+    app.update_detail_wait();
     layout(app, area);
 
     let mut hits: Hits = Vec::new();
@@ -123,6 +124,9 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         );
     }
     let buf = f.buffer_mut();
+    if app.planner.is_none() {
+        keep_detail_picture(app, buf);
+    }
     if let Some(pos) = draw_overlays(app, buf, area, &mut hits) {
         cursor = Some(pos);
     }
@@ -210,6 +214,75 @@ fn layout(app: &mut App, area: Rect) {
             p.scroll = sel + 1 - usize::from(h.max(1));
         }
     }
+}
+
+/// While the detail pane waits for its new contents, keep showing what it
+/// showed before. When the new contents load within `DETAIL_GRACE`, the
+/// pane goes straight from the old to the new, with no "Loading…" for a
+/// frame or two in between. After that, the old contents fade, which says
+/// that they are out of date.
+///
+/// This only changes what is on screen. The pane's rows and hits already
+/// belong to the new contents, so clicks and keys can't act on the old
+/// ones.
+fn keep_detail_picture(app: &mut App, buf: &mut Buffer) {
+    let d = app.areas.detail;
+    if d.is_empty() {
+        return;
+    }
+    if !app.detail_waiting() {
+        let pic = app.detail_picture.get_or_insert_with(|| Buffer::empty(d));
+        if pic.area != d {
+            pic.resize(d);
+        }
+        for p in d.positions() {
+            if let (Some(from), Some(to)) = (buf.cell(p), pic.cell_mut(p)) {
+                to.clone_from(from);
+            }
+        }
+        return;
+    }
+    let waited = app.detail_wait.is_none_or(|t| t.elapsed() >= DETAIL_GRACE);
+    let bg = app.theme.bg;
+    match &app.detail_picture {
+        Some(pic) if pic.area == d => {
+            for p in d.positions() {
+                if let (Some(from), Some(to)) = (pic.cell(p), buf.cell_mut(p)) {
+                    to.clone_from(from);
+                    if waited {
+                        let cell_bg = mix(to.bg, bg, 50);
+                        to.fg = mix(to.fg, cell_bg, 60);
+                        to.bg = cell_bg;
+                    }
+                }
+            }
+        }
+        // There is no picture yet, or the pane has moved or changed size
+        // since it was taken. The pane then stays empty until the grace
+        // period is over, and shows that it is loading after that.
+        _ if !waited => {
+            for p in d.positions() {
+                if let Some(c) = buf.cell_mut(p) {
+                    c.reset();
+                    c.bg = bg;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Mix `pct` percent of `b` into `a`. Colors that aren't RGB stay as they
+/// are, but the themes only use RGB.
+fn mix(a: Color, b: Color, pct: u16) -> Color {
+    let (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) = (a, b) else {
+        return a;
+    };
+    let ch = |x: u8, y: u8| {
+        let v = (u16::from(x) * (100 - pct) + u16::from(y) * pct + 50) / 100;
+        u8::try_from(v).unwrap_or(u8::MAX)
+    };
+    Color::Rgb(ch(r1, r2), ch(g1, g2), ch(b1, b2))
 }
 
 fn fill(buf: &mut Buffer, r: Rect, bg: Color) {

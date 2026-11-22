@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use gix::ObjectId;
 use gix::bstr::{BStr, BString, ByteSlice as _};
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -171,6 +172,11 @@ pub struct Busy {
 /// Each entry in the history takes this many rows on screen. The first
 /// row has the summary and the second has the author and the date.
 pub const HISTORY_ROW_HEIGHT: u16 = 2;
+
+/// How long the detail pane keeps showing its old contents unchanged while
+/// new ones load. Most commits load faster than this, and then the pane
+/// goes straight from one to the other. After this, the old contents fade.
+pub const DETAIL_GRACE: Duration = Duration::from_millis(150);
 
 #[derive(Default)]
 pub struct History {
@@ -385,6 +391,12 @@ pub struct App {
 
     pub areas: Areas,
     pub hits: Vec<(Rect, input::Target)>,
+    /// When the detail pane started waiting for its contents to load, if
+    /// it is waiting.
+    pub detail_wait: Option<Instant>,
+    /// The detail pane as it was last drawn with its contents loaded.
+    /// Drawing shows it again while the pane waits.
+    pub detail_picture: Option<Buffer>,
     pub mouse: (u16, u16),
     /// Whether the input event being handled came from the mouse. Menus
     /// that the keyboard opens go in the middle of the screen instead of
@@ -531,6 +543,8 @@ impl App {
             animating: Arc::new(AtomicBool::new(false)),
             areas: Areas::default(),
             hits: Vec::new(),
+            detail_wait: None,
+            detail_picture: None,
             mouse: (0, 0),
             by_mouse: false,
             drag: None,
@@ -852,6 +866,31 @@ impl App {
             && !self.workdir_load.running
             && !self.history.loading
             && !self.detail.loading
+    }
+
+    /// Whether the detail pane is waiting for what it should show.
+    pub fn detail_waiting(&self) -> bool {
+        match self.detail.source {
+            doc::Source::None => false,
+            doc::Source::Workdir => self.workdir.is_none(),
+            _ => self.detail.loading && self.detail.commit.is_none(),
+        }
+    }
+
+    /// Note when the detail pane starts or stops waiting. Drawing calls
+    /// this. When the wait starts, a tick is sent once `DETAIL_GRACE` has
+    /// passed, so the screen changes then even if nothing else happens.
+    pub fn update_detail_wait(&mut self) {
+        if !self.detail_waiting() {
+            self.detail_wait = None;
+        } else if self.detail_wait.is_none() {
+            self.detail_wait = Some(Instant::now());
+            let tx = self.tx.clone();
+            self.spawn(async move {
+                tokio::time::sleep(DETAIL_GRACE).await;
+                let _ = tx.send(AppEvent::Tick);
+            });
+        }
     }
 
     fn update_animating(&self) {

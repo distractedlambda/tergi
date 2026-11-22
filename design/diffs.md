@@ -107,6 +107,26 @@ Each request has a number. When a result comes back, the app checks the
 number and the source against what the pane shows now, and drops the
 result if either differs.
 
+### Waiting for a commit
+
+Most commits load in a few milliseconds. If the pane showed "Loading…"
+as soon as the selection moved, it would flash that for a frame or two
+on almost every move. So drawing keeps showing what the pane showed
+before, until the new commit arrives or `DETAIL_GRACE` (150 ms) passes.
+After that, the old contents stay but fade, which says they are out of
+date. The working directory is the same at startup, before its first
+load.
+
+This only happens on screen. `keep_detail_picture` in `ui/draw.rs`
+copies the pane's cells after each frame where the pane isn't waiting,
+and draws them back over the pane while it waits. The rows and hits
+already belong to the new commit, so clicks and keys can't act on the
+old one. `App::update_detail_wait` notes when the wait started, and it
+sends a tick when the grace period ends, so the fade shows up on time
+even if nothing else happens. If the pane has moved or changed size
+since the copy was made, the copy is no use. The pane then stays empty
+during the grace period and shows "Loading…" after it.
+
 ## Working directory diffs come from git
 
 The staged and unstaged diffs come from `git diff`, and `parse_unified`
@@ -1292,6 +1312,10 @@ leave that column blank.
   lines. They also check that the cursor and the line selection stay on
   their rows when the pane is rebuilt, when the view changes, and when
   files change, go away or appear.
+- `tests/ui.rs` has
+  `the_detail_pane_keeps_its_old_contents_while_a_commit_loads`, which
+  checks that the old contents stay during the grace period and fade
+  after it.
 - `tests/ui.rs` has `folds_do_not_carry_over_to_other_commits`,
   `folds_are_saved_for_each_commit_and_section` and
   `a_large_commit_remembers_the_files_unfolded_in_it`. `src/state.rs`

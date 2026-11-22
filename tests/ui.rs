@@ -19,7 +19,7 @@ use tergi::app::cmd::{Cmd, Context, Overlay, SideRow, Unit};
 use tergi::app::doc::{Row, Section, Source};
 use tergi::app::input::{SCROLL_LOCK, Target};
 use tergi::app::planner::PlanAction;
-use tergi::app::{After, AppEvent, Focus, HISTORY_ROW_HEIGHT};
+use tergi::app::{After, AppEvent, DETAIL_GRACE, Focus, HISTORY_ROW_HEIGHT};
 use tergi::highlight::Kind;
 use tergi::ui::draw::draw;
 use tergi::util::fs_path;
@@ -635,6 +635,50 @@ fn leaving_a_commit_while_it_loads_stops_loading() {
     assert!(ui.app.detail.loading);
     ui.app.select_history(0);
     ui.wait("the app to go idle", |u| u.app.idle());
+}
+
+#[test]
+fn the_detail_pane_keeps_its_old_contents_while_a_commit_loads() {
+    let s = repo_with_change();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    ui.select_commit(1);
+    let before = ui.term.backend().buffer().clone();
+    let d = ui.app.areas.detail;
+    let cells = |ui: &Ui| {
+        let buf = ui.term.backend().buffer();
+        d.positions().map(|p| buf[p].clone()).collect::<Vec<_>>()
+    };
+    let old: Vec<_> = d.positions().map(|p| before[p].clone()).collect();
+
+    // Events are only handled in `wait`, so the other commit can't load
+    // before these frames are drawn.
+    ui.app.select_history(2);
+    ui.draw();
+    assert!(ui.app.detail.loading);
+    assert_eq!(cells(&ui), old, "the pane changed during the grace period");
+
+    ui.app.detail_wait = Instant::now().checked_sub(DETAIL_GRACE);
+    ui.draw();
+    let faded = cells(&ui);
+    assert!(
+        faded
+            .iter()
+            .zip(&old)
+            .all(|(a, b)| a.symbol() == b.symbol())
+    );
+    assert!(
+        faded
+            .iter()
+            .zip(&old)
+            .any(|(a, b)| a.symbol().trim() != "" && a.fg != b.fg),
+        "the old contents didn't fade"
+    );
+
+    ui.wait("the other commit to load", |u| {
+        u.app.detail.commit.is_some()
+    });
+    assert_ne!(cells(&ui), old);
 }
 
 #[test]
