@@ -1,0 +1,6 @@
+#!/bin/sh
+# Compares tergi's tokens with LLVM's lexer. lexcheck.cpp does the work.
+#
+# Usage: compare <work>
+
+exec lexcheck "$1"

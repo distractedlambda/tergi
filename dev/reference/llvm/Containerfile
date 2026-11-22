@@ -1,0 +1,48 @@
+# An image that runs LLVM's own lexer for LLVM IR, LLLexer, from LLVM
+# 23.1.6. It builds lexcheck.cpp, which compares it with tergi's lexer.
+#
+# Debian has no LLVM 23, so the libraries come from apt.llvm.org. That
+# repository only keeps the newest 23.x release. To pin the lexer itself,
+# we build LLLexer.cpp from the 23.1.6 sources into lexcheck, and use the
+# library only for the rest of LLVM. The attribute keywords come from
+# Attributes.inc in the installed headers, which doesn't change within a
+# release series.
+
+FROM docker.io/library/debian:trixie-slim
+
+ARG LLVM_KEY_SHA256=8b2a587ffd672c4687e7581dad4b2f6c1bb2ad6b480cd9771ba2ff48e0b8c75d
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg xz-utils g++ \
+    && curl -fsSL -o /tmp/llvm.key https://apt.llvm.org/llvm-snapshot.gpg.key \
+    && echo "$LLVM_KEY_SHA256  /tmp/llvm.key" | sha256sum -c \
+    && gpg --dearmor -o /usr/share/keyrings/llvm.gpg /tmp/llvm.key \
+    && rm /tmp/llvm.key \
+    && echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/trixie/ llvm-toolchain-trixie-23 main" \
+        > /etc/apt/sources.list.d/llvm.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends llvm-23-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+ARG LLVM_TAG=llvmorg-23.1.6
+RUN base=https://raw.githubusercontent.com/llvm/llvm-project/$LLVM_TAG/llvm \
+    && curl -fsSLO $base/lib/AsmParser/LLLexer.cpp \
+    && curl -fsSLO $base/include/llvm/AsmParser/LLLexer.h \
+    && curl -fsSLO $base/include/llvm/AsmParser/LLToken.h \
+    && printf '%s\n' \
+        '32c91438e5623b75b50eda7c829917b9786670ce555b57229069e09482b275bc  LLLexer.cpp' \
+        '468844ab49e973472aced99fc9f2567db32b64d4a96c46e89dc9b96049c4e02e  LLLexer.h' \
+        'c37dbd6c062abed318adff04fbc4a57de96002056ee4b58da3262a6555e5de4d  LLToken.h' \
+        | sha256sum -c
+
+# lexcheck reads the lexer's position and error state, which are private.
+# Both it and LLLexer.cpp are built against a copy of the header that
+# makes them public, so that they agree on the class.
+COPY lexcheck.cpp .
+RUN mkdir -p inc/llvm/AsmParser \
+    && sed 's/^  class LLLexer {/  class LLLexer { public:/; s/^  private:/  public:/' \
+        LLLexer.h > inc/llvm/AsmParser/LLLexer.h \
+    && cp LLToken.h inc/llvm/AsmParser/ \
+    && g++ -O2 -Iinc $(llvm-config-23 --cxxflags | sed 's/-fno-exceptions//') \
+        lexcheck.cpp LLLexer.cpp -o /usr/local/bin/lexcheck \
+        $(llvm-config-23 --ldflags) -lLLVM-23
