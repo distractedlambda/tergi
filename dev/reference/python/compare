@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""Checks tergi's Python lexer against Python's tokenizer and parser.
+
+For each file, it checks that every character that isn't a space gets the
+same category from both: a comment, a string, a number, a name or an
+operator. It checks that each name is a token of its own in tergi, and
+that keywords and constants get their colors. For the soft keywords
+match, case, type and lazy, the parser decides whether each one is a
+keyword.
+
+Usage: compare <work> [how many problems of each kind to show]
+"""
+
+import ast
+import collections
+import io
+import keyword
+import pathlib
+import sys
+import tokenize as T
+import warnings
+
+# Python warns about invalid escapes and such in the files it parses.
+warnings.simplefilter("ignore")
+
+# These tests of CPython's tokenizer start with something that isn't
+# valid Python. The first starts with a byte order mark that isn't at the
+# start of the file once it's decoded, and the second uses € as a name.
+# The tokenizer reads both as names, while tergi leaves them plain.
+EXPECTED = {
+    "Lib/test/tokenizedata/bad_coding2.py",
+    "Lib/test/tokenizedata/badsyntax_3131.py",
+}
+
+STARTS = {T.FSTRING_START, T.TSTRING_START}
+ENDS = {T.FSTRING_END, T.TSTRING_END}
+CATEGORY = {T.COMMENT: "c", T.STRING: "s", T.NUMBER: "n", T.NAME: "w", T.OP: "o"}
+CONSTANTS = {"NotImplemented", "Ellipsis", "__debug__"}
+SOFT = ("match", "case", "type", "lazy")
+
+work = pathlib.Path(sys.argv[1])
+files = (work / "files.txt").read_text().splitlines()
+corpus = str(work / "corpus") + "/"
+LIMIT = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+
+stats = collections.Counter()
+shown = collections.Counter()
+unexpected = 0
+
+
+def report(kind, path, msg):
+    stats["bad:" + kind] += 1
+    if shown[kind] < LIMIT:
+        shown[kind] += 1
+        print(f"[{kind}] {path.removeprefix(corpus)}: {msg}")
+
+
+def is_expected(path):
+    return any(path.endswith("/" + e) for e in EXPECTED)
+
+
+for n, path in enumerate(files):
+    try:
+        raw = open(path, "rb").read()
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        stats["skip:decode"] += 1
+        continue
+    try:
+        toks = list(T.generate_tokens(io.StringIO(text).readline))
+    except Exception:
+        stats["skip:tokenize"] += 1
+        continue
+    lines = text.split("\n")
+    starts = [0]
+    for l in lines:
+        starts.append(starts[-1] + len(l) + 1)
+
+    def pos(rc):
+        return starts[rc[0] - 1] + rc[1]
+
+    # What Python says about each character. The text of an f-string or
+    # t-string is all string, apart from the tokens in its fields, which
+    # the second loop fills in.
+    expect = [None] * len(text)
+    stack = []
+    for t in toks:
+        if t.type in STARTS:
+            stack.append(pos(t.start))
+        elif t.type in ENDS:
+            s = stack.pop()
+            for i in range(s, pos(t.end)):
+                expect[i] = "s"
+    names = []
+    for t in toks:
+        cat = CATEGORY.get(t.type)
+        if t.type in STARTS or t.type in ENDS:
+            cat = "s"
+        if cat is None:
+            continue
+        a, b = pos(t.start), pos(t.end)
+        for i in range(a, b):
+            expect[i] = cat
+        if t.type == T.NAME:
+            names.append((a, b, t.string))
+
+    # tergi's offsets are in bytes, and Python's in characters.
+    b2c = {}
+    c = 0
+    bi = 0
+    for ch in text:
+        b2c[bi] = c
+        bi += len(ch.encode("utf-8"))
+        c += 1
+    b2c[bi] = c
+
+    # What tergi says about each character, in the same categories.
+    got = ["-"] * len(text)
+    mine = {}
+    for line in (work / "tokens" / f"{n}.tok").read_text().splitlines():
+        s, e, k = line.split()
+        s, e = b2c[int(s)], b2c[int(e)]
+        mine[(s, e)] = k
+        tt = text[s:e]
+        for i in range(s, e):
+            ch = text[i]
+            if k == "Comment":
+                g = "c"
+            elif k in ("String", "Escape"):
+                g = "s"
+            elif k == "Number":
+                g = "n"
+            elif k in ("Identifier", "Keyword"):
+                g = "w"
+            elif k == "Constant":
+                g = "o" if tt == "..." else "w"
+            # A decorator such as @foo.bar is one attribute token.
+            elif k == "Attribute":
+                g = "w" if (ch.isalnum() or ch == "_" or ord(ch) > 127) else "o"
+            # A conversion such as !r in an f-string is one operator token,
+            # but Python reads the r as a name.
+            elif k == "Operator" and ch.isalnum():
+                g = "w"
+            else:
+                g = "o"
+            got[i] = g
+    stats["files"] += 1
+    bad = False
+    for i, ch in enumerate(text):
+        if ch.isspace() and expect[i] in (None, "s"):
+            continue
+        # A backslash that joins two lines is no token for Python.
+        if ch == "\\" and text[i + 1 : i + 2] in ("\n", "\r") and got[i] == "-":
+            continue
+        e = expect[i] or "-"
+        if e != got[i]:
+            l = text.count("\n", 0, i)
+            col = i - starts[l]
+            report("byte", path, f"line {l+1} col {col}: expected {e} got {got[i]}: {lines[l]!r}")
+            bad = True
+            break
+
+    # Where the parser found a soft keyword used as one.
+    soft = set()
+    try:
+        tree = ast.parse(raw)
+    except Exception:
+        tree = None
+        stats["skip:ast"] += 1
+
+    def cpos(lineno, col):
+        # The parser's columns count UTF-8 bytes.
+        l = lines[lineno - 1]
+        return starts[lineno - 1] + len(l.encode("utf-8")[:col].decode("utf-8"))
+
+    if tree is not None:
+        case_positions = [a for a, b, s in names if s == "case"]
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Match):
+                soft.add(cpos(node.lineno, node.col_offset))
+                # A case clause has no position of its own, so we take the
+                # last case before its pattern.
+                for mc in node.cases:
+                    p = cpos(mc.pattern.lineno, mc.pattern.col_offset)
+                    soft.add(max(a for a in case_positions if a < p))
+            elif isinstance(node, ast.TypeAlias):
+                soft.add(cpos(node.lineno, node.col_offset))
+            elif isinstance(node, (ast.Import, ast.ImportFrom)) and getattr(node, "is_lazy", False):
+                soft.add(cpos(node.lineno, node.col_offset))
+
+    special = [(s0, e0) for (s0, e0), kk in mine.items() if kk in ("Attribute", "Operator")]
+    name_set = {(a, b) for a, b, _ in names}
+    for a, b, s in names:
+        k = mine.get((a, b))
+        if s in keyword.kwlist:
+            want = "Constant" if s in ("True", "False", "None") else "Keyword"
+            ok = k == want
+        elif tree is not None and s in SOFT:
+            want = "Keyword" if a in soft else "Identifier"
+            # A name such as case in @case.skip is part of the decorator.
+            ok = k == want or (want == "Identifier" and any(s0 <= a and b <= e0 for s0, e0 in special))
+            stats[f"soft:{s}:{want}"] += 1
+        elif s in SOFT:
+            continue
+        elif s in CONSTANTS:
+            want = "Constant"
+            ok = k in ("Constant", "Identifier")
+        else:
+            want = "Identifier"
+            # The names in a decorator, and conversions, are inside a
+            # longer token.
+            ok = k == "Identifier" or any(s0 <= a and b <= e0 for s0, e0 in special)
+        if not ok:
+            l = text.count("\n", 0, a)
+            report("name:" + s if s in SOFT else "name", path,
+                   f"line {l+1}: {s!r} want {want} got {k}: {lines[l]!r}")
+            bad = True
+    for (s0, e0), k in mine.items():
+        if k == "Identifier" and (s0, e0) not in name_set:
+            report("extra-ident", path, f"{text[s0:e0]!r} at {s0}")
+            bad = True
+            break
+    if bad:
+        if is_expected(path):
+            stats["expected"] += 1
+        else:
+            stats["badfiles"] += 1
+            unexpected += 1
+
+for k, v in sorted(stats.items()):
+    print(k, v)
+sys.exit(1 if unexpected else 0)
