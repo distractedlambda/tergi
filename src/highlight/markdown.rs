@@ -63,6 +63,7 @@ fn for_info(info: &str) -> Option<Language> {
         "scribble" => Some(Language::Scribble),
         "rhombus" => Some(Language::Rhombus),
         "markdown" => Some(Language::Markdown),
+        "shell" => Some(Language::Shell),
         // Otherwise, a file extension such as `rs` or `toml`.
         _ => Language::for_path(&format!("a.{word}")),
     }

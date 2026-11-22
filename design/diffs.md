@@ -342,8 +342,9 @@ Each language has its own lexer, written with Logos and kept in
 `src/highlight/`, one file per language: `c.rs` for C and C++,
 `cmake.rs` for CMake, `javascript.rs` for JavaScript, `json.rs` for
 JSON, `python.rs` for Python, `rust.rs` for Rust, `racket.rs` for
-Racket and Scribble, `shrubbery.rs` for Rhombus, `toml.rs` for TOML,
-`yaml.rs` for YAML, `zig.rs` for Zig, `llvm.rs` for LLVM IR,
+Racket and Scribble, `shrubbery.rs` for Rhombus, `sh.rs` for shell
+scripts, `toml.rs` for TOML, `yaml.rs` for YAML, `zig.rs` for Zig,
+`llvm.rs` for LLVM IR,
 `markdown.rs` for Markdown, and `gitignore.rs` for `.gitignore` files.
 A lexer turns text into `Tokens`: byte ranges, each with a `Kind` such as `Comment`,
 `Keyword` or `Escape`. Plain text has no token. An identifier that gets
@@ -1013,6 +1014,90 @@ is `0x1f` and `or`. Brackets, `,`, `;`, `:` and `.` get the punctuation
 color. Other symbols, such as `->`, `:=` and `**=`, get the operator
 color.
 
+### Shell scripts
+
+`sh.rs` follows the parser of bash 5.3, mostly `read_token`,
+`read_token_word` and `parse_matched_pair` in `parse.y`. Files ending
+in `.sh` and `.bash` are shell scripts, and so are bash's startup files
+such as `.bashrc` and `.profile`, and the `PKGBUILD` and `APKBUILD`
+files of Arch Linux and Alpine. So are Markdown code blocks marked
+`sh`, `bash` or `shell`. Scripts for POSIX sh, dash and ksh mostly use
+a part of bash's syntax, so they get the same colors.
+
+Whether a word is a reserved word, such as `if` or `done`, depends on
+the tokens before it. So `echo if` has no keyword, and `case x in`
+has two. Bash decides from the last two tokens and a few flags, such
+as whether it's reading the patterns of a `case`, in
+`special_case_tokens` and `CHECK_FOR_RESERVED_WORD`. `State` keeps the
+same tokens and flags. A word with a quote, a backslash or a `$` in
+it is never a reserved word. `{`, `}` and `!` are reserved words too,
+but they get the punctuation and operator colors.
+
+The name of a command, such as `grep` or `./configure`, is an
+identifier when it's a plain word, like a function call in other
+languages. Its arguments are plain. A parameter's name is an
+identifier, with the `$` before it as punctuation. So are the names
+in assignments such as `x=1` and `a[i]+=2`, the variable of a `for`
+loop, and names in arithmetic. So `x` gets the same color in `x=1`,
+`$x`, `${x:-y}` and `$((x + 1))`. Bash reads assignments before the
+name of a command, and as arguments of builtins such as `local` and
+`export`. The arguments of `local`, `export`, `declare`, `readonly`
+and `typeset` that are names are identifiers too.
+
+Quoted strings get the string color. In double quotes, a backslash
+before `$`, `` ` ``, `"`, `\` or a line break is an escape, and other
+backslashes are plain string. Outside of quotes, a backslash and the
+character after it are an escape. In `$'...'`, escapes such as `\n`,
+`\x41` and `\cA` get the escape color, as `ansicstr` in
+`lib/sh/strtrans.c` reads them. Expansions inside double quotes keep
+their colors. `$(...)`, backquotes and `<(...)` hold commands, which
+are lexed like the rest of the file. Numbers only get a color in
+arithmetic, and in redirections such as `2>&1`. Redirections and the
+operators between commands, such as `|` and `&&`, get the operator
+color, and `;`, `;;` and parentheses get the punctuation color.
+
+The delimiter of a here-document and the line that ends its body get
+the attribute color. The body gets the string color. If no part of
+the delimiter is quoted, the body's expansions keep their colors, and
+`\$`, `` \` `` and `\\` are escapes.
+
+In `[[ ... ]]`, words such as `-f`, `==` and `=~` get the operator
+color where `cond_term` expects an operator. So in `[[ -f == ]]`, the
+`==` is the operand of `-f`. A regular expression after `=~` can hold
+`(` and `|`.
+
+Bash has some surprises that the lexer copies:
+
+- `((` starts an arithmetic command, unless the `)` that matches the
+  second `(` has no `)` right after it. Then it's a subshell inside a
+  subshell. We only look for that `)` on the same line, and read
+  `((` as arithmetic when it isn't there.
+- Where a command starts, brackets after a name belong to the word
+  even when no `=` follows, so `a[1 2]` is one word. The brackets can
+  go on to later lines. We only color a subscript that ends on its
+  line.
+- The first `}` ends `${...}` unless it's quoted or in another
+  expansion, so `${x:-{a}}` is `${x:-{a}` followed by a `}`. Inside
+  `${...}`, `$'...'` is read even in double quotes.
+- In `$((...))` and `$[...]`, bash only nests quotes and `$(...)`, so a
+  `)` inside a `${...}` can end the expression. We read the `${` and
+  `}` there as tokens of their own. In an extended pattern such as
+  `@(a|b)`, and in the parentheses of a regular expression, only
+  quotes nest.
+- A here-document that is still open when its `$(...)` ends starts on
+  the line after the `)`, before the here-documents outside. Inside
+  `$(...)`, a line that starts with the delimiter and has a `)` later
+  on it ends the body, as in `EOF)`. Bash keeps that for old scripts.
+- Extended patterns such as `@(a|b)` are part of a word. Bash only
+  reads them with the `extglob` option, and without it they're an
+  error, so we always read them. The exception is `!(` where a command
+  starts, which without `extglob` is a `!` before a subshell.
+
+The colors of a line never depend on the lines after it. The lexer
+only looks ahead on the current line, for `((` and for subscripts.
+Expansions and quotes can nest, and each level takes some stack, so
+beyond 64 levels the lexer reads them as plain text.
+
 ### Rainbow identifiers
 
 With `rainbow_identifiers` on, which is the default, each `Identifier`
@@ -1023,8 +1108,8 @@ uses the hash to pick one of the 16 colors in `Theme::identifiers`.
 The lexers only mark identifiers that get no other color, so keywords,
 and words such as `AND` in a CMake `if`, keep their usual colors.
 
-The C, C++, CMake, JavaScript, Python, Rust, Zig, LLVM IR, Racket,
-Scribble and Rhombus lexers mark identifiers. The TOML, YAML and JSON
+The C, C++, CMake, JavaScript, Python, Rust, shell, Zig, LLVM IR,
+Racket, Scribble and Rhombus lexers mark identifiers. The TOML, YAML and JSON
 lexers mark the names in keys, so each key in a config file has the
 same color everywhere it appears. Markdown and gitignore have nothing
 that is really a name, so their lexers don't mark anything.
@@ -1200,6 +1285,11 @@ leave that column blank.
   variables defined, the colors say whether CMake gives an error, and
   what it prints if it doesn't. They agreed on all of them, on 25,000
   random texts and 15,000 arguments when we wrote the lexer.
+- `src/highlight/sh.rs` has examples for each kind of shell token,
+  such as reserved words in and out of place, quotes and escapes,
+  parameter expansions, command substitutions, arithmetic,
+  here-documents, assignments, redirections, `case` patterns and
+  conditional commands.
 - `src/highlight/javascript.rs` has examples for each kind of
   JavaScript token, and a list of places where a `/` divides or starts
   a regular expression. `dev/reference/javascript` parses the 6,513
@@ -1274,9 +1364,10 @@ leave that column blank.
   folds of a repository that moves to another folder are lost, as its
   hidden branches are.
 - A merge commit is diffed against its first parent only.
-- Only C, C++, CMake, JavaScript, JSON, Python, Rust, Zig, LLVM IR,
-  Racket, Rhombus, Scribble, TOML, YAML, Markdown and `.gitignore`
-  files are highlighted. That leaves out JSX and TypeScript.
+- Only C, C++, CMake, JavaScript, JSON, Python, Rust, shell scripts,
+  Zig, LLVM IR, Racket, Rhombus, Scribble, TOML, YAML, Markdown and
+  `.gitignore` files are highlighted. That leaves out JSX, TypeScript
+  and zsh.
 - The JavaScript lexer can guess wrong about a `/`. In a statement
   such as `a ? b : {} / 2`, it reads the `{}` as a block and the `/`
   as the start of a regular expression.
@@ -1322,6 +1413,19 @@ leave that column blank.
 - A `match` or `case` with a bracket right after it, as in `match(a,`,
   is a name unless its line ends with `:`. So when the `:` is on a
   later line, the lexer reads the statement as a call.
+- A hunk from the middle of a shell here-document, or of a quoted
+  string over several lines, that we don't have the full text for
+  reads the text as commands.
+- Bash expands aliases while it reads, and an alias can change how
+  the rest of a line reads. The shell lexer doesn't know them.
+- Bash removes a line continuation before it reads words, so a word
+  can go on on the next line. The shell lexer ends a plain word at a
+  continuation, as in `then\`, so that its color doesn't depend on the
+  next line. When that line starts with something other than a blank,
+  bash reads one longer word.
+- A shell script that turns on `extglob` can run a command whose name
+  is a pattern such as `!(a)`. The lexer reads `!` and a subshell
+  there.
 - A hunk from the middle of a Python triple-quoted string that we
   don't have the full text for reads the string as code, and its
   closing quotes start a string. In the same way, a hunk from the

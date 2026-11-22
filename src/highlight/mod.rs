@@ -21,6 +21,7 @@ mod markdown;
 mod python;
 mod racket;
 mod rust;
+mod sh;
 mod shrubbery;
 mod toml;
 mod yaml;
@@ -132,6 +133,7 @@ pub enum Language {
     Rhombus,
     Rust,
     Scribble,
+    Shell,
     Toml,
     Yaml,
     Zig,
@@ -156,6 +158,21 @@ impl Language {
         if matches!(name, "composer.lock" | "flake.lock" | "Pipfile.lock") {
             return Some(Language::Json);
         }
+        // Startup files of bash and other shells, and Arch Linux and
+        // Alpine package builds, which are bash scripts.
+        if matches!(
+            name,
+            ".bashrc"
+                | ".bash_profile"
+                | ".bash_login"
+                | ".bash_logout"
+                | ".bash_aliases"
+                | ".profile"
+                | "PKGBUILD"
+                | "APKBUILD"
+        ) {
+            return Some(Language::Shell);
+        }
         match name.rsplit_once('.')?.1 {
             "c" => Some(Language::C),
             "cmake" => Some(Language::Cmake),
@@ -179,6 +196,7 @@ impl Language {
             "rhm" => Some(Language::Rhombus),
             "rs" => Some(Language::Rust),
             "scrbl" => Some(Language::Scribble),
+            "sh" | "bash" => Some(Language::Shell),
             "toml" => Some(Language::Toml),
             "yaml" | "yml" => Some(Language::Yaml),
             // `.zon` files, such as `build.zig.zon`, hold Zig values.
@@ -202,6 +220,7 @@ impl Language {
                 racket::lex(text, self, &mut out);
             }
             Language::Rust => rust::lex(text, &mut out),
+            Language::Shell => sh::lex(text, &mut out),
             Language::Toml => toml::lex(text, &mut out),
             Language::Yaml => yaml::lex(text, &mut out),
             Language::Zig => zig::lex(text, &mut out),
@@ -409,6 +428,7 @@ mod tests {
         "a.rhm",
         "a.rs",
         "a.scrbl",
+        "a.sh",
         "a.toml",
         "a.yaml",
         "a.zig",
@@ -521,6 +541,45 @@ mod tests {
             "1j",
             "\\",
         ]);
+        // Pieces of shell scripts, such as here-documents, expansions and
+        // the words that only mean something in some places.
+        pieces.extend([
+            "<<EOF",
+            "<<-'E'",
+            "EOF",
+            "\tE",
+            "$(",
+            "${x:-",
+            "$((",
+            "((",
+            "))",
+            "$'",
+            "$\"",
+            "`",
+            "case x in",
+            "a)",
+            ";;",
+            "esac",
+            "[[",
+            "]]",
+            "=~",
+            "for i in",
+            "do",
+            "done",
+            "if",
+            "then",
+            "fi",
+            "a=",
+            "a[1]=",
+            "=(",
+            "2>&1",
+            "<(",
+            "@(",
+            "{",
+            "}",
+            "${ ",
+            "\\",
+        ]);
         // Pieces of gitignore patterns.
         pieces.extend(["!", "**/", "?", "[!a-]", "[[:alpha:]]", "\\#"]);
         // Lines that choose how the rest of a Racket file is read.
@@ -628,6 +687,10 @@ mod tests {
         assert_eq!(Language::for_path("test/a.ll"), Some(Language::LlvmIr));
         assert_eq!(Language::for_path("a/b.py"), Some(Language::Python));
         assert_eq!(Language::for_path("a.pyi"), Some(Language::Python));
+        assert_eq!(Language::for_path("x/a.sh"), Some(Language::Shell));
+        assert_eq!(Language::for_path("a.bash"), Some(Language::Shell));
+        assert_eq!(Language::for_path("~/.bashrc"), Some(Language::Shell));
+        assert_eq!(Language::for_path("x/PKGBUILD"), Some(Language::Shell));
         assert_eq!(Language::for_path("a.lock"), None);
         assert_eq!(Language::for_path("a.b/c"), None);
         assert_eq!(Language::for_path("rs"), None);
@@ -754,7 +817,7 @@ mod tests {
 mod reference {
     use super::Language;
 
-    const LANGUAGES: [Language; 16] = [
+    const LANGUAGES: [Language; 17] = [
         Language::C,
         Language::Cmake,
         Language::Cpp,
@@ -768,6 +831,7 @@ mod reference {
         Language::Rhombus,
         Language::Rust,
         Language::Scribble,
+        Language::Shell,
         Language::Toml,
         Language::Yaml,
         Language::Zig,
