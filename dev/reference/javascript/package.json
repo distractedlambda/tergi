@@ -1,0 +1,19 @@
+{
+  "name": "tergi-reference-javascript",
+  "private": true,
+  "description": "acorn, and the npm packages whose files we lex",
+  "dependencies": {
+    "@babel/parser": "8.1.3",
+    "acorn": "8.19.0",
+    "d3": "7.9.2",
+    "express": "5.3.0",
+    "jquery": "4.1.0",
+    "lodash": "4.18.1",
+    "moment": "2.31.0",
+    "prettier": "3.10.1",
+    "react-dom": "19.3.1",
+    "rxjs": "7.8.2",
+    "three": "0.187.0",
+    "webpack": "5.113.0"
+  }
+}

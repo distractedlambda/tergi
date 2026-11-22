@@ -1,0 +1,8 @@
+# Node 24.22.2 with acorn 8.19.0, which src/highlight/javascript.rs is
+# checked against. The same npm install also gives us the packages whose
+# files we lex. package-lock.json pins every package, and npm ci checks
+# each one against the hash recorded there.
+FROM docker.io/library/node:24.22.2-trixie-slim
+WORKDIR /opt/reference
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund

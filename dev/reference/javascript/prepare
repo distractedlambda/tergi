@@ -1,0 +1,42 @@
+#!/usr/bin/env node
+// Lists the JavaScript files that the lexer is checked on. Usage: prepare <work>
+//
+// They are the files in the npm packages that the image installed from
+// package-lock.json, such as lodash, three, d3, webpack and prettier. The
+// dev image can't see inside this image, so we copy them to the work
+// directory first.
+
+const fs = require("fs");
+const path = require("path");
+const { execFileSync } = require("child_process");
+
+const work = path.resolve(process.argv[2]);
+const lock = "/opt/reference/package-lock.json";
+const copied = path.join(work, "package-lock.json");
+const modules = path.join(work, "node_modules");
+
+// A copy of the lock file says which packages the work directory holds,
+// so we copy them again only when the image has different ones.
+const same = (a, b) => fs.existsSync(b) && fs.readFileSync(a).equals(fs.readFileSync(b));
+if (!same(lock, copied)) {
+  fs.rmSync(modules, { recursive: true, force: true });
+  fs.rmSync(copied, { force: true });
+  execFileSync("cp", ["-a", "/opt/reference/node_modules", modules]);
+  fs.copyFileSync(lock, copied);
+}
+
+// Files over 1 MiB are bundles, which take long and add nothing new.
+// Symbolic links, such as the ones in .bin, would only count files twice.
+const files = [];
+const walk = (dir) => {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) walk(p);
+    else if (e.isFile() && /\.[cm]?js$/.test(e.name) && fs.statSync(p).size <= 1 << 20)
+      files.push(p);
+  }
+};
+walk(modules);
+files.sort();
+fs.writeFileSync(path.join(work, "files.txt"), files.map((f) => f + "\n").join(""));
+console.log(`${files.length} files`);

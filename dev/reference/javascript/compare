@@ -1,0 +1,167 @@
+#!/usr/bin/env node
+// Checks tergi's JavaScript tokens against acorn. Usage: compare <work>
+//
+// acorn parses each file, and we note which bytes are in a comment, a
+// string, a template literal, a regular expression or a number. Each byte
+// has to fall in the same one of these in tergi's tokens. Other kinds,
+// such as keywords and operators, aren't checked, because acorn's tokens
+// don't tell them apart the way tergi colors them. Whitespace isn't
+// checked either, since it looks the same in any color.
+
+const fs = require("fs");
+const path = require("path");
+const acorn = require("/opt/reference/node_modules/acorn");
+
+// Files that acorn rejects, as module and as script. We can't check
+// these, so they don't count as disagreements. Any other file that acorn
+// rejects does, since it might mean that acorn changed or that the files
+// aren't the ones we expect.
+const KNOWN = new Set([
+  // These two have Flow type annotations, which aren't JavaScript. The
+  // packages ship them as source next to the compiled files.
+  "node_modules/@webassemblyjs/helper-numbers/src/index.js",
+  "node_modules/@webassemblyjs/ieee754/src/index.js",
+]);
+
+const work = path.resolve(process.argv[2]);
+const files = fs.readFileSync(path.join(work, "files.txt"), "utf8").split("\n").filter(Boolean);
+const EXAMPLES = 8;
+
+// How tergi's kinds map onto the groups we compare. Escapes are inside
+// strings and regular expressions, so they count as strings.
+const GROUP = { Comment: "C", String: "S", Escape: "S", Number: "N" };
+const OTHER = "O".charCodeAt(0);
+
+// The byte offset of each UTF-16 offset in src.
+function byteOffsets(src) {
+  const byte = new Int32Array(src.length + 1);
+  let b = 0;
+  for (let i = 0; i < src.length; i++) {
+    byte[i] = b;
+    const c = src.charCodeAt(i);
+    if (c < 0x80) b += 1;
+    else if (c < 0x800) b += 2;
+    else if (c >= 0xd800 && c < 0xdc00) {
+      b += 4;
+      byte[++i] = b;
+    } else b += 3;
+  }
+  byte[src.length] = b;
+  return byte;
+}
+
+// The group of each byte as acorn sees it, or the error if acorn rejects
+// the file. We try a module first, since a script can't hold import and
+// export, and then a script, since a module can't use with or old octal
+// literals.
+function reference(src, size) {
+  const byte = byteOffsets(src);
+  const groups = new Uint8Array(size).fill(OTHER);
+  const mark = (s, e, g) => groups.fill(g.charCodeAt(0), byte[s], byte[e]);
+  const options = (sourceType) => ({
+    ecmaVersion: "latest",
+    sourceType,
+    allowHashBang: true,
+    allowReturnOutsideFunction: true,
+    allowImportExportEverywhere: true,
+    allowAwaitOutsideFunction: true,
+    onComment: (block, text, s, e) => mark(s, e, "C"),
+    onToken: (t) => {
+      const l = t.type.label;
+      if (l === "string" || l === "template" || l === "`" || l === "regexp" || l === "invalidTemplate")
+        mark(t.start, t.end, "S");
+      else if (l === "num" || l === "bigint") mark(t.start, t.end, "N");
+    },
+  });
+  let error;
+  for (const sourceType of ["module", "script"]) {
+    groups.fill(OTHER);
+    try {
+      acorn.parse(src, options(sourceType));
+      return { groups };
+    } catch (e) {
+      error ??= e;
+    }
+  }
+  return { error };
+}
+
+function tergi(tok, size) {
+  const groups = new Uint8Array(size).fill(OTHER);
+  for (const line of tok.split("\n")) {
+    if (!line) continue;
+    const [s, e, kind] = line.split(" ");
+    if (GROUP[kind]) groups.fill(GROUP[kind].charCodeAt(0), +s, +e);
+  }
+  return groups;
+}
+
+const isSpace = (c) => c === 0x20 || (c >= 0x09 && c <= 0x0d);
+const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+// One line of context around a byte, with ⟦ where the difference starts.
+function context(data, at) {
+  const start = data.lastIndexOf(0x0a, at - 1) + 1;
+  let end = data.indexOf(0x0a, at);
+  if (end < 0) end = data.length;
+  const before = data.subarray(start, at).toString("utf8");
+  const after = data.subarray(at, end).toString("utf8");
+  const line = data.subarray(0, at).filter((c) => c === 0x0a).length + 1;
+  return `${line}: ${before.slice(-60)}⟦${after.slice(0, 40)}`;
+}
+
+const differences = new Map();
+let compared = 0, differing = 0, notUtf8 = 0, known = 0, rejected = 0;
+files.forEach((file, n) => {
+  const data = fs.readFileSync(file);
+  const rel = path.relative(work, file);
+  const tokFile = path.join(work, "tokens", `${n}.tok`);
+  // tergi only lexes UTF-8, and acorn would see replacement characters
+  // in place of the bad bytes, so there's nothing to compare.
+  let valid = true;
+  try {
+    utf8.decode(data);
+  } catch {
+    valid = false;
+  }
+  if (!valid) {
+    notUtf8++;
+    return;
+  }
+  const ref = reference(data.toString("utf8"), data.length);
+  if (ref.error) {
+    if (KNOWN.has(rel)) known++;
+    else {
+      rejected++;
+      console.log(`${rel}: acorn rejects it: ${ref.error.message}`);
+    }
+    return;
+  }
+  if (!fs.existsSync(tokFile)) {
+    console.log(`${rel}: tergi wrote no tokens for it`);
+    differing++;
+    return;
+  }
+  const mine = tergi(fs.readFileSync(tokFile, "utf8"), data.length);
+  compared++;
+  for (let i = 0; i < data.length; i++) {
+    if (ref.groups[i] !== mine[i] && !isSpace(data[i])) {
+      differing++;
+      const key = `acorn=${String.fromCharCode(ref.groups[i])} tergi=${String.fromCharCode(mine[i])}`;
+      if (!differences.has(key)) differences.set(key, []);
+      differences.get(key).push(`${rel}:${context(data, i)}`);
+      break;
+    }
+  }
+});
+
+console.log("C: comment, S: string, template or regular expression, N: number, O: other");
+for (const [key, list] of [...differences].sort((a, b) => b[1].length - a[1].length)) {
+  console.log(`${list.length} files where the first difference is ${key}`);
+  for (const ex of list.slice(0, EXAMPLES)) console.log(`    ${ex}`);
+}
+console.log(
+  `${files.length} files: ${compared} compared, ${differing} differ, ` +
+    `${known} known to be rejected by acorn, ${rejected} others rejected, ${notUtf8} not UTF-8`,
+);
+process.exit(differing || rejected ? 1 : 0);
