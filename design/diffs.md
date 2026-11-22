@@ -359,8 +359,16 @@ identifier, and gets a color from its name.
 
 An attribute is colored from `#[` up to the end of its path, such as
 `#[rustfmt::skip`. Finding where the attribute itself ends would take a
-parser. Escapes inside strings and characters are found with a second,
-smaller lexer.
+parser.
+
+The Rust lexer follows rustc's own lexer, `rustc_lexer`, even where
+rustc only reads something so that it can report an error. So `'ab'`
+is a character, `2b` is a number with the suffix `b`, and `"a"x` is a
+string with the suffix `x`. An emoji joins the names around it into
+one invalid name, which gets no color. Reading mistakes the way rustc
+does keeps them from changing the colors of the code after them. A
+shebang line at the top is a comment. Escapes are read the way rustc
+reads them, and one that it rejects, such as `\q`, is plain string.
 
 The Racket lexer follows Racket's reader with the default readtable. It
 was written from the reader's source in `racket/src/expander/read`
@@ -1094,8 +1102,8 @@ leave that column blank.
   gets the same color. `tests/ui.rs` has
   `identifiers_can_get_colors_by_name`.
 - `src/highlight/rust.rs` has examples for each kind of Rust token,
-  such as nested comments, raw strings, escapes, and characters next to
-  lifetimes.
+  such as nested comments, raw strings, escapes, characters next to
+  lifetimes, and characters and escapes that rustc rejects.
 - `src/highlight/zig.rs` has examples for each kind of Zig token, such
   as multiline strings, quoted identifiers, escapes, and numbers that
   only the compiler rejects. `dev/reference/zig` runs the tokenizer
@@ -1254,6 +1262,8 @@ leave that column blank.
   don't have the full text for reads the template's text as code.
 - The JavaScript lexer reads `<!--` and `-->`, which start comments
   in old scripts, as operators.
+- The frontmatter of a cargo script, which is still unstable in Rust,
+  is lexed as Rust code.
 - A hunk from the middle of a CMake `if` whose arguments go on over
   several lines doesn't know it's in an `if`, so `AND` and the other
   operators there are plain.
