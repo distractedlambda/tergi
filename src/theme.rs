@@ -28,6 +28,9 @@ pub struct Theme {
     pub sel: Color,
     pub sel_unfocused: Color,
     pub hover: Color,
+    /// Section and file headers in the detail pane under the mouse.
+    pub bar_hover: Color,
+    pub file_hover: Color,
     pub add_bg: Color,
     pub add_emph: Color,
     pub add_fg: Color,
@@ -354,6 +357,8 @@ impl Theme {
             sel: tint(p.accent, 30, 15),
             sel_unfocused: rgb(p.overlay),
             hover: rgb(mix(p.bg, p.surface, 60)),
+            bar_hover: rgb(mix(p.bar, p.fg, 5)),
+            file_hover: rgb(mix(p.surface, p.fg, 5)),
             add_bg: rgb(mix(p.bg, p.green, 15)),
             add_emph: tint(p.green, 35, 25),
             add_fg: rgb(p.green),
@@ -914,6 +919,8 @@ mod tests {
                 ("del_bg", t.del_bg),
                 ("del_emph", t.del_emph),
                 ("hover", t.hover),
+                ("bar_hover", t.bar_hover),
+                ("file_hover", t.file_hover),
                 ("button", t.button),
             ] {
                 let c = contrast(fg, hex(bg));

@@ -274,6 +274,34 @@ fn buttons_under_a_dialog_do_not_light_up() {
 }
 
 #[test]
+fn clickable_rows_in_the_detail_pane_light_up() {
+    let s = repo_with_change();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    ui.select_commit(1);
+    ui.draw();
+    let away = ui.find_hit(|t| matches!(t, Target::Button(Cmd::Help)));
+    let meta = |u: &Ui, click: bool| {
+        u.doc_row(|r| matches!(r, Row::Meta(m) if u.app.detail.meta[*m].click.is_some() == click))
+    };
+    let lights_up = |u: &mut Ui, r: Rect| {
+        let at = (r.right() - 2, r.y);
+        u.mouse(MouseEventKind::Moved, away.x, away.y);
+        let normal = u.term.backend().buffer()[at].bg;
+        u.mouse(MouseEventKind::Moved, r.x + 1, r.y);
+        u.term.backend().buffer()[at].bg != normal
+    };
+
+    let file = ui.doc_row(|r| matches!(r, Row::File { .. }));
+    assert!(lights_up(&mut ui, file), "{}", ui.screen());
+    let parent = meta(&ui, true);
+    assert!(lights_up(&mut ui, parent), "{}", ui.screen());
+    // Clicking the subject does nothing, so it stays as it was.
+    let subject = meta(&ui, false);
+    assert!(!lights_up(&mut ui, subject), "{}", ui.screen());
+}
+
+#[test]
 fn right_click_selects_without_activating() {
     let s = repo_with_change();
     let mut ui = Ui::open(&s);

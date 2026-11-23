@@ -548,11 +548,18 @@ fn row_bg(app: &App, selected: bool, focused: bool, r: Rect, base: Color) -> Col
         } else {
             app.theme.sel_unfocused
         }
-    } else if hovered(app, r) && app.drag.is_none() {
+    } else if hover_clickable(app, r) {
         app.theme.hover
     } else {
         base
     }
+}
+
+/// Whether to show that a clickable thing at `r` is under the mouse. During
+/// a drag, or while a commit message is being edited, clicks outside the
+/// editor do nothing, so nothing shows hover then.
+fn hover_clickable(app: &App, r: Rect) -> bool {
+    hovered(app, r) && app.drag.is_none() && app.edit.is_none()
 }
 
 /// Drawn in front of a branch that is hidden from the history.
@@ -1042,6 +1049,7 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
         let rr = Rect::new(a.x, y, a.width, 1);
         hits.push((rr, Target::DocRow(i)));
         let is_cursor = i == det.cursor && focused;
+        let hover = hover_clickable(app, rr);
         let in_sel = sel.is_some_and(|(lo, hi)| (lo..=hi).contains(&i));
         let cx = LineCx {
             app,
@@ -1067,9 +1075,16 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 }
             }
             Row::Meta(m) => {
-                let bg = if is_cursor { t.sel_unfocused } else { t.bg };
+                let ml = det.meta.get(*m);
+                let bg = if is_cursor {
+                    t.sel_unfocused
+                } else if hover && ml.is_some_and(|ml| ml.click.is_some()) {
+                    t.hover
+                } else {
+                    t.bg
+                };
                 fill(buf, rr, bg);
-                if let Some(ml) = det.meta.get(*m)
+                if let Some(ml) = ml
                     && buf.area.contains(Position::new(a.x + 2, y))
                 {
                     put_line(
@@ -1083,7 +1098,13 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 }
             }
             Row::Section(sec) => {
-                let bg = if is_cursor { t.sel } else { t.bar };
+                let bg = if is_cursor {
+                    t.sel
+                } else if hover {
+                    t.bar_hover
+                } else {
+                    t.bar
+                };
                 fill(buf, rr, bg);
                 let count = app.section_files(*sec).len();
                 let arrow = if det.collapsed_sections.contains(sec) {
@@ -1107,7 +1128,13 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 let Some(f) = app.section_files(*sec).get(*file) else {
                     continue;
                 };
-                let bg = if is_cursor { t.sel } else { t.file_bg };
+                let bg = if is_cursor {
+                    t.sel
+                } else if hover {
+                    t.file_hover
+                } else {
+                    t.file_bg
+                };
                 fill(buf, rr, bg);
                 let st = Style::default().bg(bg).fg(t.fg);
                 let folded = det.collapsed.contains(&(*sec, f.path().to_owned()));
@@ -1146,7 +1173,13 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 );
             }
             Row::Notice { text, .. } => {
-                let bg = if is_cursor { t.sel_unfocused } else { t.bg };
+                let bg = if is_cursor {
+                    t.sel_unfocused
+                } else if hover {
+                    t.hover
+                } else {
+                    t.bg
+                };
                 fill(buf, rr, bg);
                 put(
                     buf,
