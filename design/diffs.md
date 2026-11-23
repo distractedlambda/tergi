@@ -1328,15 +1328,25 @@ that is really a name, so their lexers don't mark anything.
 
 `Theme::build` makes the 16 colors in Oklab, where the distance
 between two colors matches how different they look much better than
-in sRGB. The hues are spread evenly around the color wheel. The
-lightness is the average of the theme's string, number, keyword, type
-and function colors, so that the colors look like they belong to the
-theme. The chroma is 80% of their average, so identifiers stand out a
-little less than other tokens, but at least 0.08. Nord's colors are so
-muted that its hues would be hard to tell apart without that floor.
-Identifiers are most of the text in code, so a color that would be
-harder to read than the text moves toward the text's lightness until
-it's about as easy to read.
+in sRGB. A name's color should be easy to tell apart from keywords,
+strings and the other syntax colors, from plain text, and from the
+colors of other names. Spreading hues evenly around the color wheel
+doesn't do that, because some of them always land on a hue the theme
+already uses.
+
+So `identifier_colors` starts from the theme's string, number,
+keyword, type and function colors. Their average lightness, and 80%
+of their average chroma, set the middle of the range it searches.
+That way the colors look like they belong to the theme but stand out
+a little less than other tokens. The chroma is at least 0.08, because
+Nord's colors are so muted that its hues would be hard to tell apart
+without that floor. Within 0.08 of that lightness and between 40% and
+100% of that chroma, it tries 72 hues. Identifiers are most of the
+text in code, so a color that would be harder to read than the text
+moves toward the text's lightness until it's about as easy to read.
+Then it picks the 16 colors one at a time. Each time it takes the
+candidate that is farthest from the syntax colors, the text color and
+the colors it has already picked.
 
 The hash is FNV-1a followed by the final mixing step of MurmurHash3.
 FNV-1a on its own leaves the low bits of the hash depending only on
@@ -1415,8 +1425,9 @@ leave that column blank.
 - Each lexer that marks identifiers has a test called
   `marks_plain_identifiers`. The other lexer tests leave identifiers
   out of the tokens they compare, which keeps them readable.
-- `src/theme.rs` checks that identifier colors differ from each other
-  and are about as easy to read as the text, and that a name always
+- `src/theme.rs` checks that identifier colors differ from each other,
+  from the other syntax colors and from the text color, that they are
+  about as easy to read as the text, and that a name always
   gets the same color. `tests/ui.rs` has
   `identifiers_can_get_colors_by_name`.
 - `src/highlight/rust.rs` has examples for each kind of Rust token,

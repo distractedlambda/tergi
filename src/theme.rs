@@ -82,8 +82,8 @@ pub struct Syntax {
     pub keyword: u32,
     pub ty: u32,
     /// The color of `entity.name.function`. No token gets it, but the
-    /// colors for identifiers take their lightness and chroma from it,
-    /// along with some of the others.
+    /// colors for identifiers take their lightness and chroma partly
+    /// from it.
     pub function: u32,
     pub attribute: u32,
     pub lifetime: u32,
@@ -92,6 +92,24 @@ pub struct Syntax {
 }
 
 impl Syntax {
+    /// The colors that tokens get.
+    fn drawn(&self) -> impl Iterator<Item = u32> + '_ {
+        [
+            self.comment,
+            self.string,
+            self.escape,
+            self.number,
+            self.constant,
+            self.keyword,
+            self.ty,
+            self.attribute,
+            self.lifetime,
+        ]
+        .into_iter()
+        .chain(self.operator)
+        .chain(self.punctuation)
+    }
+
     pub fn color(&self, kind: Kind) -> Option<Color> {
         let hex = match kind {
             Kind::Comment => self.comment,
@@ -255,12 +273,18 @@ fn from_oklab([lightness, a, b]: [f32; 3]) -> Option<u32> {
     Some(hex)
 }
 
-/// Colors for identifiers, with hues spread evenly around the color
-/// wheel. They take their lightness and some of their chroma from the
-/// theme's own syntax colors, so that they look like they belong to it.
-/// They get less chroma than those colors, so that they stand out less
-/// than keywords and strings do. But they never get so little that the
-/// hues are hard to tell apart, as they would be in Nord.
+/// Colors for identifiers. A name's color should stand out from the
+/// colors of keywords, strings and other tokens, from the text color,
+/// and from the colors of other names.
+///
+/// We start from the lightness and chroma of the theme's own syntax
+/// colors, so that the colors look like they belong to it. The chroma
+/// is at most 80% of theirs, so that identifiers stand out less than
+/// keywords and strings do. But it is at least 0.08, or the hues would
+/// be hard to tell apart in muted themes such as Nord. Around that, we
+/// try many hues, lightnesses and chromas. Then we pick colors one at a
+/// time, each time taking the one farthest from the syntax colors, the
+/// text color and the colors picked so far.
 ///
 /// Identifiers are most of the text in code. So a color that is hard to
 /// read on the background moves toward the lightness of the text until
@@ -273,30 +297,56 @@ fn identifier_colors(p: &Palette) -> [u32; IDENTIFIER_COLORS] {
     let chroma = (samples.iter().map(|c| c[1].hypot(c[2])).sum::<f32>() / n * 0.8).max(0.08);
     let text = oklab(p.fg)[0];
     let want = (contrast(p.fg, p.bg) * 0.8).min(4.5);
-    std::array::from_fn(|i| {
-        let hue = std::f32::consts::TAU * i as f32 / IDENTIFIER_COLORS as f32;
-        let mut l = lightness;
-        loop {
-            let color = in_gamut(l, chroma, hue);
-            if contrast(color, p.bg) >= want || (l - text).abs() < 0.01 {
-                return color;
-            }
-            l += (text - l).clamp(-0.01, 0.01);
+    let readable = |mut l: f32, c: f32, hue: f32| loop {
+        let color = from_oklab([l, c * hue.cos(), c * hue.sin()]);
+        if let Some(color) = color.filter(|&color| contrast(color, p.bg) >= want) {
+            return Some(color);
         }
+        if (l - text).abs() < 0.01 {
+            return None;
+        }
+        l += (text - l).clamp(-0.01, 0.01);
+    };
+
+    let mut candidates = Vec::new();
+    for step in -4..=4 {
+        for tenths in 4..=10 {
+            for i in 0..72 {
+                let l = lightness + 0.02 * step as f32;
+                let c = chroma * tenths as f32 / 10.0;
+                let hue = std::f32::consts::TAU * i as f32 / 72.0;
+                if let Some(color) = readable(l, c, hue) {
+                    candidates.push((color, oklab(color)));
+                }
+            }
+        }
+    }
+    let avoid: Vec<[f32; 3]> = s.drawn().chain([p.fg]).map(oklab).collect();
+    // How far each candidate is from the nearest color to avoid.
+    let mut room: Vec<f32> = candidates
+        .iter()
+        .map(|&(_, c)| {
+            avoid
+                .iter()
+                .map(|&a| distance(a, c))
+                .fold(f32::INFINITY, f32::min)
+        })
+        .collect();
+    std::array::from_fn(|_| {
+        let Some(best) = (0..room.len()).max_by(|&i, &j| room[i].total_cmp(&room[j])) else {
+            return p.fg;
+        };
+        let (color, picked) = candidates[best];
+        for (r, &(_, c)) in room.iter_mut().zip(&candidates) {
+            *r = r.min(distance(picked, c));
+        }
+        color
     })
 }
 
-/// The sRGB color with Oklab lightness `l` and hue `hue`, in radians, and
-/// as much of `chroma` as sRGB can show.
-fn in_gamut(l: f32, chroma: f32, hue: f32) -> u32 {
-    let mut c = chroma;
-    loop {
-        match from_oklab([l, c * hue.cos(), c * hue.sin()]) {
-            Some(hex) => return hex,
-            None if c > 0.0 => c = (c - 0.005).max(0.0),
-            None => return from_oklab([l.clamp(0.0, 1.0), 0.0, 0.0]).unwrap_or(0x808080),
-        }
-    }
+/// How different two colors in Oklab look.
+fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
 /// The WCAG contrast ratio, from 1 to 21.
@@ -948,27 +998,28 @@ mod tests {
         }
     }
 
-    /// Identifier colors differ from each other and are about as easy to
-    /// read as the text.
+    /// Identifier colors differ from each other, from the other syntax
+    /// colors and from the text color, and they are about as easy to read
+    /// as the text.
     #[test]
     fn identifier_colors_are_distinct_and_readable() {
         for (id, _) in Theme::list() {
             let Some(t) = Theme::named(id) else { continue };
             let (fg, bg) = (hex(t.fg), hex(t.bg));
             let want = (contrast(fg, bg) * 0.8).min(4.5);
-            for (i, &a) in t.identifiers.iter().enumerate() {
-                let c = contrast(hex(a), bg);
+            let others: Vec<u32> = t.syntax.drawn().chain([fg]).collect();
+            let ids: Vec<u32> = t.identifiers.iter().map(|&c| hex(c)).collect();
+            for (i, &a) in ids.iter().enumerate() {
+                let c = contrast(a, bg);
                 assert!(
                     c >= want - 0.01,
                     "{id}: identifier color {i} has contrast {c:.2}"
                 );
-                for &b in &t.identifiers[i + 1..] {
-                    let [l1, a1, b1] = oklab(hex(a));
-                    let [l2, a2, b2] = oklab(hex(b));
-                    let d = ((l1 - l2).powi(2) + (a1 - a2).powi(2) + (b1 - b2).powi(2)).sqrt();
+                for &b in ids[i + 1..].iter().chain(&others) {
+                    let d = distance(oklab(a), oklab(b));
                     assert!(
-                        d > 0.02,
-                        "{id}: identifier colors {a:?} and {b:?} look alike"
+                        d > 0.05,
+                        "{id}: identifier color {a:06x} looks like {b:06x}"
                     );
                 }
             }
