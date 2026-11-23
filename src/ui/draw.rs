@@ -15,7 +15,7 @@ use crate::app::cmd::{ActionDef, Cmd, Context, Overlay, SideKey, SideRow};
 use crate::app::doc::{Row, Section, Source};
 use crate::app::input::{Target, palette_filter};
 use crate::app::planner::PlanAction;
-use crate::app::{App, DETAIL_GRACE, Drag, Focus, HISTORY_ROW_HEIGHT, Level, Splitter};
+use crate::app::{App, DETAIL_GRACE, Drag, Focus, HISTORY_ROW_HEIGHT, Level, Splitter, side_of};
 use crate::git::diff::{DiffLine, FileStatus, LineKind};
 use crate::git::graph::DOWN;
 use crate::git::log::CommitInfo;
@@ -1050,6 +1050,14 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
         hits.push((rr, Target::DocRow(i)));
         let is_cursor = i == det.cursor && focused;
         let hover = hover_clickable(app, rr);
+        // The edges of a hunk can be dragged, and the one being dragged
+        // follows the mouse, so it stays lit.
+        let edge_hover = |sec: Section| {
+            side_of(sec).is_some()
+                && hovered(app, rr)
+                && app.edit.is_none()
+                && matches!(app.drag, None | Some(Drag::HunkEdge { .. }))
+        };
         let in_sel = sel.is_some_and(|(lo, hi)| (lo..=hi).contains(&i));
         let cx = LineCx {
             app,
@@ -1197,7 +1205,13 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
                 let Some(h) = det.header(app.section_files(*sec), *sec, *file, *hunk) else {
                     continue;
                 };
-                let bg = if is_cursor { t.sel } else { t.hunk_bg };
+                let bg = if is_cursor {
+                    t.sel
+                } else if edge_hover(*sec) {
+                    t.hunk_hover
+                } else {
+                    t.hunk_bg
+                };
                 fill(buf, rr, bg);
                 let header = h.header();
                 put(
@@ -1211,10 +1225,16 @@ fn draw_doc(app: &App, buf: &mut Buffer, hits: &mut Hits) {
             }
             // A thin bar in the color of the hunk header, which reads as the
             // bottom edge of the hunk.
-            Row::HunkEnd { .. } => {
+            Row::HunkEnd { sec, .. } => {
                 let bg = if is_cursor { t.sel_unfocused } else { t.bg };
                 fill(buf, rr, bg);
-                let fg = if is_cursor { t.sel } else { t.hunk_bg };
+                let fg = if is_cursor {
+                    t.sel
+                } else if edge_hover(*sec) {
+                    t.hunk_hover
+                } else {
+                    t.hunk_bg
+                };
                 put(
                     buf,
                     a.x,

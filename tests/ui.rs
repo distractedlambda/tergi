@@ -294,6 +294,15 @@ fn clickable_rows_in_the_detail_pane_light_up() {
 
     let file = ui.doc_row(|r| matches!(r, Row::File { .. }));
     assert!(lights_up(&mut ui, file), "{}", ui.screen());
+    // Hunk headers and bottom edges can be dragged.
+    let hunk = ui.doc_row(|r| matches!(r, Row::Hunk { .. }));
+    assert!(lights_up(&mut ui, hunk), "{}", ui.screen());
+    let end = ui.doc_row(|r| matches!(r, Row::HunkEnd { .. }));
+    let edge = |u: &Ui| u.term.backend().buffer()[(end.x + 1, end.y)].fg;
+    ui.mouse(MouseEventKind::Moved, away.x, away.y);
+    let normal = edge(&ui);
+    ui.mouse(MouseEventKind::Moved, end.x + 1, end.y);
+    assert_ne!(edge(&ui), normal, "{}", ui.screen());
     let parent = meta(&ui, true);
     assert!(lights_up(&mut ui, parent), "{}", ui.screen());
     // Clicking the subject does nothing, so it stays as it was.

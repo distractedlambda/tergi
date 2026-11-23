@@ -39,6 +39,7 @@ use crate::watch;
 
 pub use cmd::Cmd;
 use doc::Detail;
+pub use hunk_edges::side_of;
 use planner::Planner;
 
 /// Everything about the repository that background tasks need.
