@@ -109,7 +109,10 @@ Some tags point at trees or blobs rather than commits. git.git has one
 for a GPG key, for example. Git skips those tips.
 
 The format asks for each commit's id, parents, author name, email,
-date and whole message, with a NUL after each field. `-z` ends each
+date and whole message, with a NUL after each field. The name and email
+use `%aN` and `%aE`, which go through `.mailmap`, so they come out as
+`git log` shows them. Loading a commit does the same for the author and
+the committer. `-z` ends each
 commit with a NUL too. We read the dates with `--date=raw`, which gives
 seconds and a time zone. The summary is the first line of the message
 that isn't blank, without the spaces around it. That differs from git's

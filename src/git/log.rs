@@ -31,7 +31,8 @@ pub struct Batch {
 
 /// What `walk` asks git for, one field for each part of a `CommitInfo`.
 /// Git ends each field with a NUL, and `-z` ends each commit with one.
-const FORMAT: &str = "--format=%H%x00%P%x00%an%x00%ae%x00%ad%x00%B";
+/// Names and emails go through `.mailmap`, as `git log` shows them.
+const FORMAT: &str = "--format=%H%x00%P%x00%aN%x00%aE%x00%ad%x00%B";
 const FIELDS: usize = 6;
 
 /// Walk all commits reachable from `tips` in topological order, sending

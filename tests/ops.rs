@@ -9,11 +9,13 @@ use bstr::BString;
 use common::Scratch;
 use tergi::git::ObjectId;
 use tergi::git::commit;
+use tergi::git::log;
 use tergi::git::ops::{self, ApplyMode, apply_lines};
 use tergi::git::rebase::{self, RepoState};
 use tergi::git::refs::Refs;
 use tergi::git::status::Status;
 use tergi::git::workdir::Workdir;
+use tergi::util::Generation;
 
 #[tokio::test]
 async fn message_lines_starting_with_hash() {
@@ -296,6 +298,46 @@ fn a_copy_of_a_changed_file() {
     );
     // The copy is diffed against the old `a.txt`, which it equals.
     assert!(c.files[1].hunks.is_empty());
+}
+
+/// The history and the commit details show names and emails as
+/// `.mailmap` maps them, like `git log` does.
+#[test]
+fn names_go_through_the_mailmap() {
+    let s = Scratch::new();
+    s.write("a.txt", "a\n");
+    s.sh(&["add", "-A"]);
+    s.sh(&[
+        "-c",
+        "user.name=Old Name",
+        "-c",
+        "user.email=old@example.com",
+        "commit",
+        "-q",
+        "-m",
+        "init",
+    ]);
+    s.write(".mailmap", "New Name <new@example.com> <old@example.com>\n");
+    let head = s.sh(&["rev-parse", "HEAD"]);
+    let id = ObjectId::from_hex(head.trim().as_bytes()).expect("id");
+
+    let c = commit::load(&s.git, id, 3, usize::MAX).expect("load");
+    for p in [&c.author, &c.committer] {
+        assert_eq!(
+            (p.name.as_str(), p.email.as_str()),
+            ("New Name", "new@example.com")
+        );
+    }
+
+    let walks = Generation::default();
+    let generation = walks.next();
+    let mut commits = Vec::new();
+    log::walk(&s.git, &[id], generation, &walks, |b| {
+        commits.extend(b.commits);
+    })
+    .expect("walk");
+    let names: Vec<_> = commits.iter().map(|c| (&*c.author, &*c.email)).collect();
+    assert_eq!(names, [("New Name", "new@example.com")]);
 }
 
 #[tokio::test]

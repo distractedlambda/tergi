@@ -146,7 +146,7 @@ fn read_commits(git: &Git, ids: &[ObjectId]) -> Result<HashMap<ObjectId, RawComm
         "--no-show-signature",
         "--no-notes",
         "--no-color",
-        "--format=%H%x00%P%x00%an%x00%ae%x00%ad%x00%cn%x00%ce%x00%cd%x00%B",
+        "--format=%H%x00%P%x00%aN%x00%aE%x00%ad%x00%cN%x00%cE%x00%cd%x00%B",
     ]
     .map(String::from)
     .to_vec();
