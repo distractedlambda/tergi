@@ -754,10 +754,7 @@ fn check_commit(s: &Scratch) -> Result<(), TestCaseError> {
 }
 
 fn check(case: &Case) -> Result<(), TestCaseError> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
+    let rt = common::runtime();
     let s = Scratch::with(&case.settings);
     s.write("keep.txt", "keep\n");
     let layers: [fn(&Versions) -> Option<&Content>; 3] = [
@@ -784,7 +781,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
         .block_on(Workdir::load(&s.git, case.context, 100_000))
         .expect("load");
     check_workdir(&s, case, &wd)?;
-    check_staging(&rt, &s, case, &wd)?;
+    check_staging(rt, &s, case, &wd)?;
     check_commit(&s)
 }
 

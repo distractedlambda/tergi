@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 166fd916a173a3aca510a2cf9d4c1b6a8be8ccfea1005dda7343c8e9fabc0d31 # shrinks to case = Case { entries: [Entry { path: "a", old: None, new: Same, add: false }], context: 0, renames: Off, stash: false, settings: Settings([]) }
+cc a6daadb467604f0a62d458449ae3fb50a0f68e3b1a280e9ece35bbe88f6d2172 # shrinks to case = Case { entries: [Entry { path: "a", old: None, new: Same, add: false }], context: 0, renames: Off, stash: false, settings: Settings([]) }
+cc 116e8a43f88b358454fc57fc5b9da84d706a77c03f850d9fcf3de619884a02d9 # shrinks to case = Case { entries: [Entry { path: "a", old: None, new: Same, add: false }], context: 0, renames: Off, stash: false, settings: Settings([]) }
+cc 9b18f69798dac90b95448873dffca956feceba375044bcc5ad575501f0c39d8e # shrinks to case = Case { entries: [Entry { path: "a", old: None, new: Same, add: false }], context: 0, renames: Off, stash: false, settings: Settings([]) }

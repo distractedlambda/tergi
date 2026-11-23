@@ -262,8 +262,10 @@ fn an_empty_file_can_be_renamed() {
         .collect();
     assert_eq!(files, [('R', Some("a.txt".into()), Some("b.txt".into()))]);
 
-    // Turning renames off in the config still works.
+    // Turning renames off in the config still works, once the app has
+    // refreshed.
     s.sh(&["config", "diff.renames", "false"]);
+    s.git.stop_processes();
     let c = common::block_on(commit::load(&s.git, id, 3, usize::MAX)).expect("load");
     let letters: Vec<char> = c.files.iter().map(|f| f.status.letter()).collect();
     assert_eq!(letters, ['D', 'A']);
@@ -298,6 +300,107 @@ fn a_copy_of_a_changed_file() {
     );
     // The copy is diffed against the old `a.txt`, which it equals.
     assert!(c.files[1].hunks.is_empty());
+}
+
+/// `commit::load` keeps git running between loads. It still sees
+/// commits made after git started, and it sees a config change once
+/// the processes are stopped, which the app does on every refresh.
+#[tokio::test]
+async fn commit_loads_keep_git_running() {
+    let s = Scratch::new();
+    s.write("a.txt", "one\ntwo\nthree\n");
+    s.commit_all("init");
+    s.sh(&["mv", "a.txt", "b.txt"]);
+    let moved = ObjectId::from_hex(s.commit_all("move").as_bytes()).expect("id");
+    let letters = |c: &commit::CommitDetail| -> Vec<char> {
+        c.files.iter().map(|f| f.status.letter()).collect()
+    };
+    let c = commit::load(&s.git, moved, 3, usize::MAX)
+        .await
+        .expect("load");
+    assert_eq!(letters(&c), ['R']);
+
+    s.write("c.txt", "new\n");
+    let later = ObjectId::from_hex(s.commit_all("later").as_bytes()).expect("id");
+    let c = commit::load(&s.git, later, 3, usize::MAX)
+        .await
+        .expect("load");
+    assert_eq!(letters(&c), ['A']);
+    assert_eq!(c.parents, [moved]);
+
+    // The running git read the config before this change.
+    s.sh(&["config", "diff.renames", "false"]);
+    let c = commit::load(&s.git, moved, 3, usize::MAX)
+        .await
+        .expect("load");
+    assert_eq!(letters(&c), ['R']);
+    s.git.stop_processes();
+    let c = commit::load(&s.git, moved, 3, usize::MAX)
+        .await
+        .expect("load");
+    assert_eq!(letters(&c), ['D', 'A']);
+}
+
+/// In a shallow clone, the oldest commit has parents in its object that
+/// the clone doesn't have. Git treats it as a root commit, and so do we.
+#[test]
+fn a_shallow_commit_shows_as_a_root() {
+    let s = Scratch::new();
+    s.write("a.txt", "a\n");
+    s.commit_all("one");
+    s.write("b.txt", "b\n");
+    let head = s.commit_all("two");
+    let clone = tempfile::tempdir().expect("tempdir");
+    let url = format!("file://{}", s.path().display());
+    let dest = clone.path().to_str().expect("utf-8");
+    s.sh(&["clone", "-q", "--depth=1", &url, dest]);
+    let git = tergi::git::cli::Git::new(clone.path());
+    let id = ObjectId::from_hex(head.as_bytes()).expect("id");
+    let c = common::block_on(commit::load(&git, id, 3, usize::MAX)).expect("load");
+    assert!(c.parents.is_empty());
+    let files: Vec<_> = c
+        .files
+        .iter()
+        .map(|f| (f.status.letter(), f.path().to_string()))
+        .collect();
+    assert_eq!(
+        files,
+        [('A', "a.txt".to_string()), ('A', "b.txt".to_string())]
+    );
+}
+
+/// A load that is dropped halfway leaves an answer from git unread. The
+/// next load mustn't read it as its own.
+#[tokio::test]
+async fn a_dropped_commit_load_does_not_confuse_the_next() {
+    let s = Scratch::new();
+    s.write("small.txt", "a\n");
+    let small = ObjectId::from_hex(s.commit_all("small").as_bytes()).expect("id");
+    // Big enough that git takes a while to hand over the blobs.
+    for i in 0..20 {
+        s.write(
+            &format!("big{i}.txt"),
+            &format!("{i} line\n").repeat(20_000),
+        );
+    }
+    let big = ObjectId::from_hex(s.commit_all("big").as_bytes()).expect("id");
+    let summary = |c: &commit::CommitDetail| -> Vec<(String, Option<usize>)> {
+        c.files
+            .iter()
+            .zip(&c.texts)
+            .map(|(f, t)| (f.path().to_string(), t.new.as_ref().map(|t| t.len())))
+            .collect()
+    };
+    let load = |id| commit::load(&s.git, id, 3, usize::MAX);
+    let want_small = summary(&load(small).await.expect("load"));
+    let want_big = summary(&load(big).await.expect("load"));
+    for n in 0..40 {
+        let wait = std::time::Duration::from_micros(n * 200);
+        let _ = tokio::time::timeout(wait, load(big)).await;
+        assert_eq!(summary(&load(small).await.expect("load")), want_small);
+        let _ = tokio::time::timeout(wait, load(small)).await;
+        assert_eq!(summary(&load(big).await.expect("load")), want_big);
+    }
 }
 
 /// The history and the commit details show names and emails as

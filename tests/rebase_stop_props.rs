@@ -617,10 +617,7 @@ fn fail(what: &str, e: &anyhow::Error) -> TestCaseError {
 }
 
 fn check(case: &Case) -> Result<(), TestCaseError> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
+    let rt = common::runtime();
     let s = Scratch::with(&case.settings);
     let git_dir = s.path().join(".git");
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_tergi"));

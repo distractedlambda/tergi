@@ -3,15 +3,15 @@
 //! and hands over the blobs. imara-diff diffs the texts.
 
 use std::collections::HashMap;
-use std::io::BufRead as _;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use bstr::{BString, ByteSlice as _};
 use imara_diff::{Algorithm, Diff, InternedInput};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::ObjectId;
-use super::cli::{Git, RunOpts};
+use super::cli::{Git, Process, RunOpts};
 use super::diff::{DiffLine, FileDiff, FileStatus, Hunk, LineKind};
 use super::log::parse_raw_date;
 
@@ -84,37 +84,58 @@ pub async fn load_against(
     context: u32,
     line_limit: usize,
 ) -> Result<CommitDetail> {
-    let ids: Vec<ObjectId> = [Some(id), base].into_iter().flatten().collect();
-    let mut commits = read_commits(git, &ids).await?;
-    let commit = commits.remove(&id).context("commit not found")?;
+    // A request that names only the commit gives its parents as git sees
+    // them, which needn't be what the commit object says, such as in a
+    // shallow clone. A request that also names a commit to diff against
+    // gives that one as the parent instead. So a comparison asks about
+    // `id` on its own too, even though git diffs it against its parent
+    // for nothing.
+    let mut requests = vec![id.to_string()];
+    if let Some(b) = base {
+        requests.push(format!("{id} {b}"));
+        // Diffing the base against itself costs nothing, and gives us
+        // its message.
+        requests.push(format!("{b} {b}"));
+    }
+    let mut answers = diff_tree(git, &requests).await?.into_iter();
+    let mut next = || answers.next().flatten().context("commit not found");
+    let mut commit = next()?;
     let base = match base {
-        Some(b) if b == id => Some(Base {
-            id: b,
-            message: commit.message.clone(),
-        }),
         Some(b) => {
-            let c = commits.remove(&b).context("commit not found")?;
+            commit.changes = next()?.changes;
             Some(Base {
                 id: b,
-                message: c.message,
+                message: next()?.message,
             })
         }
         None => None,
     };
-    let old = match &base {
-        Some(b) => b.id,
-        None => commit.parents.first().copied().unwrap_or(id.empty_tree()),
-    };
-    let mut changes = diff_trees(git, old, id).await?;
-    // Only a stash's own diff shows its untracked files.
-    if base.is_none()
-        && let Some(untracked) = stash_untracked(git, &commit.parents).await?
+    // Git doesn't diff a merge on its own, so we ask again with the first
+    // parent.
+    if let (None, [first, rest @ ..]) = (&base, &commit.parents[..])
+        && !rest.is_empty()
     {
-        for mut c in diff_trees(git, untracked.empty_tree(), untracked).await? {
-            c.status = FileStatus::Untracked;
-            changes.push(c);
+        let mut requests = vec![format!("{id} {first}")];
+        if let [index, untracked] = rest {
+            requests.extend([index.to_string(), untracked.to_string()]);
         }
+        let mut answers = diff_tree(git, &requests).await?.into_iter();
+        let mut next = || answers.next().flatten().context("commit not found");
+        let mut changes = next()?.changes;
+        if rest.len() == 2 {
+            let (index, untracked) = (next()?, next()?);
+            if is_stash(*first, &index, &untracked) {
+                // A stash keeps its untracked files in a root commit,
+                // which git diffs against the empty tree.
+                for mut c in untracked.changes {
+                    c.status = FileStatus::Untracked;
+                    changes.push(c);
+                }
+            }
+        }
+        commit.changes = changes;
     }
+    let changes = std::mem::take(&mut commit.changes);
     let blobs = read_blobs(git, &changes).await?;
     // Diffing can take a while for big commits, so do it off the async
     // threads.
@@ -132,60 +153,209 @@ pub async fn load_against(
     })
 }
 
-/// A commit as `read_commits` gets it from git.
-struct RawCommit {
+/// A commit and its changed files, as `diff_tree` gets them from git.
+struct Answer {
     parents: Vec<ObjectId>,
     author: Person,
     committer: Person,
     message: String,
+    changes: Vec<Change>,
 }
 
-/// Read the parents, people and messages of some commits. A commit that
-/// isn't there is left out of the map.
-async fn read_commits(git: &Git, ids: &[ObjectId]) -> Result<HashMap<ObjectId, RawCommit>> {
-    const FIELDS: usize = 9;
-    let mut args: Vec<String> = [
-        "log",
-        "--no-walk=unsorted",
-        "-z",
-        "--date=raw",
-        "--no-show-signature",
-        "--no-notes",
-        "--no-color",
-        "--format=%H%x00%P%x00%aN%x00%aE%x00%ad%x00%cN%x00%cE%x00%cd%x00%B",
-    ]
-    .map(String::from)
-    .to_vec();
-    args.extend(ids.iter().map(ObjectId::to_string));
-    args.push("--".into());
-    let out = git.read(&args).await?.stdout;
-    let fields: Vec<&[u8]> = out.split(|&b| b == 0).collect();
-    let mut commits = HashMap::new();
-    // Each commit ends with a NUL, so the last piece is empty.
-    for [id, parents, an, ae, ad, cn, ce, cd, message] in fields.as_chunks::<FIELDS>().0 {
-        let person = |name: &[u8], email: &[u8], date: &[u8]| {
-            let (time, offset) = parse_raw_date(date);
-            Person {
-                name: String::from_utf8_lossy(name).trim().to_string(),
-                email: String::from_utf8_lossy(email).trim().to_string(),
-                time,
-                offset,
+/// What `diff_tree` asks git to print about each commit, as fields that
+/// each end with a NUL. The id comes first, because `read_answer` needs
+/// the first byte of an answer to be hex.
+const FORMAT: &str = "--format=%H%x00%P%x00%aN%x00%aE%x00%ad%x00%cN%x00%cE%x00%cd%x00%B%x00";
+const FIELDS: usize = 9;
+
+/// The line `diff_tree` sends after each request. Git prints lines that
+/// don't start with an object id back as they are, so this shows where
+/// an answer ends. An id is hex, so it can't start with `t`.
+const END: &[u8] = b"tergi\n";
+
+/// Ask the running `git diff-tree --stdin` about each request, starting
+/// it if needed. A request is a commit, which git diffs against its first
+/// parent, or a commit and then another commit to diff it against. The
+/// answer is `None` if the commit isn't there.
+///
+/// This uses `diff-tree` rather than `git diff`, because it keeps running
+/// and answers one request after another. It reads `diff.renameLimit`
+/// itself, but not `diff.renames`, which `start_diff_tree` reads for it.
+/// Renames and copies then come out as `git show` shows them.
+async fn diff_tree(git: &Git, requests: &[String]) -> Result<Vec<Option<Answer>>> {
+    let mut process = match git.take_process("diff-tree") {
+        Some(p) => p,
+        None => start_diff_tree(git).await?,
+    };
+    let mut input = Vec::new();
+    for r in requests {
+        input.extend_from_slice(r.as_bytes());
+        input.push(b'\n');
+        input.extend_from_slice(END);
+    }
+    let (stdin, stdout) = process.io();
+    // There are only a few short requests. They fit in the pipe, so git
+    // takes them all before we read anything.
+    if stdin.write_all(&input).await.is_err() {
+        return Err(process.error("stopped").await);
+    }
+    let mut answers = Vec::new();
+    for _ in requests {
+        match read_answer(stdout).await {
+            Ok(a) => answers.push(a),
+            Err(e) => return Err(process.error(&format!("{e:#}")).await),
+        }
+    }
+    git.put_process(process);
+    Ok(answers)
+}
+
+/// Read one answer from `git diff-tree --stdin -z`, up to the `END` line
+/// after it. The answer is the fields of `FORMAT`, then a NUL. If there
+/// are changed files, a newline and the files follow, as in
+/// `git diff --raw -z`.
+async fn read_answer(out: &mut (impl AsyncBufRead + Unpin)) -> Result<Option<Answer>> {
+    // Git prints nothing for a commit that isn't there.
+    if peek(out).await? == END[0] {
+        read_end(out).await?;
+        return Ok(None);
+    }
+    let mut fields: [Vec<u8>; FIELDS] = Default::default();
+    for f in &mut fields {
+        *f = read_field(out).await?;
+    }
+    let mut raw = Vec::new();
+    loop {
+        match peek(out).await? {
+            0 | b'\n' => out.consume(1),
+            b':' => {
+                let info = read_field(out).await?;
+                // Renames and copies have two paths.
+                let status = info.rsplit(|&b| b == b' ').next().unwrap_or_default();
+                let paths = if matches!(status.first(), Some(b'R' | b'C')) {
+                    2
+                } else {
+                    1
+                };
+                for piece in [info].into_iter().chain(read_fields(out, paths).await?) {
+                    raw.extend_from_slice(&piece);
+                    raw.push(0);
+                }
             }
-        };
-        let parents = parents
+            b if b == END[0] => {
+                read_end(out).await?;
+                break;
+            }
+            b => bail!("unexpected byte {b:#x} after a commit"),
+        }
+    }
+    let [_id, parents, an, ae, ad, cn, ce, cd, message] = &fields;
+    let person = |name: &[u8], email: &[u8], date: &[u8]| {
+        let (time, offset) = parse_raw_date(date);
+        Person {
+            name: String::from_utf8_lossy(name).trim().to_string(),
+            email: String::from_utf8_lossy(email).trim().to_string(),
+            time,
+            offset,
+        }
+    };
+    Ok(Some(Answer {
+        parents: parents
             .split(|&b| b == b' ')
             .filter(|p| !p.is_empty())
             .map(ObjectId::from_hex)
-            .collect::<Result<_>>()?;
-        let commit = RawCommit {
-            parents,
-            author: person(an, ae, ad),
-            committer: person(cn, ce, cd),
-            message: String::from_utf8_lossy(message).into_owned(),
-        };
-        commits.insert(ObjectId::from_hex(id)?, commit);
+            .collect::<Result<_>>()?,
+        author: person(an, ae, ad),
+        committer: person(cn, ce, cd),
+        message: String::from_utf8_lossy(message).into_owned(),
+        changes: parse_raw(&raw)?,
+    }))
+}
+
+async fn peek(out: &mut (impl AsyncBufRead + Unpin)) -> Result<u8> {
+    let buf = out.fill_buf().await?;
+    buf.first().copied().context("stopped")
+}
+
+/// Read up to the next NUL, and leave it out.
+async fn read_field(out: &mut (impl AsyncBufRead + Unpin)) -> Result<Vec<u8>> {
+    let mut field = Vec::new();
+    out.read_until(0, &mut field).await?;
+    if field.pop() != Some(0) {
+        bail!("stopped");
     }
-    Ok(commits)
+    Ok(field)
+}
+
+async fn read_fields(out: &mut (impl AsyncBufRead + Unpin), n: usize) -> Result<Vec<Vec<u8>>> {
+    let mut fields = Vec::with_capacity(n);
+    for _ in 0..n {
+        fields.push(read_field(out).await?);
+    }
+    Ok(fields)
+}
+
+async fn read_end(out: &mut (impl AsyncBufRead + Unpin)) -> Result<()> {
+    let mut line = Vec::new();
+    out.read_until(b'\n', &mut line).await?;
+    if line != END {
+        bail!("expected the end of an answer, got {:?}", line.as_bstr());
+    }
+    Ok(())
+}
+
+/// Start `git diff-tree --stdin` with the rename setting that `git diff`
+/// would use.
+async fn start_diff_tree(git: &Git) -> Result<Process> {
+    let generation = git.process_generation();
+    let renames = rename_flag(git).await?;
+    let args = [
+        "diff-tree",
+        "--stdin",
+        "-r",
+        "-z",
+        // A root commit is diffed against the empty tree. Without
+        // `--always`, a commit with no changes would print nothing.
+        "--root",
+        "--always",
+        "--no-abbrev",
+        "--no-ext-diff",
+        "--ignore-submodules=none",
+        // We sort the files ourselves.
+        "-O/dev/null",
+        "--date=raw",
+        renames,
+        FORMAT,
+    ];
+    git.start_process("diff-tree", &args, generation)
+}
+
+/// The option that does what the user's `diff.renames` asks for. Like
+/// `git diff`, we look for renames when it isn't set.
+async fn rename_flag(git: &Git) -> Result<&'static str> {
+    let opts = RunOpts {
+        // Git exits with 1 when the setting isn't there.
+        ok_codes: vec![1],
+        ..RunOpts::default()
+    };
+    let config = |args: &'static [&'static str]| git.read_opts(args, &opts);
+    let value = match config(&["config", "--bool", "--get", "diff.renames"]).await {
+        Ok(out) => out.text(),
+        // "copies" isn't a boolean. Git looks for it before it reads the
+        // value as one.
+        Err(e) => {
+            let out = config(&["config", "--get", "diff.renames"]).await?.text();
+            if !matches!(out.trim().to_ascii_lowercase().as_str(), "copies" | "copy") {
+                return Err(e);
+            }
+            return Ok("-C");
+        }
+    };
+    Ok(if value.trim() == "false" {
+        "--no-renames"
+    } else {
+        "-M"
+    })
 }
 
 /// One side of a changed file in `git diff --raw`.
@@ -203,35 +373,6 @@ struct Change {
     similarity: Option<u8>,
     old: Option<Side>,
     new: Option<Side>,
-}
-
-/// List the files that differ between two trees, or the trees of two
-/// commits. This uses `git diff` rather than `git diff-tree`, because it
-/// finds renames and copies as the user's `diff.renames` and
-/// `diff.renameLimit` say, the way `git show` does.
-async fn diff_trees(git: &Git, old: ObjectId, new: ObjectId) -> Result<Vec<Change>> {
-    let (old, new) = (old.to_string(), new.to_string());
-    let args = [
-        // `--no-relative` would do the same, but git before 2.28 doesn't
-        // know it. Those versions ignore the setting instead.
-        "-c",
-        "diff.relative=false",
-        "diff",
-        "--raw",
-        "-z",
-        "--no-abbrev",
-        "--no-color",
-        "--no-ext-diff",
-        "--ignore-submodules=none",
-        // We sort the files ourselves, and a `diff.orderFile` that is
-        // missing would make git fail.
-        "-O/dev/null",
-        &old,
-        &new,
-        "--",
-    ];
-    let out = git.read(&args).await?.stdout;
-    parse_raw(&out)
 }
 
 /// Read the output of `git diff --raw -z`. Each file is a line such as
@@ -287,75 +428,89 @@ fn parse_raw(out: &[u8]) -> Result<Vec<Change>> {
     Ok(changes)
 }
 
-/// The commit that holds the untracked files of a stash made with
-/// `--include-untracked`, if these are such a stash's parents.
+/// Whether a commit whose parents are `base`, `index` and `untracked` is
+/// a stash made with `--include-untracked`.
 ///
 /// Such a stash has three parents: the commit it was made on, a commit
 /// with the staged changes on top of that, and a root commit with the
 /// untracked files. Git always gives the last one a message that starts
 /// with "untracked files on ". We check all of that, so an ordinary merge
 /// with three parents isn't mistaken for a stash.
-async fn stash_untracked(git: &Git, parents: &[ObjectId]) -> Result<Option<ObjectId>> {
-    let [base, index, untracked] = parents else {
-        return Ok(None);
-    };
-    let commits = read_commits(git, &[*index, *untracked]).await?;
-    let (Some(i), Some(u)) = (commits.get(index), commits.get(untracked)) else {
-        bail!("parent not found");
-    };
-    if i.parents != [*base] || !u.parents.is_empty() {
-        return Ok(None);
-    }
-    Ok(u.message
-        .starts_with("untracked files on ")
-        .then_some(*untracked))
+fn is_stash(base: ObjectId, index: &Answer, untracked: &Answer) -> bool {
+    index.parents == [base]
+        && untracked.parents.is_empty()
+        && untracked.message.starts_with("untracked files on ")
 }
 
-/// Read the blobs of these changes with one `git cat-file --batch`.
-/// Submodules have no blobs, so they are left out.
+/// Read the blobs of these changes from the running `git cat-file
+/// --batch`, starting it if needed. Submodules have no blobs, so they are
+/// left out.
 async fn read_blobs(git: &Git, changes: &[Change]) -> Result<HashMap<ObjectId, Vec<u8>>> {
-    let mut input = String::new();
+    let mut input = Vec::new();
     let mut wanted = std::collections::HashSet::new();
     for side in changes.iter().flat_map(|c| [&c.old, &c.new]).flatten() {
         if side.mode != "160000" && wanted.insert(side.id) {
-            input.push_str(&format!("{}\n", side.id));
+            input.extend_from_slice(format!("{}\n", side.id).as_bytes());
         }
     }
     if wanted.is_empty() {
         return Ok(HashMap::new());
     }
-    let opts = RunOpts {
-        stdin: Some(input.into_bytes()),
-        ..RunOpts::default()
+    let mut process = match git.take_process("cat-file") {
+        Some(p) => p,
+        None => git.start_process(
+            "cat-file",
+            &["cat-file", "--batch"],
+            git.process_generation(),
+        )?,
     };
-    let out = git.read_opts(&["cat-file", "--batch"], &opts).await?.stdout;
-    parse_batch(&out)
+    let (stdin, stdout) = process.io();
+    // Git starts answering before it has read every id. Writing them all
+    // first could fill both pipes, and then we and git would wait for
+    // each other forever.
+    let write = stdin.write_all(&input);
+    let read = async {
+        let mut blobs = HashMap::new();
+        for _ in 0..wanted.len() {
+            let (id, data) = read_object(stdout).await?;
+            blobs.insert(id, data);
+        }
+        anyhow::Ok(blobs)
+    };
+    match tokio::join!(write, read) {
+        (Ok(()), Ok(blobs)) => {
+            git.put_process(process);
+            Ok(blobs)
+        }
+        (_, Err(e)) => Err(process.error(&format!("{e:#}")).await),
+        (Err(_), Ok(_)) => Err(process.error("stopped").await),
+    }
 }
 
-/// Read the output of `git cat-file --batch`. Each object is a line with
-/// its id, type and size, then that many bytes and a newline.
-fn parse_batch(mut out: &[u8]) -> Result<HashMap<ObjectId, Vec<u8>>> {
-    let mut blobs = HashMap::new();
-    while !out.is_empty() {
-        let mut line = Vec::new();
-        out.read_until(b'\n', &mut line)?;
-        let line = line.strip_suffix(b"\n").unwrap_or(&line);
-        let parts: Vec<&[u8]> = line.split(|&b| b == b' ').collect();
-        let [id, _kind, size] = parts[..] else {
-            bail!("git cat-file: {}", line.as_bstr());
-        };
-        let size: usize = size
-            .to_str()
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .with_context(|| format!("git cat-file: {}", line.as_bstr()))?;
-        if out.len() <= size {
-            bail!("git cat-file ended in the middle of an object");
-        }
-        blobs.insert(ObjectId::from_hex(id)?, out[..size].to_vec());
-        out = &out[size + 1..];
+/// Read one object from `git cat-file --batch`: a line with its id, type
+/// and size, then that many bytes and a newline.
+async fn read_object(out: &mut (impl AsyncBufRead + Unpin)) -> Result<(ObjectId, Vec<u8>)> {
+    let mut line = Vec::new();
+    out.read_until(b'\n', &mut line).await?;
+    if line.pop() != Some(b'\n') {
+        bail!("stopped");
     }
-    Ok(blobs)
+    let parts: Vec<&[u8]> = line.split(|&b| b == b' ').collect();
+    // A missing object gives "<id> missing" instead.
+    let [id, _kind, size] = parts[..] else {
+        bail!("{}", line.as_bstr());
+    };
+    let size: usize = size
+        .to_str()
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .with_context(|| format!("{}", line.as_bstr()))?;
+    let mut data = vec![0; size + 1];
+    out.read_exact(&mut data).await?;
+    if data.pop() != Some(b'\n') {
+        bail!("no newline after object {}", id.as_bstr());
+    }
+    Ok((ObjectId::from_hex(id)?, data))
 }
 
 /// Turn the changes into `FileDiff`s with their hunks, and keep the texts

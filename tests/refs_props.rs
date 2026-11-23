@@ -495,10 +495,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
     let ids = build(&s, case, &m);
     let commit = |k: usize| id(&ids[k]);
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
+    let rt = common::runtime();
     let refs = rt.block_on(Refs::load(&s.git)).expect("load refs");
 
     // HEAD.

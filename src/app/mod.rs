@@ -942,6 +942,10 @@ impl App {
     // ----- Refreshing -----
 
     pub fn refresh(&mut self, what: u8) {
+        // The git processes that load commits read the config, the
+        // mailmap and the replace refs when they started, and any of those
+        // may have changed since.
+        self.repo.git.stop_processes();
         if what & REFRESH_REFS != 0 && self.refs_load.request() {
             self.load_refs();
         }

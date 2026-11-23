@@ -149,8 +149,13 @@ Refreshes come from several places:
 
 ## Tests
 
+Tests that aren't async run their futures on one Tokio runtime that
+they all share, from `common::runtime`, like the app shares its own.
+Some things only work in the runtime that made them, such as the pipes
+of the git processes that load commits (see `diffs.md`).
+
 `tests/ui.rs` drives the whole app. Its `Ui` helper makes the `App`
-inside a multi-threaded Tokio runtime, so the app's tasks run on the
+inside a multi-threaded Tokio runtime of its own, so the app's tasks run on the
 runtime's threads while the test stays synchronous. `wait` handles
 queued events with `try_recv` and redraws until a condition holds, with
 a 15 second timeout. On a timeout it prints the screen.

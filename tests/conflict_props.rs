@@ -230,10 +230,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
     }
     s.commit_all("ours");
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
+    let rt = common::runtime();
     // The merge fails when it leaves conflicts, so only its effect counts.
     let _ = rt.block_on(s.git.run(&["merge", "-q", "--no-edit", "other"]));
 

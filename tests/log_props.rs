@@ -406,10 +406,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
         .map(|(i, c)| (id(i), c))
         .collect();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
+    let rt = common::runtime();
     let refs = rt.block_on(Refs::load(&s.git)).expect("load refs");
 
     // Labels go on the commit a tag points at, so tags must be peeled all

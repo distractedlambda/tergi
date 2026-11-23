@@ -97,10 +97,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
     s.write("g.txt", "base\n");
     s.commit_all("init");
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
+    let rt = common::runtime();
 
     let mut made: Vec<Made> = Vec::new();
     // The stash ids in the order `git stash list` gives them, newest first.

@@ -218,10 +218,7 @@ fn stored_message(s: &Scratch, commit: &str) -> String {
 }
 
 fn check(case: &Case) -> Result<(), TestCaseError> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
+    let rt = common::runtime();
     let s = Scratch::with(&case.settings);
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_tergi"));
     let msg_file = s.path().join(".git").join("test-message");

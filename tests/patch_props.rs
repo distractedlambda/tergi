@@ -230,10 +230,7 @@ fn join(lines: &[Line]) -> String {
 }
 
 fn check(case: &Case) -> Result<(), TestCaseError> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
+    let rt = common::runtime();
     let s = Scratch::with(&case.settings);
     // A HEAD commit, so every case has something to compare with.
     s.write("keep.txt", "keep\n");
@@ -803,10 +800,7 @@ fn run_step(
 }
 
 fn check_steps(case: &Steps) -> Result<(), TestCaseError> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
+    let rt = common::runtime();
     let s = Scratch::with(&case.settings);
     let n = case.files.len();
     for (p, v) in PATHS.iter().zip(&case.files) {
@@ -830,7 +824,7 @@ fn check_steps(case: &Steps) -> Result<(), TestCaseError> {
             .block_on(Workdir::load(&s.git, case.context, 100_000))
             .expect("load");
         check_workdir(&wd, &model)?;
-        run_step(&rt, &s, case.born, &wd, &mut model, step)?;
+        run_step(rt, &s, case.born, &wd, &mut model, step)?;
         prop_assert_eq!(&actual(&s, n), &model, "after step {}: {:?}", i, step);
     }
     Ok(())

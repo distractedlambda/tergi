@@ -96,9 +96,12 @@ diff that its hunks and lines came from.
   commands that change something, which the `@` overlay shows.
 - The history walk in `git/log.rs` reads `git log` as it comes through
   `Git::stream`, and stops git when a newer walk replaces it. Commit
-  diffs in `git/commit.rs` get the list of files from `git diff --raw`
-  and the blobs from `git cat-file --batch`, and diff the text with
-  imara-diff on a blocking thread.
+  diffs in `git/commit.rs` ask a `git diff-tree --stdin` and a
+  `git cat-file --batch` that keep running between loads, so moving
+  through the history doesn't start git for every commit. They get the
+  list of files from the first and the blobs from the second, and diff
+  the text with imara-diff on a blocking thread. `App::refresh` stops
+  those processes, so the next load sees a changed config.
 - Operations that change the repository go through `App::spawn_op`. Only
   one can run at a time. When it finishes, the app shows the result,
   applies its `After` action and refreshes everything.

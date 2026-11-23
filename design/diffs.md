@@ -33,33 +33,90 @@ staging needs those to build a patch that matches the file.
 ## Commit diffs
 
 `commit::load` diffs a commit against its first parent, or against the
-empty tree for a root commit. It runs git three times:
+empty tree for a root commit. It asks two git processes that keep
+running between loads:
 
-1. `git log --no-walk` reads the commit's parents, author, committer and
-   message, in the same way as the history walk.
-2. `git diff --raw` lists the files that changed between the two trees,
-   with their modes, blob ids, and renames and copies.
-3. `git cat-file --batch` reads every blob in the list at once.
-
-A commit with three parents needs one more `git log`, to check whether
-it is a stash with untracked files, as explained below.
+1. `git diff-tree --stdin` gets a commit id on a line, and prints the
+   commit's parents, author, committer and message, followed by the
+   files that changed, with their modes, blob ids, and renames and
+   copies.
+2. `git cat-file --batch` gets the id of every blob in the list and
+   prints the blobs.
 
 Then imara-diff diffs the texts, on a blocking thread. We don't use
 the patch that `git show` would print, because we need the full text of
 both sides anyway, for syntax highlighting, and because git's diff
 settings would change what the patch looks like. Moving through the history loads a commit for
-every row the user passes, so this has to be quick. For a small commit
-on Linux, the three commands take about 3 ms together, most of it in
-starting git. Only the newest request is loaded (see below), so a slow
-disk makes the pane lag behind, but never queues up work.
+every row the user passes, so this has to be quick. Starting git takes
+a few milliseconds, more on macOS and in repositories with many packs,
+and once took up most of the time of a small commit. With the processes
+already running, a small commit takes well under a millisecond on
+Linux. Only the newest request is loaded (see below), so a slow disk
+makes the pane lag behind, but never queues up work.
 
-We use `git diff` and not `git diff-tree`, because only `git diff`
-reads `diff.renames` and `diff.renameLimit` from the config. Renames
-and copies then come out as `git show` shows them. The other settings
-that `git diff` reads, such as `diff.relative`,
-`diff.ignoreSubmodules` and `diff.orderFile`, are turned off on the
-command line. `diff.relative` is turned off with `-c` rather than
-`--no-relative`, because git before 2.28 doesn't know that option.
+### The running git processes
+
+`Git::start_process` starts a process like these, and `Git` keeps one
+of each kind while it waits for the next request. A load takes it with
+`take_process`, or starts one if there is none, and hands it back with
+`put_process` only once it has read every answer in full. A load that
+is dropped halfway, because a newer request came in, drops its process
+too, which kills git. The next load then starts a new one. So no load
+ever reads what was left of an earlier answer. Two loads at the same
+time, such as the detail worker and "Show anyway", each get their own
+process, and only one is kept afterwards.
+
+`git cat-file --batch` starts each answer with the object's size, so we
+know where it ends. `git diff-tree` doesn't mark the end of its file
+list, and it prints nothing at all for a commit that isn't there. So
+after each request, `diff_tree` sends the line `tergi`. Git prints
+lines that don't start with an object id back as they are, and that
+line marks the end of the answer. `read_answer` reads the answer by its
+structure: the fields of the format, then file entries that each start
+with `:`. Anything else must be the end line, so a path that contains
+`tergi` can't be mistaken for it.
+
+The requests take some care:
+
+- A request with only the commit gives its parents as git sees them.
+  A request that also names a commit to diff against makes git print
+  that commit as the only parent. The commit object can list parents
+  that git ignores, such as in a shallow clone, where the oldest commit
+  is a root, so we never read the parents from the object.
+- Git doesn't diff a merge against anything unless it is asked, so the
+  first request gives a merge's parents and no files. A second request
+  asks for the diff against the first parent.
+- With `--always`, git prints a commit even when it changed nothing.
+  With `--root`, it diffs a root commit against the empty tree.
+
+Git reads the config once, when it starts. It also reads the mailmap
+and the replace refs only once. `App::refresh` calls `stop_processes`,
+which stops the waiting processes and makes sure the busy ones aren't
+kept. The next load starts new ones. Every change in the repository
+or the working tree leads to a refresh, and so does the terminal
+getting focus, which covers the user's global config. Moving through
+the history doesn't refresh, so that's when the processes get reused.
+Objects that appear while git runs aren't a problem. When git can't
+find an object, it looks for new packs.
+
+A process's pipes belong to the Tokio runtime that started it. The app
+has only one runtime. Tests that aren't async share one too, from
+`common::runtime`, so a `Git` never moves between runtimes.
+
+Each process collects its stderr in the background, because git can
+write to it at any time, such as a warning about the rename limit, and
+would block once the pipe is full. When an answer doesn't come as
+expected, `Process::error` kills git and puts the end of its stderr in
+the error.
+
+We use `git diff-tree` rather than `git diff`, because only it can keep
+running and answer one request after another. It reads
+`diff.renameLimit` from the config, but not `diff.renames`. So
+`start_diff_tree` reads that setting with `git config` and passes
+`-M`, `-C` or `--no-renames`, the way `git diff` would use it. Renames
+and copies then come out as `git show` shows them. `diff-tree` doesn't
+read `diff.relative`, `diff.ignoreSubmodules` or `diff.orderFile`
+either, which is what we want.
 
 `diff_texts` splits both sides into lines, runs imara-diff's histogram
 algorithm with its line post-processing, and groups the changes into
@@ -84,9 +141,11 @@ Some files aren't diffed:
 
 A stash made with `--include-untracked` keeps its untracked files in a
 third parent, a root commit with only those files. Diffing against the
-first parent would leave them out. So `stash_untracked` recognizes such
-a stash by its parents and the third parent's message, and `load` adds
-that commit's files as untracked, with status `?`.
+first parent would leave them out. So when a commit has three parents,
+the second request also asks about the second and third parents.
+`is_stash` recognizes such a stash by their parents and the third
+parent's message, and `load` adds the third parent's files as
+untracked, with status `?`.
 
 Files are sorted by path. The full text of both sides is kept in
 `FileTexts`, for syntax highlighting.
@@ -1317,8 +1376,13 @@ leave that column blank.
   checks what `commit::load` gives against `git diff-tree`. It checks
   the files, renames, modes, binary flags and texts, and that the hunks
   turn the old text into the new text.
-- `tests/ops.rs` has `a_stash_shows_its_untracked_files` and
-  `an_empty_file_can_be_renamed`.
+- `tests/ops.rs` has `a_stash_shows_its_untracked_files`,
+  `an_empty_file_can_be_renamed` and
+  `a_shallow_commit_shows_as_a_root`.
+  `commit_loads_keep_git_running` checks that the running git sees new
+  commits, and sees a config change after `stop_processes`.
+  `a_dropped_commit_load_does_not_confuse_the_next` drops loads at
+  different points and checks that the loads after them are right.
 - `tests/staging.rs` checks the texts that `Workdir::load` reads for
   staged and unstaged files.
 - `src/git/words.rs` has property tests that the words cover the whole

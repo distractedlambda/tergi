@@ -85,6 +85,13 @@ waits for us. `Stream::finish` waits for git and turns a failure into
 an error. Dropping a `Stream` before that kills git, which is how a
 walk stops when a newer one replaces it.
 
+Loading a commit asks two processes that keep running between loads,
+`git diff-tree --stdin` and `git cat-file --batch`.
+`Git::start_process` starts one, with the same settings as `read`.
+`Git` keeps one of each kind while it waits for the next request, and
+`stop_processes` stops them when the app refreshes, because git reads
+the config only when it starts. `diffs.md` explains how this works.
+
 When a command fails, the error is git's stderr, or its stdout if
 stderr is empty. That is what the error dialog shows.
 

@@ -37,6 +37,15 @@ pub struct RunOpts {
 pub struct Git {
     workdir: PathBuf,
     log: Arc<Mutex<Vec<LogEntry>>>,
+    idle: Arc<Mutex<Idle>>,
+}
+
+/// Processes that are waiting for their next request. See `Process`.
+#[derive(Default)]
+struct Idle {
+    /// Goes up by one each time `stop_processes` runs.
+    generation: u64,
+    processes: Vec<Process>,
 }
 
 pub struct Output {
@@ -52,11 +61,15 @@ impl Output {
 
 const MAX_LOG: usize = 500;
 
+/// How much of a `Process`'s stderr is kept for error messages.
+const MAX_STDERR: usize = 8 * 1024;
+
 impl Git {
     pub fn new(workdir: impl Into<PathBuf>) -> Self {
         Self {
             workdir: workdir.into(),
             log: Arc::new(Mutex::new(Vec::new())),
+            idle: Arc::new(Mutex::new(Idle::default())),
         }
     }
 
@@ -313,6 +326,100 @@ impl Git {
         Ok(Output { stdout, stderr })
     }
 
+    /// The number that `start_process` should be given. Read it before
+    /// reading any settings that the process's arguments depend on, so a
+    /// `stop_processes` in between isn't missed.
+    pub fn process_generation(&self) -> u64 {
+        self.idle.lock().map_or(0, |idle| idle.generation)
+    }
+
+    /// Start a read-only command that keeps running and answers requests
+    /// on its stdin. `name` is what `take_process` finds it by later.
+    pub fn start_process<S: AsRef<OsStr>>(
+        &self,
+        name: &'static str,
+        args: &[S],
+        generation: u64,
+    ) -> Result<Process> {
+        let mut cmd = Command::from(self.base_command());
+        cmd.env("GIT_OPTIONAL_LOCKS", "0")
+            .args(args)
+            .kill_on_drop(true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().context("could not run git")?;
+        let stdin = child.stdin.take().context("no stdin")?;
+        let stdout = child.stdout.take().context("no stdout")?;
+        let mut err = child.stderr.take().context("no stderr")?;
+        // Git can write to stderr at any time, such as a warning about the
+        // rename limit. We have to keep reading it, or git would block once
+        // the pipe is full. Only the end is kept, for error messages.
+        let stderr = Arc::new(Mutex::new(Vec::new()));
+        let kept = stderr.clone();
+        let stderr_task = tokio::spawn(async move {
+            let mut chunk = [0u8; 4096];
+            while let Ok(n @ 1..) = err.read(&mut chunk).await {
+                if let Ok(mut buf) = kept.lock() {
+                    buf.extend_from_slice(&chunk[..n]);
+                    let extra = buf.len().saturating_sub(MAX_STDERR);
+                    buf.drain(..extra);
+                }
+            }
+        });
+        Ok(Process {
+            name,
+            generation,
+            child,
+            stdin,
+            stdout: tokio::io::BufReader::new(stdout),
+            stderr,
+            stderr_task,
+        })
+    }
+
+    /// Take a waiting process that was started under `name`, if there is
+    /// one. Nobody else can use it until it is handed back with
+    /// `put_process`.
+    pub fn take_process(&self, name: &str) -> Option<Process> {
+        let mut idle = self.idle.lock().ok()?;
+        let i = idle.processes.iter().position(|p| p.name == name)?;
+        Some(idle.processes.swap_remove(i))
+    }
+
+    /// Keep a process for the next request. Only hand it back after it
+    /// has answered every request in full. Otherwise the next request
+    /// would read the rest of an old answer.
+    ///
+    /// One process of each name is kept. Another one is stopped, and so
+    /// is a process that started before the last `stop_processes`.
+    pub fn put_process(&self, process: Process) {
+        let Ok(mut idle) = self.idle.lock() else {
+            return;
+        };
+        if process.generation == idle.generation
+            && !idle.processes.iter().any(|p| p.name == process.name)
+        {
+            idle.processes.push(process);
+        }
+    }
+
+    /// Stop the waiting processes, and make sure the ones still busy
+    /// aren't kept. Git reads the config, the mailmap and the replace
+    /// refs once when it starts, so the app calls this when the
+    /// repository may have changed.
+    pub fn stop_processes(&self) {
+        let stopped = match self.idle.lock() {
+            Ok(mut idle) => {
+                idle.generation += 1;
+                std::mem::take(&mut idle.processes)
+            }
+            Err(_) => return,
+        };
+        // Dropping them kills them, which doesn't need the lock.
+        drop(stopped);
+    }
+
     fn push_log(&self, entry: LogEntry) {
         if let Ok(mut log) = self.log.lock() {
             log.push(entry);
@@ -359,6 +466,53 @@ impl Stream {
                 &stderr,
             )
             .map(drop)
+    }
+}
+
+/// A read-only git command that keeps running between requests, such as
+/// `git cat-file --batch`, from `Git::start_process`. The caller writes
+/// requests to its stdin and reads the answers from its stdout. Dropping
+/// it kills git.
+pub struct Process {
+    name: &'static str,
+    generation: u64,
+    child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    stdout: tokio::io::BufReader<tokio::process::ChildStdout>,
+    stderr: Arc<Mutex<Vec<u8>>>,
+    stderr_task: tokio::task::JoinHandle<()>,
+}
+
+impl Process {
+    /// Its stdin and stdout, which can be used at the same time.
+    pub fn io(
+        &mut self,
+    ) -> (
+        &mut tokio::process::ChildStdin,
+        &mut tokio::io::BufReader<tokio::process::ChildStdout>,
+    ) {
+        (&mut self.stdin, &mut self.stdout)
+    }
+
+    /// Stop git after an answer that didn't come as expected, and make an
+    /// error with what it wrote to stderr.
+    pub async fn error(mut self, what: &str) -> anyhow::Error {
+        // Once git is gone, its stderr ends, and the task has read all of
+        // it. A program that git started, such as the `git fetch` for a
+        // missing object in a partial clone, keeps stderr open until it
+        // finishes too.
+        let _ = self.child.kill().await;
+        let _ = (&mut self.stderr_task).await;
+        let stderr = self
+            .stderr
+            .lock()
+            .map(|buf| String::from_utf8_lossy(&buf).trim().to_string())
+            .unwrap_or_default();
+        if stderr.is_empty() {
+            anyhow::anyhow!("git {}: {what}", self.name)
+        } else {
+            anyhow::anyhow!("git {}: {what}:\n{stderr}", self.name)
+        }
     }
 }
 
