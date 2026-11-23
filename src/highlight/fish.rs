@@ -889,17 +889,17 @@ impl<'a> Lexer<'a, '_> {
             return;
         }
         // Fish removes line continuations before it expands variables, so
-        // one can come between the `$` and the name.
-        let continued = self.at(after) == Some(b'\\') && self.at(after + 1) == Some(b'\n');
-        if self.var_char_len(after) == 0 && !continued {
+        // they can come between the `$` and the name.
+        let continued = self.continuations(after);
+        if self.var_char_len(after) == 0 && continued == 0 {
             self.take(1, base);
             return;
         }
         // `$$a` is the variable that `a` names, and it can take a slice for
         // each `$`.
         self.take(n, Some(Kind::Punctuation));
-        if continued {
-            self.take(2, Some(Kind::Escape));
+        if continued > 0 {
+            self.take(continued, Some(Kind::Escape));
             if self.var_char_len(self.i) == 0 {
                 return;
             }
@@ -922,14 +922,25 @@ impl<'a> Lexer<'a, '_> {
                 self.i += n;
             }
             self.out.push(start..self.i, Kind::Identifier);
-            if self.at(self.i) != Some(b'\\') || self.at(self.i + 1) != Some(b'\n') {
+            let continued = self.continuations(self.i);
+            if continued == 0 {
                 return;
             }
-            self.take(2, Some(Kind::Escape));
+            self.take(continued, Some(Kind::Escape));
             if self.var_char_len(self.i) == 0 {
                 return;
             }
         }
+    }
+
+    /// The length of the line continuations that come one after another
+    /// at `i`.
+    fn continuations(&self, i: usize) -> usize {
+        self.b[i.min(self.b.len())..]
+            .chunks(2)
+            .take_while(|c| *c == b"\\\n")
+            .count()
+            * 2
     }
 
     /// If a slice such as `[1..-1]` comes here, read it, and say whether
@@ -1212,6 +1223,9 @@ fn redirection(b: &[u8]) -> Option<Redirection> {
     };
     let mut pipe = false;
     let mut to_fd = false;
+    // `&|` and `&>` take standard output whatever number comes before
+    // them.
+    let mut fd = fd;
     if eat(b'|') {
         if fd_len > 0 {
             return None;
@@ -1234,6 +1248,7 @@ fn redirection(b: &[u8]) -> Option<Redirection> {
             eat(b'?');
         }
     } else if eat(b'&') {
+        fd = Some(1);
         if eat(b'|') {
             pipe = true;
         } else if eat(b'>') {
@@ -1657,6 +1672,7 @@ end
             ]
         );
         assert_eq!(identifiers("a $\\\nx $y\\\nz"), ["a", "x", "y", "z"]);
+        assert_eq!(identifiers("a $y\\\n\\\nz"), ["a", "y", "z"]);
     }
 
     #[test]
@@ -1775,6 +1791,10 @@ end
         assert_eq!(identifiers("a | b && c & d"), ["a", "b", "c", "d"]);
         // A `&` before more of a word is part of it.
         assert_eq!(identifiers("echo a&b; c& d"), ["echo", "c", "d"]);
+        // Only `>|` pipes from the number before it, and fish can't pipe
+        // from standard input. `&|` always pipes standard output.
+        assert_eq!(identifiers("a 0>|b; c 0&| d"), ["a", "b", "c", "d"]);
+        assert_eq!(kinds_of("c 0&| {d}", Kind::Punctuation), ["{", "}"]);
         // Newlines can follow a pipe.
         assert_eq!(identifiers("a |\n\n b &&\n c"), ["a", "b", "c"]);
     }
