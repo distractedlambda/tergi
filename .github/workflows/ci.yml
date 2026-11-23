@@ -64,12 +64,14 @@ jobs:
       - run: cargo build --locked --profile dist --target ${{ matrix.target }}
       # Artifacts lose the executable bit, so we pack the files in tarballs.
       # The debug info goes in its own artifact because it's ten times the
-      # size of the binary.
+      # size of the binary. Cargo may leave symlinks here that point into
+      # its build directory, as it does for tergi.dSYM, so tar follows
+      # them with -h.
       - name: Pack
         working-directory: target/${{ matrix.target }}/dist
         run: |
-          tar czf "$GITHUB_WORKSPACE/tergi-${{ matrix.target }}.tar.gz" tergi
-          tar czf "$GITHUB_WORKSPACE/tergi-${{ matrix.target }}-debuginfo.tar.gz" ${{ matrix.debuginfo }}
+          tar czhf "$GITHUB_WORKSPACE/tergi-${{ matrix.target }}.tar.gz" tergi
+          tar czhf "$GITHUB_WORKSPACE/tergi-${{ matrix.target }}-debuginfo.tar.gz" ${{ matrix.debuginfo }}
       - uses: actions/upload-artifact@v7
         with:
           name: tergi-${{ matrix.target }}
