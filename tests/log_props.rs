@@ -422,13 +422,13 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
     let walks = Generation::default();
     let generation = walks.next();
     let mut batches = Vec::new();
-    log::walk(
+    rt.block_on(log::walk(
         &s.git,
         &refs.tips(&Default::default()),
         generation,
         &walks,
         |b| batches.push(b),
-    )
+    ))
     .expect("walk");
 
     let last = batches.len().checked_sub(1);

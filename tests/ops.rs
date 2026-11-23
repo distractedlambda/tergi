@@ -214,7 +214,7 @@ fn a_stash_shows_its_untracked_files() {
     s.sh(&["stash", "push", "-q", "--include-untracked"]);
     let load = |rev: &str| {
         let id = ObjectId::from_hex(s.sh(&["rev-parse", rev]).trim().as_bytes()).expect("id");
-        commit::load(&s.git, id, 3, usize::MAX).expect("load")
+        common::block_on(commit::load(&s.git, id, 3, usize::MAX)).expect("load")
     };
     let files = |c: &commit::CommitDetail| -> Vec<(char, String)> {
         c.files
@@ -254,7 +254,7 @@ fn an_empty_file_can_be_renamed() {
     s.sh(&["mv", "a.txt", "b.txt"]);
     let head = s.commit_all("move");
     let id = ObjectId::from_hex(head.as_bytes()).expect("id");
-    let c = commit::load(&s.git, id, 3, usize::MAX).expect("load");
+    let c = common::block_on(commit::load(&s.git, id, 3, usize::MAX)).expect("load");
     let files: Vec<_> = c
         .files
         .iter()
@@ -264,7 +264,7 @@ fn an_empty_file_can_be_renamed() {
 
     // Turning renames off in the config still works.
     s.sh(&["config", "diff.renames", "false"]);
-    let c = commit::load(&s.git, id, 3, usize::MAX).expect("load");
+    let c = common::block_on(commit::load(&s.git, id, 3, usize::MAX)).expect("load");
     let letters: Vec<char> = c.files.iter().map(|f| f.status.letter()).collect();
     assert_eq!(letters, ['D', 'A']);
 }
@@ -283,7 +283,7 @@ fn a_copy_of_a_changed_file() {
     let head = s.commit_all("copy");
     s.sh(&["config", "diff.renames", "copies"]);
     let id = ObjectId::from_hex(head.as_bytes()).expect("id");
-    let c = commit::load(&s.git, id, 3, usize::MAX).expect("load");
+    let c = common::block_on(commit::load(&s.git, id, 3, usize::MAX)).expect("load");
     let files: Vec<_> = c
         .files
         .iter()
@@ -321,7 +321,7 @@ fn names_go_through_the_mailmap() {
     let head = s.sh(&["rev-parse", "HEAD"]);
     let id = ObjectId::from_hex(head.trim().as_bytes()).expect("id");
 
-    let c = commit::load(&s.git, id, 3, usize::MAX).expect("load");
+    let c = common::block_on(commit::load(&s.git, id, 3, usize::MAX)).expect("load");
     for p in [&c.author, &c.committer] {
         assert_eq!(
             (p.name.as_str(), p.email.as_str()),
@@ -332,12 +332,47 @@ fn names_go_through_the_mailmap() {
     let walks = Generation::default();
     let generation = walks.next();
     let mut commits = Vec::new();
-    log::walk(&s.git, &[id], generation, &walks, |b| {
+    common::block_on(log::walk(&s.git, &[id], generation, &walks, |b| {
         commits.extend(b.commits);
-    })
+    }))
     .expect("walk");
     let names: Vec<_> = commits.iter().map(|c| (&*c.author, &*c.email)).collect();
     assert_eq!(names, [("New Name", "new@example.com")]);
+}
+
+/// A walk stops as soon as a newer one starts, even while git hasn't
+/// printed anything yet. Here git gets stuck because the file that lists
+/// other object folders is a pipe that nobody writes to.
+#[tokio::test]
+async fn a_replaced_walk_stops_while_git_is_silent() {
+    let s = Scratch::new();
+    s.write("a.txt", "a\n");
+    let head = s.commit_all("init");
+    let id = ObjectId::from_hex(head.as_bytes()).expect("id");
+    let alternates = s.path().join(".git/objects/info/alternates");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&alternates)
+        .status()
+        .expect("mkfifo");
+    assert!(made.success());
+
+    let walks = Generation::default();
+    let generation = walks.next();
+    let mut batches = 0;
+    let tips = [id];
+    let walk = log::walk(&s.git, &tips, generation, &walks, |_| batches += 1);
+    let replace = async {
+        // If git didn't get stuck, the walk finishes in this time and
+        // sends a batch.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        walks.next();
+    };
+    let both = async { tokio::join!(walk, replace) };
+    let (r, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), both)
+        .await
+        .expect("the walk didn't stop");
+    r.expect("walk");
+    assert_eq!(batches, 0);
 }
 
 #[tokio::test]

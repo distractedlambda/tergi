@@ -178,6 +178,15 @@ pub fn non_utf8_file_names() -> bool {
     })
 }
 
+/// Run a future on a runtime of its own, from a test that isn't async.
+pub fn block_on<F: Future>(f: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(f)
+}
+
 /// Give each of `parts` tests its share of the cases in `config`.
 pub fn split(mut config: ProptestConfig, parts: u32) -> ProptestConfig {
     config.cases = config.cases.div_ceil(parts);

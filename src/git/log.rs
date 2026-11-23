@@ -1,8 +1,7 @@
-//! Walking the history with `git log`, in batches, on a background thread.
-
-use std::io::BufRead as _;
+//! Walking the history with `git log`, in batches, in a background task.
 
 use anyhow::{Context, Result, bail};
+use tokio::io::AsyncBufReadExt as _;
 
 use super::ObjectId;
 use super::cli::Git;
@@ -36,16 +35,33 @@ const FORMAT: &str = "--format=%H%x00%P%x00%aN%x00%aE%x00%ad%x00%B";
 const FIELDS: usize = 6;
 
 /// Walk all commits reachable from `tips` in topological order, sending
-/// them to `sink` in batches. The walk stops early when `generation` is no
-/// longer current in `walks`, which means a newer walk has replaced this one.
-///
-/// This blocks, so run it on a blocking thread.
-pub fn walk(
+/// them to `sink` in batches. The walk stops as soon as `generation` is no
+/// longer current in `walks`, which means a newer walk has replaced this
+/// one.
+pub async fn walk(
     git: &Git,
     tips: &[ObjectId],
     generation: u64,
     walks: &Generation,
     mut sink: impl FnMut(Batch),
+) -> Result<()> {
+    // Without a commit-graph file, git reads the whole history before it
+    // prints the first commit. So we wait for a newer walk at the same
+    // time as for git, and not only check between commits. Dropping the
+    // read kills git.
+    tokio::select! {
+        biased;
+        () = walks.replaced(generation) => Ok(()),
+        r = read(git, tips, generation, walks, &mut sink) => r,
+    }
+}
+
+async fn read(
+    git: &Git,
+    tips: &[ObjectId],
+    generation: u64,
+    walks: &Generation,
+    sink: &mut impl FnMut(Batch),
 ) -> Result<()> {
     let mut graph = GraphBuilder::new();
     let mut commits = Vec::new();
@@ -69,7 +85,7 @@ pub fn walk(
             "--no-color",
             FORMAT,
         ];
-        let mut git_log = git.stream_blocking(&args, input.into_bytes())?;
+        let mut git_log = git.stream(&args, input.into_bytes())?;
         let mut fields: Vec<Vec<u8>> = Vec::with_capacity(FIELDS);
         let mut field = Vec::new();
         loop {
@@ -77,6 +93,7 @@ pub fn walk(
             let n = git_log
                 .stdout()
                 .read_until(0, &mut field)
+                .await
                 .context("reading the history from git failed")?;
             if n == 0 {
                 break;
@@ -88,8 +105,10 @@ pub fn walk(
             if fields.len() < FIELDS {
                 continue;
             }
+            // The read only gives way to `replaced` while it waits for
+            // git. When git's output is already here, this check stops
+            // the walk instead.
             if !walks.is_current(generation) {
-                // Dropping `git_log` stops git.
                 return Ok(());
             }
             let commit = parse_commit(&fields)?;
@@ -109,7 +128,7 @@ pub fn walk(
         if !fields.is_empty() {
             bail!("git log ended in the middle of a commit");
         }
-        git_log.finish()?;
+        git_log.finish().await?;
     }
     sink(Batch {
         generation,

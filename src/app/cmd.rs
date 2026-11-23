@@ -2359,10 +2359,8 @@ impl App {
                 };
                 let source = self.detail.source;
                 self.spawn_read(
-                    move |r| {
-                        crate::util::blocking(move || {
-                            crate::git::commit::load_against(&r.git, id, base, ctx, usize::MAX)
-                        })
+                    move |r| async move {
+                        crate::git::commit::load_against(&r.git, id, base, ctx, usize::MAX).await
                     },
                     move |app, full| {
                         if app.detail.source != source

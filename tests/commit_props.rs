@@ -579,12 +579,19 @@ fn rev_parse(s: &Scratch, rev: &str) -> tergi::git::ObjectId {
 }
 
 fn load(s: &Scratch, case: &Case, rev: &str) -> CommitDetail {
-    commit::load(&s.git, rev_parse(s, rev), case.context, usize::MAX).expect("load")
+    common::block_on(commit::load(
+        &s.git,
+        rev_parse(s, rev),
+        case.context,
+        usize::MAX,
+    ))
+    .expect("load")
 }
 
 fn compare(s: &Scratch, case: &Case, from: &str, to: &str) -> CommitDetail {
     let (from, to) = (rev_parse(s, from), rev_parse(s, to));
-    let c = commit::compare(&s.git, from, to, case.context, usize::MAX).expect("compare");
+    let c = common::block_on(commit::compare(&s.git, from, to, case.context, usize::MAX))
+        .expect("compare");
     assert_eq!((c.id, c.base.as_ref().map(|b| b.id)), (to, Some(from)));
     c
 }

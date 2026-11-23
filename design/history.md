@@ -96,7 +96,7 @@ The same database holds the folded files of the detail pane, which
 
 ## The walk
 
-`log::walk` runs on a blocking thread through `util::blocking`. It runs
+`log::walk` runs in a background task. It runs
 `git log --topo-order --stdin` and writes the tips to its stdin, because
 a repository can have more tags than fit on a command line. It reads
 the output as git prints it. With a commit-graph file, git starts
@@ -125,16 +125,21 @@ messages in UTF-8.
 
 Commits go back to the app in `Batch`es over the event channel. The
 first batch has 200 commits, so the first screen appears quickly. Later
-batches have 5,000. The graph row for each commit is worked out on the
-same thread, as part of the walk.
+batches have 5,000. The graph row for each commit is worked out in the
+same task, as part of the walk. That takes about a microsecond for each
+commit, so it doesn't need a blocking thread.
 
 ### Replacing a walk
 
 A new walk can start while an old one is still running, for example
 after a fetch. Walks are numbered with `util::Generation`. The running
-walk holds a clone of the counter and checks it before each commit. Once
-a newer walk has started, the old one stops, and stopping kills its
-`git log`. `on_history` also drops any
+walk holds a clone of the counter. While it waits for git, it also
+waits for `Generation::replaced`, so it stops as soon as a newer walk
+starts. That matters without a commit-graph file, because git then
+prints nothing until it has read the whole history. While git's output
+is already there, the walk doesn't wait, so it also checks the counter
+before each commit. Stopping kills its `git log`. `on_history` also
+drops any
 batch whose number isn't current, in case one was already on its way.
 
 The old list stays on screen until the new walk's first batch arrives.

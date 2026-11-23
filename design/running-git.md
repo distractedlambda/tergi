@@ -78,16 +78,12 @@ Both write any input while they read the output. A large patch could
 otherwise fill git's output pipe while we are still writing, and both
 sides would wait for each other forever.
 
-The history walk and commit loading run on blocking threads, so they
-can't await. They use two more reads that block instead:
-
-- `Git::read_blocking` works like `read`. It writes the input on a
-  second thread while it reads the output.
-- `Git::stream_blocking` starts git and hands back a `Stream`, whose
-  output the caller reads as it comes. Another thread collects stderr,
-  so git never waits for us to read it. `Stream::finish` waits for git
-  and turns a failure into an error. Dropping a `Stream` before that
-  kills git, which is how a walk stops when a newer one replaces it.
+The history walk reads git's output as it comes, with `Git::stream`.
+That starts git and hands back a `Stream`, whose output the caller
+reads. Other tasks write the input and collect stderr, so git never
+waits for us. `Stream::finish` waits for git and turns a failure into
+an error. Dropping a `Stream` before that kills git, which is how a
+walk stops when a newer one replaces it.
 
 When a command fails, the error is git's stderr, or its stdout if
 stderr is empty. That is what the error dialog shows.

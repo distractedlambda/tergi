@@ -6,7 +6,6 @@ use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Run blocking work on Tokio's blocking pool. If `f` panics, the panic
@@ -26,22 +25,39 @@ pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
 /// result is only used if its number is still the current one. Clones share
 /// the counter, so a background task can hold one and stop early once a
 /// newer request replaces its own.
-#[derive(Debug, Clone, Default)]
-pub struct Generation(Arc<AtomicU64>);
+#[derive(Debug, Clone)]
+pub struct Generation(Arc<tokio::sync::watch::Sender<u64>>);
+
+impl Default for Generation {
+    fn default() -> Self {
+        Generation(Arc::new(tokio::sync::watch::Sender::new(0)))
+    }
+}
 
 impl Generation {
     /// Start a new request, which replaces all earlier ones.
     pub fn next(&self) -> u64 {
-        self.0.fetch_add(1, Ordering::Relaxed) + 1
+        let mut next = 0;
+        self.0.send_modify(|g| {
+            *g += 1;
+            next = *g;
+        });
+        next
     }
 
     /// The number of the newest request, or 0 if there hasn't been one.
     pub fn current(&self) -> u64 {
-        self.0.load(Ordering::Relaxed)
+        *self.0.borrow()
     }
 
     pub fn is_current(&self, generation: u64) -> bool {
         self.current() == generation
+    }
+
+    /// Wait until a newer request replaces `generation`.
+    pub async fn replaced(&self, generation: u64) {
+        // This can only fail once the sender is gone, and we hold it.
+        let _ = self.0.subscribe().wait_for(|&g| g != generation).await;
     }
 }
 

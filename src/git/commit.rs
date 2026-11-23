@@ -54,27 +54,30 @@ pub struct Base {
 /// Blobs bigger than this aren't diffed unless the user asks.
 pub const MAX_BLOB: usize = 4 * 1024 * 1024;
 
-// These run git and block, so call them from a blocking thread.
-
-pub fn load(git: &Git, id: ObjectId, context: u32, line_limit: usize) -> Result<CommitDetail> {
-    load_against(git, id, None, context, line_limit)
+pub async fn load(
+    git: &Git,
+    id: ObjectId,
+    context: u32,
+    line_limit: usize,
+) -> Result<CommitDetail> {
+    load_against(git, id, None, context, line_limit).await
 }
 
 /// Load `to` with its diff against `from` instead of its parent. The two
 /// commits needn't be related.
-pub fn compare(
+pub async fn compare(
     git: &Git,
     from: ObjectId,
     to: ObjectId,
     context: u32,
     line_limit: usize,
 ) -> Result<CommitDetail> {
-    load_against(git, to, Some(from), context, line_limit)
+    load_against(git, to, Some(from), context, line_limit).await
 }
 
 /// Load `id` with its diff against `base`, or against its first parent if
 /// there is no base.
-pub fn load_against(
+pub async fn load_against(
     git: &Git,
     id: ObjectId,
     base: Option<ObjectId>,
@@ -82,7 +85,7 @@ pub fn load_against(
     line_limit: usize,
 ) -> Result<CommitDetail> {
     let ids: Vec<ObjectId> = [Some(id), base].into_iter().flatten().collect();
-    let mut commits = read_commits(git, &ids)?;
+    let mut commits = read_commits(git, &ids).await?;
     let commit = commits.remove(&id).context("commit not found")?;
     let base = match base {
         Some(b) if b == id => Some(Base {
@@ -102,18 +105,21 @@ pub fn load_against(
         Some(b) => b.id,
         None => commit.parents.first().copied().unwrap_or(id.empty_tree()),
     };
-    let mut changes = diff_trees(git, old, id)?;
+    let mut changes = diff_trees(git, old, id).await?;
     // Only a stash's own diff shows its untracked files.
     if base.is_none()
-        && let Some(untracked) = stash_untracked(git, &commit.parents)?
+        && let Some(untracked) = stash_untracked(git, &commit.parents).await?
     {
-        for mut c in diff_trees(git, untracked.empty_tree(), untracked)? {
+        for mut c in diff_trees(git, untracked.empty_tree(), untracked).await? {
             c.status = FileStatus::Untracked;
             changes.push(c);
         }
     }
-    let blobs = read_blobs(git, &changes)?;
-    let (files, texts) = files_of(changes, &blobs, context, line_limit);
+    let blobs = read_blobs(git, &changes).await?;
+    // Diffing can take a while for big commits, so do it off the async
+    // threads.
+    let (files, texts) =
+        crate::util::blocking(move || files_of(changes, &blobs, context, line_limit)).await;
     Ok(CommitDetail {
         id,
         parents: commit.parents,
@@ -136,7 +142,7 @@ struct RawCommit {
 
 /// Read the parents, people and messages of some commits. A commit that
 /// isn't there is left out of the map.
-fn read_commits(git: &Git, ids: &[ObjectId]) -> Result<HashMap<ObjectId, RawCommit>> {
+async fn read_commits(git: &Git, ids: &[ObjectId]) -> Result<HashMap<ObjectId, RawCommit>> {
     const FIELDS: usize = 9;
     let mut args: Vec<String> = [
         "log",
@@ -152,7 +158,7 @@ fn read_commits(git: &Git, ids: &[ObjectId]) -> Result<HashMap<ObjectId, RawComm
     .to_vec();
     args.extend(ids.iter().map(ObjectId::to_string));
     args.push("--".into());
-    let out = git.read_blocking(&args, &RunOpts::default())?.stdout;
+    let out = git.read(&args).await?.stdout;
     let fields: Vec<&[u8]> = out.split(|&b| b == 0).collect();
     let mut commits = HashMap::new();
     // Each commit ends with a NUL, so the last piece is empty.
@@ -203,7 +209,7 @@ struct Change {
 /// commits. This uses `git diff` rather than `git diff-tree`, because it
 /// finds renames and copies as the user's `diff.renames` and
 /// `diff.renameLimit` say, the way `git show` does.
-fn diff_trees(git: &Git, old: ObjectId, new: ObjectId) -> Result<Vec<Change>> {
+async fn diff_trees(git: &Git, old: ObjectId, new: ObjectId) -> Result<Vec<Change>> {
     let (old, new) = (old.to_string(), new.to_string());
     let args = [
         // `--no-relative` would do the same, but git before 2.28 doesn't
@@ -224,7 +230,7 @@ fn diff_trees(git: &Git, old: ObjectId, new: ObjectId) -> Result<Vec<Change>> {
         &new,
         "--",
     ];
-    let out = git.read_blocking(&args, &RunOpts::default())?.stdout;
+    let out = git.read(&args).await?.stdout;
     parse_raw(&out)
 }
 
@@ -289,11 +295,11 @@ fn parse_raw(out: &[u8]) -> Result<Vec<Change>> {
 /// untracked files. Git always gives the last one a message that starts
 /// with "untracked files on ". We check all of that, so an ordinary merge
 /// with three parents isn't mistaken for a stash.
-fn stash_untracked(git: &Git, parents: &[ObjectId]) -> Result<Option<ObjectId>> {
+async fn stash_untracked(git: &Git, parents: &[ObjectId]) -> Result<Option<ObjectId>> {
     let [base, index, untracked] = parents else {
         return Ok(None);
     };
-    let commits = read_commits(git, &[*index, *untracked])?;
+    let commits = read_commits(git, &[*index, *untracked]).await?;
     let (Some(i), Some(u)) = (commits.get(index), commits.get(untracked)) else {
         bail!("parent not found");
     };
@@ -307,7 +313,7 @@ fn stash_untracked(git: &Git, parents: &[ObjectId]) -> Result<Option<ObjectId>> 
 
 /// Read the blobs of these changes with one `git cat-file --batch`.
 /// Submodules have no blobs, so they are left out.
-fn read_blobs(git: &Git, changes: &[Change]) -> Result<HashMap<ObjectId, Vec<u8>>> {
+async fn read_blobs(git: &Git, changes: &[Change]) -> Result<HashMap<ObjectId, Vec<u8>>> {
     let mut input = String::new();
     let mut wanted = std::collections::HashSet::new();
     for side in changes.iter().flat_map(|c| [&c.old, &c.new]).flatten() {
@@ -322,7 +328,7 @@ fn read_blobs(git: &Git, changes: &[Change]) -> Result<HashMap<ObjectId, Vec<u8>
         stdin: Some(input.into_bytes()),
         ..RunOpts::default()
     };
-    let out = git.read_blocking(&["cat-file", "--batch"], &opts)?.stdout;
+    let out = git.read_opts(&["cat-file", "--batch"], &opts).await?.stdout;
     parse_batch(&out)
 }
 

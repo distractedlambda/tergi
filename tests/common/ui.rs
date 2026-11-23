@@ -46,13 +46,13 @@ impl Ui {
     }
 
     fn open_with(s: &Scratch, config: Option<&Path>, store: Option<&Path>) -> Ui {
-        let mut repo = Repo::open(s.path()).expect("open repo");
-        // Git calls back into tergi during a rebase. Here the current
-        // executable is the test runner, so point it at the real one.
-        repo.exe = env!("CARGO_BIN_EXE_tergi").into();
         // The app's tasks run on the runtime's own threads, so the tests can
         // stay synchronous and poll the app with `try_recv`.
         let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let mut repo = rt.block_on(Repo::open(s.path())).expect("open repo");
+        // Git calls back into tergi during a rebase. Here the current
+        // executable is the test runner, so point it at the real one.
+        repo.exe = env!("CARGO_BIN_EXE_tergi").into();
         let app = {
             let _in_rt = rt.enter();
             let cfg = config.map(|p| Config::load(p).0).unwrap_or_default();

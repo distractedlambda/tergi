@@ -678,7 +678,7 @@ fn check_commit(s: &Scratch) -> Result<(), TestCaseError> {
     s.sh(&["commit", "-q", "--allow-empty", "-m", "next"]);
     let id = s.sh(&["rev-parse", "HEAD"]);
     let id = ObjectId::from_hex(id.trim().as_bytes()).expect("id");
-    let detail = commit::load(&s.git, id, 3, usize::MAX).expect("load");
+    let detail = common::block_on(commit::load(&s.git, id, 3, usize::MAX)).expect("load");
 
     // Renames show up as a deleted and an added file in the listing, and
     // copies as an added file.

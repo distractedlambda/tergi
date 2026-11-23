@@ -43,8 +43,8 @@ fn main() -> ExitCode {
         .context("could not start the async runtime")
         .and_then(|rt| {
             let r = rt.block_on(run(&path));
-            // Don't wait for blocking work that is still running, such as a
-            // history walk. Dropping the runtime would.
+            // Don't wait for blocking work that is still running, such as
+            // diffing a huge commit. Dropping the runtime would.
             rt.shutdown_background();
             r
         });
@@ -58,7 +58,7 @@ fn main() -> ExitCode {
 }
 
 async fn run(path: &Path) -> Result<()> {
-    let repo = Repo::open(path)?;
+    let repo = Repo::open(path).await?;
     let config_path = Config::path();
     let (cfg, config_error) = config_path.as_deref().map(Config::load).unwrap_or_default();
     terminal::install_panic_hook();

@@ -33,8 +33,7 @@ staging needs those to build a patch that matches the file.
 ## Commit diffs
 
 `commit::load` diffs a commit against its first parent, or against the
-empty tree for a root commit. It runs on a blocking thread and runs git
-three times:
+empty tree for a root commit. It runs git three times:
 
 1. `git log --no-walk` reads the commit's parents, author, committer and
    message, in the same way as the history walk.
@@ -45,10 +44,10 @@ three times:
 A commit with three parents needs one more `git log`, to check whether
 it is a stash with untracked files, as explained below.
 
-Then imara-diff diffs the texts. We don't use the patch that `git show`
-would print, because we need the full text of both sides anyway, for
-syntax highlighting, and because git's diff settings would change what
-the patch looks like. Moving through the history loads a commit for
+Then imara-diff diffs the texts, on a blocking thread. We don't use
+the patch that `git show` would print, because we need the full text of
+both sides anyway, for syntax highlighting, and because git's diff
+settings would change what the patch looks like. Moving through the history loads a commit for
 every row the user passes, so this has to be quick. For a small commit
 on Linux, the three commands take about 3 ms together, most of it in
 starting git. Only the newest request is loaded (see below), so a slow
@@ -115,8 +114,12 @@ places.
 Moving quickly through the history asks for a lot of commits, and only
 the last one matters. `request_commit` sends each request over a Tokio
 watch channel, which only keeps the newest value. `detail_worker` loads
-one commit at a time, and whatever was asked for while it worked is
-replaced by the newest request.
+one commit at a time. When a new request comes in during a load, it
+drops that load, which kills its git, and starts on the new one. The
+diffing on the blocking thread can't be stopped, so it finishes, and
+its result is thrown away. Requests only come when the selection or
+the context setting changes, so a slow commit can't be stopped over and
+over by refreshes.
 
 Each request has a number. When a result comes back, the app checks the
 number and the source against what the pane shows now, and drops the

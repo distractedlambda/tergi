@@ -61,8 +61,8 @@ everything else already queued before it draws again.
 All slow work happens in background Tokio tasks that the `App` owns in a
 `JoinSet` (`App::spawn`). Tasks send their results back as `AppEvent`s
 over an unbounded channel. If a task panics, the panic comes back out of
-`App::next` or `App::try_recv`. Blocking work, such as the history walk,
-goes through `util::blocking`.
+`App::next` or `App::try_recv`. Blocking work, such as diffing or
+parsing a large diff, goes through `util::blocking`.
 
 `App::handle` and everything it calls are plain functions, so handling
 an event never waits for git. When a handler needs to read something
@@ -76,9 +76,10 @@ keeps track of. A refresh that arrives while a load is running makes it
 run once more afterwards instead of starting a second copy. The history
 walk and syntax highlighting number their requests with
 `util::Generation` and drop results from older requests. The running
-walk holds a clone of its counter and stops early once a newer walk
-starts. Commit details go through a watch channel that only keeps the
-newest request.
+walk holds a clone of its counter and stops, killing its git, as soon
+as a newer walk starts. Commit details go through a watch channel that
+only keeps the newest request. A newer request drops the load that is
+running.
 
 The history selection is a commit id (`Selected`), not a row, because a
 reload can move rows around while it runs. Anything else that outlives
@@ -93,12 +94,11 @@ diff that its hunks and lines came from.
   That way hooks, signing, credential helpers and the user's config
   behave as they do on the command line. `Git` keeps a log of the
   commands that change something, which the `@` overlay shows.
-- The history walk in `git/log.rs` streams `git log` from a blocking
-  thread, and stops git when a newer walk replaces it. Commit diffs in
-  `git/commit.rs` get the list of files from `git diff --raw` and the
-  blobs from `git cat-file --batch`, and diff the text with imara-diff.
-  `Git::read_blocking` and `Git::stream_blocking` run git from blocking
-  code.
+- The history walk in `git/log.rs` reads `git log` as it comes through
+  `Git::stream`, and stops git when a newer walk replaces it. Commit
+  diffs in `git/commit.rs` get the list of files from `git diff --raw`
+  and the blobs from `git cat-file --batch`, and diff the text with
+  imara-diff on a blocking thread.
 - Operations that change the repository go through `App::spawn_op`. Only
   one can run at a time. When it finishes, the app shows the result,
   applies its `After` action and refreshes everything.

@@ -53,8 +53,8 @@ pub struct Repo {
 }
 
 impl Repo {
-    /// Open the repository that `path` is in. This runs git and blocks.
-    pub fn open(path: &std::path::Path) -> Result<Repo> {
+    /// Open the repository that `path` is in.
+    pub async fn open(path: &std::path::Path) -> Result<Repo> {
         if !path.exists() {
             anyhow::bail!("{} doesn't exist", path.display());
         }
@@ -78,7 +78,7 @@ impl Repo {
             "--absolute-git-dir",
             "--git-common-dir",
         ];
-        let out = probe.read_blocking(&args, &opts).map_err(|e| {
+        let out = probe.read_opts(&args, &opts).await.map_err(|e| {
             if e.to_string().contains("not a git repository") {
                 anyhow::anyhow!("{} is not inside a git repository", shown.display())
             } else {
@@ -110,7 +110,8 @@ impl Repo {
         let common_dir = dir.join(crate::util::fs_path(common_dir));
         let common_dir = common_dir.canonicalize().unwrap_or(common_dir);
         let top = probe
-            .read_blocking(&["rev-parse", "--show-toplevel"], &RunOpts::default())
+            .read(&["rev-parse", "--show-toplevel"])
+            .await
             .map_err(|e| anyhow::anyhow!("could not open the repository: {e:#}"))?
             .stdout;
         let workdir = crate::util::fs_path(top.strip_suffix(b"\n").unwrap_or(&top)).to_path_buf();
@@ -982,15 +983,15 @@ impl App {
         let repo = self.repo.clone();
         let tx = self.tx.clone();
         let walks = self.history.generation.clone();
-        self.spawn(crate::util::blocking(move || {
-            let tx2 = tx.clone();
-            let r = log::walk(&repo.git, &tips, generation, &walks, move |b| {
-                let _ = tx2.send(AppEvent::History(b));
-            });
+        self.spawn(async move {
+            let r = log::walk(&repo.git, &tips, generation, &walks, |b| {
+                let _ = tx.send(AppEvent::History(b));
+            })
+            .await;
             if let Err(e) = r {
                 let _ = tx.send(AppEvent::HistoryError(generation, format!("{e:#}")));
             }
-        }));
+        });
     }
 
     // ----- Event handling -----
@@ -1627,51 +1628,69 @@ struct DetailRequest {
 }
 
 /// Load commit details as they are requested. The watch channel only keeps
-/// the newest request, so requests that were replaced while we were busy
-/// are skipped.
+/// the newest request. When a new one comes in during a load, we drop that
+/// load, which stops its git, and start on the new one.
 async fn detail_worker(
     repo: Arc<Repo>,
     mut requests: tokio::sync::watch::Receiver<Option<DetailRequest>>,
     tx: UnboundedSender<AppEvent>,
 ) {
     while requests.changed().await.is_ok() {
-        let Some(DetailRequest {
-            request,
-            source,
-            context,
-            store,
-        }) = requests.borrow_and_update().clone()
-        else {
-            continue;
-        };
-        let (id, base) = match source {
-            doc::Source::Commit(id) | doc::Source::Stash(id) => (id, None),
-            doc::Source::Compare { from, to } => (to, Some(from)),
-            doc::Source::None | doc::Source::Workdir => continue,
-        };
-        let git = repo.git.clone();
-        let (commit, folded) = crate::util::blocking(move || {
-            let r = crate::git::commit::load_against(&git, id, base, context, DEFAULT_LINE_LIMIT);
-            let folded = match (&r, store, source.fold_key()) {
-                (Ok(_), Some(store), Some(key)) => store
-                    .commit_folds(&key)
-                    .map(|f| f.map(|paths| paths.into_iter().collect()))
-                    .map_err(|e| format!("{e:#}")),
-                _ => Ok(None),
-            };
-            (r, folded)
-        })
-        .await;
-        let loaded = LoadedCommit {
-            request,
-            source,
-            commit,
-            folded,
-        };
-        if tx.send(AppEvent::Commit(Box::new(loaded))).is_err() {
-            break;
+        loop {
+            let request = requests.borrow_and_update().clone();
+            tokio::select! {
+                loaded = load_detail(&repo, request) => {
+                    if let Some(loaded) = loaded
+                        && tx.send(AppEvent::Commit(Box::new(loaded))).is_err()
+                    {
+                        return;
+                    }
+                    break;
+                }
+                changed = requests.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
+            }
         }
     }
+}
+
+/// Load what a detail request asks for, if it is a commit or a
+/// comparison.
+async fn load_detail(repo: &Repo, request: Option<DetailRequest>) -> Option<LoadedCommit> {
+    let DetailRequest {
+        request,
+        source,
+        context,
+        store,
+    } = request?;
+    let (id, base) = match source {
+        doc::Source::Commit(id) | doc::Source::Stash(id) => (id, None),
+        doc::Source::Compare { from, to } => (to, Some(from)),
+        doc::Source::None | doc::Source::Workdir => return None,
+    };
+    let commit =
+        crate::git::commit::load_against(&repo.git, id, base, context, DEFAULT_LINE_LIMIT).await;
+    let folded = match (&commit, store, source.fold_key()) {
+        (Ok(_), Some(store), Some(key)) => {
+            crate::util::blocking(move || {
+                store
+                    .commit_folds(&key)
+                    .map(|f| f.map(|paths| paths.into_iter().collect()))
+                    .map_err(|e| format!("{e:#}"))
+            })
+            .await
+        }
+        _ => Ok(None),
+    };
+    Some(LoadedCommit {
+        request,
+        source,
+        commit,
+        folded,
+    })
 }
 
 #[cfg(test)]

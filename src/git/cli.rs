@@ -4,7 +4,6 @@
 //! the user's config behave exactly as they do on the command line.
 
 use std::ffi::{OsStr, OsString};
-use std::io::{Read as _, Write as _};
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
@@ -179,66 +178,37 @@ impl Git {
         self.finish(&args, opts, logged, out.status, out.stdout, &out.stderr)
     }
 
-    /// Run a read-only command from blocking code, such as a background
-    /// thread. Like `read`, it isn't logged and takes no optional locks.
-    pub fn read_blocking<S: AsRef<OsStr>>(&self, args: &[S], opts: &RunOpts) -> Result<Output> {
-        let args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
-        let mut cmd = self.base_command();
-        cmd.env("GIT_OPTIONAL_LOCKS", "0").args(&args);
-        for (k, v) in &opts.env {
-            cmd.env(k, v);
-        }
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        if opts.stdin.is_some() {
-            cmd.stdin(Stdio::piped());
-        }
-        let mut child = cmd.spawn().context("could not run git")?;
-        let stdin = child.stdin.take();
-        // As in `exec`, write the input on another thread while this one
-        // reads the output, so neither side waits for the other forever.
-        let out = std::thread::scope(|scope| {
-            if let (Some(mut stdin), Some(input)) = (stdin, &opts.stdin) {
-                scope.spawn(move || {
-                    let _ = stdin.write_all(input);
-                });
-            }
-            child.wait_with_output()
-        });
-        let out = out.context("git did not finish")?;
-        self.finish(&args, opts, false, out.status, out.stdout, &out.stderr)
-    }
-
     /// Start a read-only command whose output the caller reads as it
-    /// comes, from blocking code. `input` is written to its stdin. Stderr
-    /// is collected on another thread, so that git can't block on it, and
-    /// `Stream::finish` turns it into the error if git fails.
-    pub fn stream_blocking<S: AsRef<OsStr>>(&self, args: &[S], input: Vec<u8>) -> Result<Stream> {
+    /// comes. `input` is written to its stdin. Stderr is collected by
+    /// another task, so that git can't block on it, and `Stream::finish`
+    /// turns it into the error if git fails.
+    pub fn stream<S: AsRef<OsStr>>(&self, args: &[S], input: Vec<u8>) -> Result<Stream> {
         let args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
-        let mut cmd = self.base_command();
-        cmd.env("GIT_OPTIONAL_LOCKS", "0").args(&args);
-        cmd.stdin(Stdio::piped())
+        let mut cmd = Command::from(self.base_command());
+        cmd.env("GIT_OPTIONAL_LOCKS", "0")
+            .args(&args)
+            .kill_on_drop(true)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = cmd.spawn().context("could not run git")?;
-        let stdin = child.stdin.take();
-        std::thread::spawn(move || {
-            if let Some(mut stdin) = stdin {
-                let _ = stdin.write_all(&input);
-            }
-        });
-        let stderr = child.stderr.take().map(|mut err| {
-            std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                let _ = err.read_to_end(&mut buf);
-                buf
-            })
+        if let Some(mut stdin) = child.stdin.take() {
+            tokio::spawn(async move {
+                let _ = stdin.write_all(&input).await;
+            });
+        }
+        let mut err = child.stderr.take().context("no stderr")?;
+        let stderr = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = err.read_to_end(&mut buf).await;
+            buf
         });
         let stdout = child.stdout.take().context("no stdout")?;
         Ok(Stream {
             git: self.clone(),
             command: first_arg(&args),
             child,
-            stdout: Some(std::io::BufReader::new(stdout)),
+            stdout: tokio::io::BufReader::new(stdout),
             stderr,
         })
     }
@@ -354,36 +324,30 @@ impl Git {
     }
 }
 
-/// A running git command, from `Git::stream_blocking`. Dropping it before
+/// A running git command, from `Git::stream`. Dropping it before
 /// `finish` kills git.
 pub struct Stream {
     git: Git,
     command: String,
-    child: std::process::Child,
-    stdout: Option<std::io::BufReader<std::process::ChildStdout>>,
-    stderr: Option<std::thread::JoinHandle<Vec<u8>>>,
+    child: tokio::process::Child,
+    stdout: tokio::io::BufReader<tokio::process::ChildStdout>,
+    stderr: tokio::task::JoinHandle<Vec<u8>>,
 }
 
 impl Stream {
-    pub fn stdout(&mut self) -> &mut std::io::BufReader<std::process::ChildStdout> {
-        self.stdout
-            .as_mut()
-            .unwrap_or_else(|| unreachable!("stdout is only taken in finish"))
+    pub fn stdout(&mut self) -> &mut tokio::io::BufReader<tokio::process::ChildStdout> {
+        &mut self.stdout
     }
 
     /// Wait for git to exit. Fails with git's message if it failed.
-    pub fn finish(mut self) -> Result<()> {
+    pub async fn finish(mut self) -> Result<()> {
         // Git may still be writing. Read the rest, so it doesn't block on
         // a full pipe.
-        if let Some(mut out) = self.stdout.take() {
-            std::io::copy(&mut out, &mut std::io::sink()).context("reading from git failed")?;
-        }
-        let status = self.child.wait().context("git did not finish")?;
-        let stderr = self
-            .stderr
-            .take()
-            .and_then(|h| h.join().ok())
-            .unwrap_or_default();
+        tokio::io::copy(&mut self.stdout, &mut tokio::io::sink())
+            .await
+            .context("reading from git failed")?;
+        let status = self.child.wait().await.context("git did not finish")?;
+        let stderr = self.stderr.await.unwrap_or_default();
         let args = [OsStr::new(&self.command)];
         self.git
             .finish(
@@ -395,15 +359,6 @@ impl Stream {
                 &stderr,
             )
             .map(drop)
-    }
-}
-
-impl Drop for Stream {
-    fn drop(&mut self) {
-        if self.stdout.is_some() {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
     }
 }
 

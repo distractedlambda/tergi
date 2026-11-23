@@ -56,15 +56,14 @@ task panics, `App::next` and `App::try_recv` raise the same panic in the
 caller. A panic in the background then stops the app with the real
 message, instead of leaving it waiting for an event that never comes.
 
-Blocking work, such as the history walk or parsing a large
+Blocking work, such as diffing a commit or parsing a large
 diff, goes through `util::blocking`. It runs the closure on Tokio's
 blocking pool, and a panic in it carries on in the task that waited
 for it.
 
 When tergi quits, `main` shuts the runtime down without waiting for
-blocking work that is still running. A history walk of a huge
-repository would otherwise keep the process alive after the screen is
-gone.
+blocking work that is still running. Diffing a huge commit would
+otherwise keep the process alive after the screen is gone.
 
 ### Kinds of background work
 
@@ -82,9 +81,10 @@ changing, a load never gets to finish.
 **Requests where only the newest matters.** The history walk and syntax
 highlighting number their requests with `util::Generation`. A result is
 only used if its number is still current. Clones of a `Generation` share
-the counter, so the running walk can hold one and stop early once a
+the counter, so the running walk can hold one and stop as soon as a
 newer walk starts. Commit details go through a watch channel that only
-keeps the newest request (see `diffs.md`).
+keeps the newest request, and a newer request drops the load that is
+running (see `diffs.md`).
 
 **Reads.** `App::spawn_read` reads something from the repository and then
 runs a closure on the event loop with the result, through
