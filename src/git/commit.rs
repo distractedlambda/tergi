@@ -206,13 +206,16 @@ struct Change {
 fn diff_trees(git: &Git, old: ObjectId, new: ObjectId) -> Result<Vec<Change>> {
     let (old, new) = (old.to_string(), new.to_string());
     let args = [
+        // `--no-relative` would do the same, but git before 2.28 doesn't
+        // know it. Those versions ignore the setting instead.
+        "-c",
+        "diff.relative=false",
         "diff",
         "--raw",
         "-z",
         "--no-abbrev",
         "--no-color",
         "--no-ext-diff",
-        "--no-relative",
         "--ignore-submodules=none",
         // We sort the files ourselves, and a `diff.orderFile` that is
         // missing would make git fail.

@@ -59,7 +59,8 @@ reads `diff.renames` and `diff.renameLimit` from the config. Renames
 and copies then come out as `git show` shows them. The other settings
 that `git diff` reads, such as `diff.relative`,
 `diff.ignoreSubmodules` and `diff.orderFile`, are turned off on the
-command line.
+command line. `diff.relative` is turned off with `-c` rather than
+`--no-relative`, because git before 2.28 doesn't know that option.
 
 `diff_texts` splits both sides into lines, runs imara-diff's histogram
 algorithm with its line post-processing, and groups the changes into
