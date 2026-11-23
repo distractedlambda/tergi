@@ -1663,6 +1663,27 @@ leave that column blank.
   also found here-documents where the `shell` package fails or forgets
   the start of a word. After fixing those, it agreed on all the
   Dockerfiles and on about 340,000 random texts.
+- `src/highlight/fish.rs` has examples for keywords in and out of
+  place, `and`, `or`, `not` and `time`, the names that `set`, `for`
+  and `function` take, comments, quotes and escapes, variables and
+  slices, command substitutions, brace expansions, redirections and
+  pipes. `dev/reference/fish` builds a program inside fish 4.9.3's
+  source that uses fish's own parser and highlighter. It runs on the
+  1,594 `.fish` files in fish's source and on random texts. It takes
+  the colors of keywords, operators, statement braces, redirections and
+  plain command names from fish's parse tree. It takes the colors
+  inside each word from fish's highlighter, with corrections where the
+  highlighter doesn't do what fish does, such as quotes in a comment
+  inside a command substitution. It also checks that the identifiers
+  are the same, in order. It stops comparing a file at fish's first
+  parse error, and at the known differences above, such as a keyword
+  that goes on over a line continuation. When we added the check, the
+  lexer missed a variable name after a line continuation, or after
+  several, and a slice after one. It let a `#` inside braces hide
+  variables and quotes, miscounted a stray `}`, read `$(` in a comment
+  inside braces, and took `0&|` as a pipe from file descriptor 0.
+  After fixing those, it agreed on all the files and on 200,000 random
+  texts.
 - `src/highlight/javascript.rs` has examples for each kind of
   JavaScript token, and a list of places where a `/` divides or starts
   a regular expression. `dev/reference/javascript` parses the 6,513

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Compares tergi's tokens with fish's parser and highlighter. The work is
+# done by check.rs, which the Containerfile builds. Usage: compare <work>
+exec tergi-check compare "$1"

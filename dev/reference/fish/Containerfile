@@ -1,0 +1,33 @@
+# fish 4.9.3's parser and highlighter, in a small program that checks
+# tergi's colors, and the .fish files in fish's source to check them on.
+# The program is built as a binary inside fish's source, so that it can
+# use fish's crate, and fish's Cargo.lock pins what it depends on. The
+# Rust version is the one in dev/Containerfile.
+FROM docker.io/library/rust:1.100.0-slim-trixie
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# fish's source. Its .fish files are the corpus: its functions,
+# completions and tests. This comes before the program, so that changing
+# the program doesn't download them again.
+RUN set -eu; \
+    curl -fsSL -o /tmp/fish.tar.xz https://github.com/fish-shell/fish-shell/releases/download/4.9.3/fish-4.9.3.tar.xz; \
+    echo "20998a25f73217ddcc19f499055fd587e9912d1ad6e7109120fbcf2871f0b98c  /tmp/fish.tar.xz" \
+        | sha256sum -c -; \
+    mkdir /opt/fish /opt/corpus; \
+    tar xJf /tmp/fish.tar.xz -C /opt/fish --strip-components=1; \
+    rm /tmp/fish.tar.xz; \
+    cd /opt/fish; \
+    find . -name '*.fish' -exec cp --parents {} /opt/corpus/ \;
+
+# The man pages and translations need tools that aren't here, and the
+# check doesn't need them. Link-time optimization only makes the build
+# slower.
+COPY check.rs /opt/fish/src/bin/tergi-check.rs
+RUN cd /opt/fish \
+    && CARGO_PROFILE_RELEASE_LTO=false \
+        cargo build --release --locked --no-default-features --bin tergi-check \
+    && cp target/release/tergi-check /usr/local/bin/ \
+    && rm -rf target /usr/local/cargo/registry /usr/local/cargo/git

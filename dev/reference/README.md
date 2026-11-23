@@ -44,6 +44,8 @@ that each check runs in a minute or two once its image is built.
   `shell` package, on random texts and the Dockerfiles in BuildKit's
   source and in a few projects, such as the official Python, PHP and
   Node.js images.
+- `fish`: the parser and highlighter of fish 4.9.3 on random texts and
+  the `.fish` files in fish's source.
 - `javascript`: acorn on the files of a few popular npm packages.
 - `llvm`: LLLexer from LLVM 23.1.6 on the `.ll` files in LLVM's
   tests.

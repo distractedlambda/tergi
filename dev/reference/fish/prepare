@@ -1,0 +1,33 @@
+#!/bin/sh
+# Copies the .fish files of fish's source into the work directory, where
+# the dev image can read them, writes random texts next to them, and
+# lists them all in files.txt.
+#
+# Usage: prepare <work>. CASES sets the number of random texts (default
+# 20000), and SEED the random seed (default 7).
+
+set -eu
+work=$1
+corpus=$work/corpus
+
+# The image has the files already, so this only saves the copy on reruns.
+if [ ! -d "$corpus" ]; then
+    rm -rf "$corpus.tmp"
+    cp -a /opt/corpus "$corpus.tmp"
+    mv "$corpus.tmp" "$corpus"
+fi
+
+cases=${CASES:-20000}
+seed=${SEED:-7}
+rm -rf "$work/texts"
+tergi-check generate "$work/texts" "$cases" "$seed"
+
+{
+    find "$corpus" -type f -name '*.fish' | LC_ALL=C sort
+    i=0
+    while [ "$i" -lt "$cases" ]; do
+        echo "$work/texts/$i.fish"
+        i=$((i + 1))
+    done
+} | sed 's/^/Fish\t/' > "$work/files.txt"
+echo "$(wc -l < "$work/files.txt") files, $cases of them random texts with seed $seed"
