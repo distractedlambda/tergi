@@ -342,7 +342,7 @@ impl<'a> Lexer<'a> {
         }
         toks.push((start..end, Kind::Keyword));
         let a = flags(s, end, self.escape, toks, |s, r, toks| {
-            self.word(s, r, toks)
+            self.word(s, r, toks);
         });
         // BuildKit trims all whitespace from the start of the arguments,
         // even U+00A0.
