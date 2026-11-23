@@ -1330,23 +1330,27 @@ that is really a name, so their lexers don't mark anything.
 between two colors matches how different they look much better than
 in sRGB. A name's color should be easy to tell apart from keywords,
 strings and the other syntax colors, from plain text, and from the
-colors of other names. Spreading hues evenly around the color wheel
-doesn't do that, because some of them always land on a hue the theme
-already uses.
+colors of other names. The colors should also be about equally
+bright, or some names would catch the eye more than others. Spreading
+hues evenly around the color wheel isn't enough, because some of them
+always land on a hue the theme already uses.
 
 So `identifier_colors` starts from the theme's string, number,
 keyword, type and function colors. Their average lightness, and 80%
-of their average chroma, set the middle of the range it searches.
-That way the colors look like they belong to the theme but stand out
-a little less than other tokens. The chroma is at least 0.08, because
-Nord's colors are so muted that its hues would be hard to tell apart
-without that floor. Within 0.08 of that lightness and between 40% and
-100% of that chroma, it tries 72 hues. Identifiers are most of the
-text in code, so a color that would be harder to read than the text
-moves toward the text's lightness until it's about as easy to read.
-Then it picks the 16 colors one at a time. Each time it takes the
-candidate that is farthest from the syntax colors, the text color and
-the colors it has already picked.
+of their average chroma, set where it looks for colors. That way the
+colors look like they belong to the theme but stand out a little less
+than other tokens. The chroma is at least 0.08, because Nord's colors
+are so muted that its hues would be hard to tell apart without that
+floor.
+
+It looks at bands of lightness 0.04 wide, centered up to 0.08 lighter
+or darker than that average. In each band it tries 72 hues at
+chromas from 40% to 100% of that chroma. Identifiers are most of the
+text in code, so it leaves out colors that would be much harder to
+read than the text. Then it picks 16 colors one at a time. Each time
+it takes the candidate that is farthest from the syntax colors, the
+text color and the colors it has already picked. It keeps the band
+where the closest two of all those colors end up farthest apart.
 
 The hash is FNV-1a followed by the final mixing step of MurmurHash3.
 FNV-1a on its own leaves the low bits of the hash depending only on
@@ -1427,7 +1431,8 @@ leave that column blank.
   out of the tokens they compare, which keeps them readable.
 - `src/theme.rs` checks that identifier colors differ from each other,
   from the other syntax colors and from the text color, that they are
-  about as easy to read as the text, and that a name always
+  about as easy to read as the text and about equally bright, and that
+  a name always
   gets the same color. `tests/ui.rs` has
   `identifiers_can_get_colors_by_name`.
 - `src/highlight/rust.rs` has examples for each kind of Rust token,
