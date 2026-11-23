@@ -1326,7 +1326,7 @@ lexers mark the names in keys, so each key in a config file has the
 same color everywhere it appears. Markdown and gitignore have nothing
 that is really a name, so their lexers don't mark anything.
 
-`Theme::build` makes the colors in Oklab, where the distance between
+We make the colors in Oklab, where the distance between
 two colors matches how different they look much better than in sRGB.
 A name's color should be easy to tell apart from keywords, strings and
 the other syntax colors, and from plain text. The colors should also
@@ -1350,6 +1350,17 @@ color within 0.04 of a syntax color or the text color. We turn the
 wheel to the angle that leaves out the fewest. A theme ends up with
 between 11 and 16 colors. Catppuccin, which uses almost every hue for
 something, has the fewest.
+
+Finding the colors takes a lot of arithmetic, so the compiler does it.
+`identifier_colors` and everything it calls are `const fn`s, and the
+static `IDENTIFIERS` holds the colors for each palette. The standard
+library can't take square roots, powers or sines in a `const fn` yet,
+so `theme.rs` has its own. It converts between sRGB and linear values
+with tables, because the compiler runs const code slowly. Even so,
+working out the colors adds over a second to a build after `theme.rs`
+changes. The compiler also refuses to spend more than about two
+million steps on one constant, so each palette gets its own `const`
+block.
 
 The hash is FNV-1a followed by the final mixing step of MurmurHash3.
 FNV-1a on its own leaves the low bits of the hash depending only on

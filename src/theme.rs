@@ -58,7 +58,7 @@ pub struct Theme {
     pub lanes: [Color; 8],
     /// The colors that identifiers get when the user turns that on. Each
     /// name always gets the same one (see `SyntaxColors`).
-    pub identifiers: Vec<Color>,
+    pub identifiers: &'static [Color],
 }
 
 /// How many hues identifiers can get. Those too close to another
@@ -97,9 +97,10 @@ pub struct Syntax {
 }
 
 impl Syntax {
-    /// The colors that tokens get.
-    fn drawn(&self) -> impl Iterator<Item = u32> + '_ {
-        [
+    /// The colors that tokens get. Only the first ones up to the returned
+    /// count are used.
+    const fn drawn(&self) -> ([u32; 11], usize) {
+        let mut colors = [
             self.comment,
             self.string,
             self.escape,
@@ -109,10 +110,19 @@ impl Syntax {
             self.ty,
             self.attribute,
             self.lifetime,
-        ]
-        .into_iter()
-        .chain(self.operator)
-        .chain(self.punctuation)
+            0,
+            0,
+        ];
+        let mut len = 9;
+        if let Some(c) = self.operator {
+            colors[len] = c;
+            len += 1;
+        }
+        if let Some(c) = self.punctuation {
+            colors[len] = c;
+            len += 1;
+        }
+        (colors, len)
     }
 
     pub fn color(&self, kind: Kind) -> Option<Color> {
@@ -216,34 +226,98 @@ const fn rgb(hex: u32) -> Color {
 }
 
 /// Relative luminance, as WCAG defines it.
-fn luminance(hex: u32) -> f32 {
-    let ch = |shift: u32| {
-        let c = ((hex >> shift) & 0xff) as f32 / 255.0;
-        if c <= 0.039_28 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0)
+const fn luminance(hex: u32) -> f32 {
+    let [r, g, b] = linear_rgb(hex);
+    0.2126 * r + 0.7152 * g + 0.0722 * b
 }
+
+/// The red, green and blue of a color without sRGB's gamma. WCAG uses
+/// 0.03928 instead of sRGB's 0.04045 to decide which formula applies to
+/// a channel, but no 8-bit value lies between them.
+const fn linear_rgb(hex: u32) -> [f32; 3] {
+    [
+        LINEAR[(hex >> 16 & 0xff) as usize],
+        LINEAR[(hex >> 8 & 0xff) as usize],
+        LINEAR[(hex & 0xff) as usize],
+    ]
+}
+
+/// The linear value of each 8-bit sRGB channel.
+static LINEAR: [f32; 256] = {
+    let mut table = [0.0; 256];
+    let mut i = 0;
+    while i < table.len() {
+        table[i] = to_linear(i as f32 / 255.0);
+        i += 1;
+    }
+    table
+};
+
+/// The linear values halfway between each two 8-bit sRGB channel values,
+/// so that the number of them below a linear value is the nearest 8-bit
+/// channel.
+static HALFWAY: [f32; 255] = {
+    let mut table = [0.0; 255];
+    let mut i = 0;
+    while i < table.len() {
+        table[i] = to_linear((i as f32 + 0.5) / 255.0);
+        i += 1;
+    }
+    table
+};
+
+/// An sRGB channel from 0 to 1 without its gamma.
+const fn to_linear(c: f32) -> f32 {
+    if c <= 0.040_45 {
+        c / 12.92
+    } else {
+        powf((c + 0.055) / 1.055, 2.4)
+    }
+}
+
+/// The 8-bit sRGB channel nearest to a linear value from 0 to 1. This is
+/// the number of entries in `HALFWAY` up to `c`. `CHANNEL_STEPS` gives a
+/// place to start counting, from which there is at most one more entry
+/// to count.
+const fn from_linear(c: f32) -> u32 {
+    // Casting a negative number to usize gives 0.
+    let step = (c * CHANNEL_STEPS.len() as f32) as usize;
+    let mut channel = if step < CHANNEL_STEPS.len() {
+        CHANNEL_STEPS[step] as usize
+    } else {
+        HALFWAY.len()
+    };
+    while channel < HALFWAY.len() && HALFWAY[channel] <= c {
+        channel += 1;
+    }
+    channel as u32
+}
+
+/// `from_linear(i / 4096)` for each `i` below 4096. Between two of these
+/// linear values, the channel changes by at most one.
+static CHANNEL_STEPS: [u8; 4096] = {
+    let mut table = [0; 4096];
+    let mut channel = 0;
+    let mut i = 0;
+    while i < table.len() {
+        let c = i as f32 / table.len() as f32;
+        while channel < HALFWAY.len() && HALFWAY[channel] <= c {
+            channel += 1;
+        }
+        table[i] = channel as u8;
+        i += 1;
+    }
+    table
+};
 
 /// A color in Oklab, as lightness and two axes of hue. Distances in Oklab
 /// match how different colors look much better than distances in sRGB.
 /// See https://bottosson.github.io/posts/oklab/.
-fn oklab(hex: u32) -> [f32; 3] {
-    let ch = |shift: u32| {
-        let c = ((hex >> shift) & 0xff) as f32 / 255.0;
-        if c <= 0.040_45 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    let (r, g, b) = (ch(16), ch(8), ch(0));
-    let l = (0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_99 * b).cbrt();
-    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
-    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
+const fn oklab(hex: u32) -> [f32; 3] {
+    let [r, g, b] = linear_rgb(hex);
+    let l = cbrt(0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_99 * b);
+    let m = cbrt(0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b);
+    let s = cbrt(0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b);
     [
         0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
         1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
@@ -252,28 +326,31 @@ fn oklab(hex: u32) -> [f32; 3] {
 }
 
 /// The sRGB color of a color in Oklab, or none if sRGB can't show it.
-fn from_oklab([lightness, a, b]: [f32; 3]) -> Option<u32> {
-    let l = (lightness + 0.396_337_78 * a + 0.215_803_76 * b).powi(3);
-    let m = (lightness - 0.105_561_346 * a - 0.063_854_17 * b).powi(3);
-    let s = (lightness - 0.089_484_18 * a - 1.291_485_5 * b).powi(3);
+const fn from_oklab([lightness, a, b]: [f32; 3]) -> Option<u32> {
+    const fn cube(x: f32) -> f32 {
+        x * x * x
+    }
+    let l = cube(lightness + 0.396_337_78 * a + 0.215_803_76 * b);
+    let m = cube(lightness - 0.105_561_346 * a - 0.063_854_17 * b);
+    let s = cube(lightness - 0.089_484_18 * a - 1.291_485_5 * b);
     let linear = [
         4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_94 * s,
         -1.268_438 * l + 2.609_757_4 * m - 0.341_319_38 * s,
         -0.004_196_086_3 * l - 0.703_418_6 * m + 1.707_614_7 * s,
     ];
     let mut hex = 0;
-    for c in linear {
+    let mut i = 0;
+    while i < linear.len() {
         // Leave a little room for rounding errors.
-        if !(-0.001..=1.001).contains(&c) {
+        if linear[i] < -0.001 || linear[i] > 1.001 {
             return None;
         }
-        let c = c.clamp(0.0, 1.0);
-        let c = if c <= 0.003_130_8 {
-            c * 12.92
-        } else {
-            1.055 * c.powf(1.0 / 2.4) - 0.055
-        };
-        hex = hex << 8 | (c * 255.0).round() as u32;
+        i += 1;
+    }
+    let mut i = 0;
+    while i < linear.len() {
+        hex = hex << 8 | from_linear(linear[i]);
+        i += 1;
     }
     Some(hex)
 }
@@ -292,46 +369,86 @@ fn from_oklab([lightness, a, b]: [f32; 3]) -> Option<u32> {
 /// evenly around the color wheel, and we leave out those that come too
 /// close to another syntax color. We turn the whole wheel to the angle
 /// that leaves out the fewest.
-fn identifier_colors(p: &Palette) -> Vec<u32> {
+///
+/// Only the colors up to the returned count are used. This runs while
+/// compiling (see `IDENTIFIERS`), which is why it is written with `while`
+/// loops and arrays.
+const fn identifier_colors(p: &Palette) -> ([u32; IDENTIFIER_HUES], usize) {
     let s = &p.syntax;
-    let samples = [s.string, s.number, s.keyword, s.ty, s.function].map(oklab);
+    let samples = [s.string, s.number, s.keyword, s.ty, s.function];
     let n = samples.len() as f32;
-    let lightness = samples.iter().map(|c| c[0]).sum::<f32>() / n;
-    let mut chroma = (samples.iter().map(|c| c[1].hypot(c[2])).sum::<f32>() / n * 0.8).max(0.08);
-    let avoid: Vec<[f32; 3]> = s.drawn().chain([p.fg]).map(oklab).collect();
-    // How far a color is from the nearest color it should differ from.
-    let room = |c: u32| {
-        avoid
-            .iter()
-            .map(|&a| distance(a, oklab(c)))
-            .fold(f32::INFINITY, f32::min)
-    };
+    let (mut lightness, mut chroma) = (0.0, 0.0);
+    let mut i = 0;
+    while i < samples.len() {
+        let [l, a, b] = oklab(samples[i]);
+        lightness += l;
+        chroma += hypot(a, b);
+        i += 1;
+    }
+    lightness /= n;
+    chroma = (chroma / n * 0.8).max(0.08);
+    // The colors that identifiers should differ from, in Oklab.
+    let (drawn, drawn_count) = s.drawn();
+    let mut avoid = [oklab(p.fg); 12];
+    let mut i = 0;
+    while i < drawn_count {
+        avoid[i + 1] = oklab(drawn[i]);
+        i += 1;
+    }
+    let avoid = avoid.split_at(drawn_count + 1).0;
     while chroma > 0.0 {
-        let mut best: Option<(Vec<u32>, f32)> = None;
-        for step in 0..30 {
+        // The best colors so far, how many of them there are, and how
+        // close the closest one comes to a color in `avoid`.
+        let mut best: Option<([u32; IDENTIFIER_HUES], usize, f32)> = None;
+        let mut step = 0;
+        while step < 30 {
             let start = std::f32::consts::TAU / IDENTIFIER_HUES as f32 * step as f32 / 30.0;
+            step += 1;
             let Some(wheel) = hue_wheel(p, lightness, chroma, start) else {
                 continue;
             };
-            let kept: Vec<u32> = wheel
-                .into_iter()
-                .filter(|&c| room(c) >= IDENTIFIER_GAP)
-                .collect();
-            let closest = kept.iter().map(|&c| room(c)).fold(f32::INFINITY, f32::min);
-            if best
-                .as_ref()
-                .is_none_or(|(colors, gap)| (kept.len(), closest) > (colors.len(), *gap))
-            {
-                best = Some((kept, closest));
+            let mut kept = [0; IDENTIFIER_HUES];
+            let mut count = 0;
+            let mut closest = f32::INFINITY;
+            let mut i = 0;
+            while i < wheel.len() {
+                let room = room(wheel[i], avoid);
+                if room >= IDENTIFIER_GAP {
+                    kept[count] = wheel[i];
+                    count += 1;
+                    closest = closest.min(room);
+                }
+                i += 1;
+            }
+            let better = match best {
+                None => true,
+                Some((_, best_count, best_closest)) => {
+                    count > best_count || (count == best_count && closest > best_closest)
+                }
+            };
+            if better {
+                best = Some((kept, count, closest));
             }
         }
-        if let Some((colors, _)) = best {
-            return colors;
+        if let Some((colors, count, _)) = best {
+            return (colors, count);
         }
         // sRGB can't show every hue at this chroma.
         chroma -= 0.005;
     }
-    Vec::new()
+    ([0; IDENTIFIER_HUES], 0)
+}
+
+/// How far a color is from the nearest of `avoid`, which are in Oklab.
+const fn room(hex: u32, avoid: &[[f32; 3]]) -> f32 {
+    let c = oklab(hex);
+    let mut least = f32::INFINITY;
+    let mut i = 0;
+    while i < avoid.len() {
+        least = least.min(squared_distance(avoid[i], c));
+        i += 1;
+    }
+    sqrt(least)
 }
 
 /// `IDENTIFIER_HUES` colors with lightness `l` and the given chroma, with
@@ -339,19 +456,33 @@ fn identifier_colors(p: &Palette) -> Vec<u32> {
 /// the text in code. So if some of the colors are hard to read on the
 /// background, they all move toward the lightness of the text until they
 /// are about as easy to read. Returns none if sRGB can't show them all.
-fn hue_wheel(p: &Palette, mut l: f32, chroma: f32, start: f32) -> Option<Vec<u32>> {
+const fn hue_wheel(
+    p: &Palette,
+    mut l: f32,
+    chroma: f32,
+    start: f32,
+) -> Option<[u32; IDENTIFIER_HUES]> {
     let text = oklab(p.fg)[0];
     let want = (contrast(p.fg, p.bg) * 0.8).min(4.5);
+    let mut hues = [(0.0, 0.0); IDENTIFIER_HUES];
+    let mut i = 0;
+    while i < IDENTIFIER_HUES {
+        hues[i] = sin_cos(start + std::f32::consts::TAU * i as f32 / IDENTIFIER_HUES as f32);
+        i += 1;
+    }
     loop {
-        let colors: Option<Vec<u32>> = (0..IDENTIFIER_HUES)
-            .map(|i| {
-                let hue = start + std::f32::consts::TAU * i as f32 / IDENTIFIER_HUES as f32;
-                from_oklab([l, chroma * hue.cos(), chroma * hue.sin()])
-            })
-            .collect();
-        if let Some(colors) = colors
-            && colors.iter().all(|&c| contrast(c, p.bg) >= want)
-        {
+        let mut colors = [0; IDENTIFIER_HUES];
+        let mut fits = true;
+        let mut i = 0;
+        while fits && i < IDENTIFIER_HUES {
+            let (sin, cos) = hues[i];
+            match from_oklab([l, chroma * cos, chroma * sin]) {
+                Some(c) if contrast(c, p.bg) >= want => colors[i] = c,
+                _ => fits = false,
+            }
+            i += 1;
+        }
+        if fits {
             return Some(colors);
         }
         if (l - text).abs() < 0.01 {
@@ -361,15 +492,123 @@ fn hue_wheel(p: &Palette, mut l: f32, chroma: f32, start: f32) -> Option<Vec<u32
     }
 }
 
-/// How different two colors in Oklab look.
-fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
-    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+/// The square of how different two colors in Oklab look.
+const fn squared_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
 }
 
 /// The WCAG contrast ratio, from 1 to 21.
-fn contrast(a: u32, b: u32) -> f32 {
+const fn contrast(a: u32, b: u32) -> f32 {
     let (la, lb) = (luminance(a), luminance(b));
     (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+// The standard library can't yet compute square roots, powers or sines in
+// a const fn, so we have our own. They work in f64 and round the result
+// to f32, so they nearly always agree with the standard library's f32
+// functions to the last bit. None of them needs to handle infinities or
+// NaN.
+
+const fn sqrt(x: f32) -> f32 {
+    sqrt64(x as f64) as f32
+}
+
+/// The square root, by Newton's method. Halving the exponent gives a
+/// first guess within 6%, and each step doubles the number of correct
+/// digits.
+const fn sqrt64(x: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let mut y = f64::from_bits(x.to_bits() / 2 + (511 << 52));
+    let mut i = 0;
+    while i < 5 {
+        y = 0.5 * (y + x / y);
+        i += 1;
+    }
+    y
+}
+
+const fn hypot(a: f32, b: f32) -> f32 {
+    let (a, b) = (a as f64, b as f64);
+    sqrt64(a * a + b * b) as f32
+}
+
+/// The cube root, by Newton's method, with a first guess from dividing
+/// the exponent by three.
+const fn cbrt(x: f32) -> f32 {
+    let x = x as f64;
+    if x == 0.0 {
+        return 0.0;
+    }
+    let a = x.abs();
+    let mut y = f64::from_bits(a.to_bits() / 3 + (682 << 52));
+    let mut i = 0;
+    while i < 4 {
+        y = (2.0 * y + a / (y * y)) / 3.0;
+        i += 1;
+    }
+    (y * x.signum()) as f32
+}
+
+/// `x` to the power `y`, for positive `x`.
+const fn powf(x: f32, y: f32) -> f32 {
+    exp(y as f64 * ln(x as f64)) as f32
+}
+
+/// The natural logarithm of a positive number. We split `x` into
+/// `m * 2^e` with `m` between 1 and 2, and use the series for
+/// `ln m = 2 atanh((m - 1) / (m + 1))`, which converges quickly there.
+const fn ln(x: f64) -> f64 {
+    let bits = x.to_bits();
+    let e = ((bits >> 52) & 0x7ff) as i64 - 1023;
+    let m = f64::from_bits(bits & !(0x7ff << 52) | (1023 << 52));
+    let z = (m - 1.0) / (m + 1.0);
+    let mut power = z;
+    let mut sum = 0.0;
+    let mut k = 1.0;
+    while k < 50.0 {
+        sum += power / k;
+        power *= z * z;
+        k += 2.0;
+    }
+    2.0 * sum + e as f64 * std::f64::consts::LN_2
+}
+
+/// `e^x`, as `2^k * e^r` with `r` no more than ln 2 / 2 from zero, so
+/// that the Taylor series for `e^r` converges quickly.
+const fn exp(x: f64) -> f64 {
+    let k = (x / std::f64::consts::LN_2).round();
+    let r = x - k * std::f64::consts::LN_2;
+    let mut term = 1.0;
+    let mut sum = 1.0;
+    let mut n = 1.0;
+    while n < 25.0 {
+        term *= r / n;
+        sum += term;
+        n += 1.0;
+    }
+    sum * f64::from_bits(((k as i64 + 1023) as u64) << 52)
+}
+
+/// The sine and cosine of an angle in radians, from their Taylor series
+/// after moving the angle to between -π and π.
+const fn sin_cos(x: f32) -> (f32, f32) {
+    use std::f64::consts::TAU;
+    let x = x as f64;
+    let x = x - TAU * (x / TAU).round();
+    let (mut sin, mut cos) = (0.0, 0.0);
+    let mut term = 1.0;
+    let mut n = 0.0;
+    while n < 40.0 {
+        cos += term;
+        term *= x / (n + 1.0);
+        sin += term;
+        term *= -x / (n + 2.0);
+        n += 2.0;
+    }
+    (sin as f32, cos as f32)
 }
 
 /// A background in the hue of `color` for `fg` text to sit on. Palette
@@ -404,10 +643,13 @@ impl Theme {
             "light" => ONE_HALF_LIGHT.id,
             other => other,
         };
-        PALETTES.iter().find(|p| p.id == id).map(Theme::build)
+        PALETTES.iter().position(|p| p.id == id).map(Theme::build)
     }
 
-    fn build(p: &'static Palette) -> Theme {
+    /// The theme for `PALETTES[i]`.
+    fn build(i: usize) -> Theme {
+        let p = &PALETTES[i];
+        let (identifiers, count) = &IDENTIFIERS[i];
         let tint = |c, most, least| rgb(tint(p.bg, p.fg, c, most, least));
         let badge = |c| tint(c, 70, 20);
         Theme {
@@ -451,7 +693,7 @@ impl Theme {
             tag_fg: rgb(p.yellow),
             rename_fg: rgb(p.magenta),
             lanes: p.lanes.map(rgb),
-            identifiers: identifier_colors(p).into_iter().map(rgb).collect(),
+            identifiers: &identifiers[..*count],
         }
     }
 
@@ -460,7 +702,7 @@ impl Theme {
     pub fn syntax_colors(&self, identifiers: bool) -> SyntaxColors<'_> {
         SyntaxColors {
             syntax: self.syntax,
-            identifiers: identifiers.then_some(&self.identifiers[..]),
+            identifiers: identifiers.then_some(self.identifiers),
         }
     }
 
@@ -471,8 +713,39 @@ impl Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Theme::build(&ONE_HALF_DARK)
+        let i = PALETTES.iter().position(|p| p.id == Theme::DEFAULT);
+        Theme::build(i.unwrap_or(0))
     }
+}
+
+/// The colors for identifiers in each palette in `PALETTES`, and how
+/// many of them there are. Finding them takes a lot of arithmetic, so the
+/// compiler does it. The compiler warns when it has to work long on one
+/// constant, so each palette gets its own.
+static IDENTIFIERS: [([Color; IDENTIFIER_HUES], usize); PALETTES.len()] = [
+    const { identifiers(0) },
+    const { identifiers(1) },
+    const { identifiers(2) },
+    const { identifiers(3) },
+    const { identifiers(4) },
+    const { identifiers(5) },
+    const { identifiers(6) },
+    const { identifiers(7) },
+    const { identifiers(8) },
+    const { identifiers(9) },
+    const { identifiers(10) },
+    const { identifiers(11) },
+];
+
+const fn identifiers(i: usize) -> ([Color; IDENTIFIER_HUES], usize) {
+    let (hex, count) = identifier_colors(&PALETTES[i]);
+    let mut colors = [Color::Reset; IDENTIFIER_HUES];
+    let mut j = 0;
+    while j < count {
+        colors[j] = rgb(hex[j]);
+        j += 1;
+    }
+    (colors, count)
 }
 
 static PALETTES: [Palette; 12] = [
@@ -942,6 +1215,11 @@ const SOLARIZED_LIGHT: Palette = Palette {
 mod tests {
     use super::*;
 
+    /// How different two colors in Oklab look.
+    fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+        squared_distance(a, b).sqrt()
+    }
+
     fn hex(c: Color) -> u32 {
         match c {
             Color::Rgb(r, g, b) => u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b),
@@ -1024,7 +1302,8 @@ mod tests {
             let Some(t) = Theme::named(id) else { continue };
             let (fg, bg) = (hex(t.fg), hex(t.bg));
             let want = (contrast(fg, bg) * 0.8).min(4.5);
-            let others: Vec<u32> = t.syntax.drawn().chain([fg]).collect();
+            let (drawn, count) = t.syntax.drawn();
+            let others: Vec<u32> = drawn[..count].iter().copied().chain([fg]).collect();
             let ids: Vec<u32> = t.identifiers.iter().map(|&c| hex(c)).collect();
             assert!(
                 ids.len() >= 10,

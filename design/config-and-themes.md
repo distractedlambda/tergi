@@ -135,8 +135,8 @@ shows. Some palettes, such as Solarized, have little contrast to spare,
 and this is what keeps their selections readable.
 
 Each theme also has up to 16 colors for rainbow identifiers, which
-`identifier_colors` makes from its syntax colors. `diffs.md` explains
-how.
+`identifier_colors` makes from its syntax colors while tergi compiles.
+`diffs.md` explains how.
 
 Everything is 24-bit color.
 
