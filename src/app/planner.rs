@@ -2,10 +2,10 @@
 //! to each one, then run it all as one rebase.
 
 use anyhow::{Result, bail};
-use gix::ObjectId;
 
 use super::cmd::Purpose;
 use super::{App, Level};
+use crate::git::ObjectId;
 use crate::git::ops;
 use crate::git::rebase::{self, Action, Plan, Step};
 
@@ -109,14 +109,14 @@ impl Planner {
                     Some(m) if !rebase::is_blank_message(m) => Action::Reword(m.clone()),
                     _ => bail!(
                         "Commit {} is set to reword but has no new message.",
-                        r.id.to_hex_with_len(7)
+                        r.id.short()
                     ),
                 },
                 PlanAction::Squash => match &r.message {
                     Some(m) if !rebase::is_blank_message(m) => Action::Squash(m.clone()),
                     _ => bail!(
                         "Commit {} is set to squash but has no message.",
-                        r.id.to_hex_with_len(7)
+                        r.id.short()
                     ),
                 },
             };
@@ -133,7 +133,7 @@ impl Planner {
         {
             bail!(
                 "Commit {} is the oldest one, so it has nothing below it to {} into.",
-                first.id.to_hex_with_len(7),
+                first.id.short(),
                 first.action.name()
             );
         }
@@ -317,7 +317,7 @@ mod tests {
             r.action = PlanAction::Drop;
         }
         assert!(p.to_plan().is_err());
-        p.base = Some(ObjectId::null(gix::hash::Kind::Sha1));
+        p.base = Some(ObjectId::null());
         assert!(p.to_plan().is_ok());
     }
 
@@ -349,7 +349,7 @@ mod tests {
         ) {
             let mut p = planner(n);
             if !root {
-                p.base = Some(ObjectId::null(gix::hash::Kind::Sha1));
+                p.base = Some(ObjectId::null());
             }
             let n = usize::from(n);
             for (by_row, a, b, up) in moves {

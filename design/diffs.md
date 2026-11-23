@@ -30,20 +30,36 @@ A `DiffLine` holds its text for display, with bad UTF-8 replaced. If the
 line wasn't valid UTF-8, it also keeps the original bytes in `raw`. Line
 staging needs those to build a patch that matches the file.
 
-## Commit diffs come from gitoxide
+## Commit diffs
 
-`commit::load` diffs a commit's tree against its first parent's tree,
-or against the empty tree for a root commit. It uses gitoxide for the
-tree diff, which can report renames and copies, and imara-diff for the
-text. We do this in process rather than running `git show`, because
-moving through the history loads a commit for every row the user
-passes, and that has to be fast.
+`commit::load` diffs a commit against its first parent, or against the
+empty tree for a root commit. It runs on a blocking thread and runs git
+three times:
 
-Renames follow `diff.renames` and `diff.renameLimit`, which gix reads
-from the config the way git does. One setting differs. Gix doesn't pair
-up empty files by default, but git does, so `rewrites` turns that on.
-Git and gix measure how similar two files are in different ways, so they
-sometimes disagree about a rename between files that both changed.
+1. `git log --no-walk` reads the commit's parents, author, committer and
+   message, in the same way as the history walk.
+2. `git diff --raw` lists the files that changed between the two trees,
+   with their modes, blob ids, and renames and copies.
+3. `git cat-file --batch` reads every blob in the list at once.
+
+A commit with three parents needs one more `git log`, to check whether
+it is a stash with untracked files, as explained below.
+
+Then imara-diff diffs the texts. We don't use the patch that `git show`
+would print, because we need the full text of both sides anyway, for
+syntax highlighting, and because git's diff settings would change what
+the patch looks like. Moving through the history loads a commit for
+every row the user passes, so this has to be quick. For a small commit
+on Linux, the three commands take about 3 ms together, most of it in
+starting git. Only the newest request is loaded (see below), so a slow
+disk makes the pane lag behind, but never queues up work.
+
+We use `git diff` and not `git diff-tree`, because only `git diff`
+reads `diff.renames` and `diff.renameLimit` from the config. Renames
+and copies then come out as `git show` shows them. The other settings
+that `git diff` reads, such as `diff.relative`,
+`diff.ignoreSubmodules` and `diff.orderFile`, are turned off on the
+command line.
 
 `diff_texts` splits both sides into lines, runs imara-diff's histogram
 algorithm with its line post-processing, and groups the changes into
@@ -99,9 +115,7 @@ Moving quickly through the history asks for a lot of commits, and only
 the last one matters. `request_commit` sends each request over a Tokio
 watch channel, which only keeps the newest value. `detail_worker` loads
 one commit at a time, and whatever was asked for while it worked is
-replaced by the newest request. It keeps one thread-local gitoxide
-repository across loads, so the object cache carries over from one
-commit to the next.
+replaced by the newest request.
 
 Each request has a number. When a result comes back, the app checks the
 number and the source against what the pane shows now, and drops the
@@ -788,7 +802,7 @@ none, so a hunk at the top of a file gets the same colors either way.
 Context lines use the new side's colors when it has them.
 
 We have the full text of both sides of every diff. A commit diff has
-them from gitoxide. For an unstaged file, the old side is in the index
+them from `git cat-file`. For an unstaged file, the old side is in the index
 and the new side is on disk. For a symlink, the text on disk is the path
 it points to, which is what git stores. For a staged file, the old side
 is in HEAD and the new side is in the index. `Workdir::load` reads the

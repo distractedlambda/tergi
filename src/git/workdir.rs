@@ -5,13 +5,13 @@ use std::ffi::OsString;
 use std::sync::Arc;
 
 use anyhow::Result;
-use gix::ObjectId;
-use gix::bstr::{BStr, ByteSlice as _};
+use bstr::{BStr, ByteSlice as _};
 
 use super::cli::{Git, RunOpts};
 use super::commit::{FileTexts, MAX_BLOB, diff_texts, is_binary};
 use super::diff::{FileDiff, FileStatus, parse_unified};
 use super::status::{Entry, Status};
+use crate::git::ObjectId;
 use crate::util::fs_path;
 
 #[derive(Debug, Clone, Default)]

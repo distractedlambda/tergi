@@ -9,7 +9,7 @@
 //! Each lane is two cells wide: the lane itself and a gap to its right that
 //! horizontal lines pass through.
 
-use gix::ObjectId;
+use crate::git::ObjectId;
 
 pub const UP: u16 = 1;
 pub const DOWN: u16 = 2;

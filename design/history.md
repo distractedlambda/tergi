@@ -96,26 +96,42 @@ The same database holds the folded files of the detail pane, which
 
 ## The walk
 
-`log::walk` runs on a blocking thread through `util::blocking`. It uses
-gitoxide's topological walk, with the commit-graph file if the repository
-has one, and gives the repository a 64 MiB object cache.
+`log::walk` runs on a blocking thread through `util::blocking`. It runs
+`git log --topo-order --stdin` and writes the tips to its stdin, because
+a repository can have more tags than fit on a command line. It reads
+the output as git prints it. With a commit-graph file, git starts
+printing right away. Without one, it has to read the whole history
+before it can print the first commit in topological order. For git.git,
+with about 86,000 commits, that takes about 0.4 seconds, and the whole
+walk about half a second.
 
 Some tags point at trees or blobs rather than commits. git.git has one
-for a GPG key, for example. The walk refuses to start from those, so we
-leave them out first.
+for a GPG key, for example. Git skips those tips.
+
+The format asks for each commit's id, parents, author name, email,
+date and whole message, with a NUL after each field. `-z` ends each
+commit with a NUL too. We read the dates with `--date=raw`, which gives
+seconds and a time zone. The summary is the first line of the message
+that isn't blank, without the spaces around it. That differs from git's
+`%s`, which joins the lines of the first paragraph. Asking for the whole
+message rather than `%s` costs no measurable time.
+
+The walk turns off settings that would add other text to the output,
+such as `log.showSignature`. `Git::base_command` already asks for
+messages in UTF-8.
 
 Commits go back to the app in `Batch`es over the event channel. The
 first batch has 200 commits, so the first screen appears quickly. Later
-batches have 5,000. Each commit is decoded into a `CommitInfo` with its
-parents, summary, author and author date. The graph row for each commit
-is worked out on the same thread, as part of the walk.
+batches have 5,000. The graph row for each commit is worked out on the
+same thread, as part of the walk.
 
 ### Replacing a walk
 
 A new walk can start while an old one is still running, for example
 after a fetch. Walks are numbered with `util::Generation`. The running
 walk holds a clone of the counter and checks it before each commit. Once
-a newer walk has started, the old one stops. `on_history` also drops any
+a newer walk has started, the old one stops, and stopping kills its
+`git log`. `on_history` also drops any
 batch whose number isn't current, in case one was already on its way.
 
 The old list stays on screen until the new walk's first batch arrives.

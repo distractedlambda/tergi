@@ -7,14 +7,13 @@ pub mod input;
 pub mod planner;
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
-use gix::ObjectId;
-use gix::bstr::{BStr, BString, ByteSlice as _};
+use anyhow::Result;
+use bstr::{BStr, BString, ByteSlice as _};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use tokio::runtime::Handle;
@@ -22,7 +21,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinSet;
 
 use crate::config::Config;
-use crate::git::cli::Git;
+use crate::git::ObjectId;
+use crate::git::cli::{Git, RunOpts};
 use crate::git::commit::CommitDetail;
 use crate::git::diff::{DEFAULT_LINE_LIMIT, FileDiff};
 use crate::git::graph::GraphRow;
@@ -45,7 +45,6 @@ use planner::Planner;
 /// Everything about the repository that background tasks need.
 pub struct Repo {
     pub git: Git,
-    pub gix: gix::ThreadSafeRepository,
     pub workdir: PathBuf,
     pub git_dir: PathBuf,
     pub common_dir: PathBuf,
@@ -54,30 +53,70 @@ pub struct Repo {
 }
 
 impl Repo {
+    /// Open the repository that `path` is in. This runs git and blocks.
     pub fn open(path: &std::path::Path) -> Result<Repo> {
         if !path.exists() {
             anyhow::bail!("{} doesn't exist", path.display());
         }
-        let repo = gix::discover(path).map_err(|e| {
-            // gix's not-found message repeats the path and ends in an error
-            // class name, so say it more plainly.
-            if e.to_string().starts_with("Could not find a git repository") {
-                let shown = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let shown = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        // Git runs in a folder, so start from the one a file is in.
+        let dir = if shown.is_dir() {
+            shown.clone()
+        } else {
+            shown.parent().map_or(shown.clone(), Path::to_path_buf)
+        };
+        let probe = Git::new(&dir);
+        // We look for one message below, so ask for it in English.
+        let opts = RunOpts {
+            env: vec![("LC_ALL", "C".into())],
+            ..RunOpts::default()
+        };
+        let args = [
+            "rev-parse",
+            "--is-bare-repository",
+            "--is-inside-git-dir",
+            "--absolute-git-dir",
+            "--git-common-dir",
+        ];
+        let out = probe.read_blocking(&args, &opts).map_err(|e| {
+            if e.to_string().contains("not a git repository") {
                 anyhow::anyhow!("{} is not inside a git repository", shown.display())
             } else {
-                anyhow::anyhow!("could not open the repository: {e}")
+                anyhow::anyhow!("could not open the repository: {e:#}")
             }
         })?;
-        let workdir = repo
-            .workdir()
-            .context("bare repositories aren't supported")?
-            .to_path_buf();
+        let out = out.stdout;
+        let lines: Vec<&[u8]> = out
+            .strip_suffix(b"\n")
+            .unwrap_or(&out)
+            .split(|&b| b == b'\n')
+            .collect();
+        let [bare, inside_git_dir, git_dir, common_dir] = lines[..] else {
+            anyhow::bail!(
+                "could not open the repository: git rev-parse printed something unexpected"
+            );
+        };
+        if bare == b"true" {
+            anyhow::bail!("bare repositories aren't supported");
+        }
+        if inside_git_dir == b"true" {
+            anyhow::bail!(
+                "{} is inside the git folder, not the working tree",
+                shown.display()
+            );
+        }
+        let git_dir = crate::util::fs_path(git_dir).to_path_buf();
+        // Git gives the common folder relative to where it ran.
+        let common_dir = dir.join(crate::util::fs_path(common_dir));
+        let common_dir = common_dir.canonicalize().unwrap_or(common_dir);
+        let top = probe
+            .read_blocking(&["rev-parse", "--show-toplevel"], &RunOpts::default())
+            .map_err(|e| anyhow::anyhow!("could not open the repository: {e:#}"))?
+            .stdout;
+        let workdir = crate::util::fs_path(top.strip_suffix(b"\n").unwrap_or(&top)).to_path_buf();
         let workdir = workdir.canonicalize().unwrap_or(workdir);
-        let git_dir = repo.git_dir().to_path_buf();
-        let common_dir = repo.common_dir().to_path_buf();
         Ok(Repo {
             git: Git::new(&workdir),
-            gix: repo.into_sync(),
             workdir,
             git_dir,
             common_dir,
@@ -945,7 +984,7 @@ impl App {
         let walks = self.history.generation.clone();
         self.spawn(crate::util::blocking(move || {
             let tx2 = tx.clone();
-            let r = log::walk(&repo.gix, tips, generation, &walks, move |b| {
+            let r = log::walk(&repo.git, &tips, generation, &walks, move |b| {
                 let _ = tx2.send(AppEvent::History(b));
             });
             if let Err(e) = r {
@@ -1595,9 +1634,6 @@ async fn detail_worker(
     mut requests: tokio::sync::watch::Receiver<Option<DetailRequest>>,
     tx: UnboundedSender<AppEvent>,
 ) {
-    // Keep one thread-local repository across loads, so its object cache
-    // carries over from one commit to the next.
-    let mut local = repo.gix.to_thread_local();
     while requests.changed().await.is_ok() {
         let Some(DetailRequest {
             request,
@@ -1613,8 +1649,9 @@ async fn detail_worker(
             doc::Source::Compare { from, to } => (to, Some(from)),
             doc::Source::None | doc::Source::Workdir => continue,
         };
-        let (back, commit, folded) = crate::util::blocking(move || {
-            let r = crate::git::commit::load_against(&local, id, base, context, DEFAULT_LINE_LIMIT);
+        let git = repo.git.clone();
+        let (commit, folded) = crate::util::blocking(move || {
+            let r = crate::git::commit::load_against(&git, id, base, context, DEFAULT_LINE_LIMIT);
             let folded = match (&r, store, source.fold_key()) {
                 (Ok(_), Some(store), Some(key)) => store
                     .commit_folds(&key)
@@ -1622,10 +1659,9 @@ async fn detail_worker(
                     .map_err(|e| format!("{e:#}")),
                 _ => Ok(None),
             };
-            (local, r, folded)
+            (r, folded)
         })
         .await;
-        local = back;
         let loaded = LoadedCommit {
             request,
             source,

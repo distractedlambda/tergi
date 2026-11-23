@@ -5,13 +5,13 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 
-use gix::ObjectId;
-use gix::bstr::BString;
+use bstr::BString;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::cmd::{Cmd, Unit};
 use crate::config::Config;
+use crate::git::ObjectId;
 use crate::git::commit::{CommitDetail, FileTexts};
 use crate::git::context::{self, Choices, Shown, View};
 use crate::git::diff::{FileDiff, Hunk, LineKind};
@@ -670,10 +670,7 @@ impl Detail {
                 let subject = message.lines().next().unwrap_or("").to_string();
                 let mut spans = vec![
                     Span::styled(format!("{title:<11}"), dim),
-                    Span::styled(
-                        id.to_hex_with_len(7).to_string(),
-                        Style::default().fg(theme.accent),
-                    ),
+                    Span::styled(id.short(), Style::default().fg(theme.accent)),
                     Span::raw("  "),
                 ];
                 spans.extend(badges(labels.get(&id), theme));
@@ -1482,8 +1479,8 @@ mod tests {
             let files = pick(&case.sections[0]);
             let texts = vec![FileTexts::default(); files.len()];
             let commit = CommitDetail {
-                id: ObjectId::null(gix::hash::Kind::Sha1),
-                parents: vec![ObjectId::null(gix::hash::Kind::Sha1)],
+                id: ObjectId::null(),
+                parents: vec![ObjectId::null()],
                 message: "Subject\n\nBody\n".into(),
                 author: person.clone(),
                 committer: person,

@@ -3,7 +3,7 @@ use crate::common;
 use std::path::PathBuf;
 
 use common::Scratch;
-use gix::ObjectId;
+use tergi::git::ObjectId;
 use tergi::git::rebase::{self, Action, Outcome, RepoState};
 use tergi::util::fs_path;
 

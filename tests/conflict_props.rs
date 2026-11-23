@@ -18,9 +18,9 @@ use crate::common;
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 
+use bstr::{BString, ByteSlice};
 use common::Scratch;
 use common::settings::{Settings, settings};
-use gix::bstr::{BString, ByteSlice};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use tergi::git::ops;

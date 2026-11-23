@@ -8,15 +8,15 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::Arc;
 
+use bstr::{BStr, BString, ByteSlice as _};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use gix::ObjectId;
-use gix::bstr::{BStr, BString, ByteSlice as _};
 
 use super::doc::{Depth, Row, Section, Source};
 use super::input::Target;
 use super::planner::{PlanAction, Planner};
 use super::{After, App, Focus, HISTORY_ROW_HEIGHT, Level, Suspend};
 use crate::config;
+use crate::git::ObjectId;
 use crate::git::commit::FileTexts;
 use crate::git::diff::FileDiff;
 use crate::git::ops::{self, ApplyMode, ResetMode};
@@ -2361,13 +2361,7 @@ impl App {
                 self.spawn_read(
                     move |r| {
                         crate::util::blocking(move || {
-                            crate::git::commit::load_against(
-                                &r.gix.to_thread_local(),
-                                id,
-                                base,
-                                ctx,
-                                usize::MAX,
-                            )
+                            crate::git::commit::load_against(&r.git, id, base, ctx, usize::MAX)
                         })
                     },
                     move |app, full| {
@@ -2472,7 +2466,7 @@ fn list_commits(ids: &[ObjectId]) -> String {
 }
 
 pub fn short(id: &ObjectId) -> String {
-    id.to_hex_with_len(7).to_string()
+    id.short()
 }
 
 fn short_name(s: &BStr) -> String {

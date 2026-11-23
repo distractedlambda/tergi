@@ -6,10 +6,10 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
-use gix::ObjectId;
-use gix::bstr::{BStr, BString, ByteSlice as _};
+use bstr::{BStr, BString, ByteSlice as _};
 
 use super::cli::Git;
+use crate::git::ObjectId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Branch {

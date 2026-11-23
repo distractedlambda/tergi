@@ -13,10 +13,10 @@ use std::path::PathBuf;
 
 use common::Scratch;
 use common::settings::{Settings, settings};
-use gix::ObjectId;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use tergi::app::planner::{PlanAction, Planner};
+use tergi::git::ObjectId;
 use tergi::git::rebase::{self, Outcome, RepoState};
 
 #[derive(Debug, Clone)]

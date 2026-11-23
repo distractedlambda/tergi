@@ -1,11 +1,11 @@
 //! Property tests for commit diffs, run against the real git.
 //!
-//! `commit::load` diffs trees with gitoxide and texts with imara-diff, not
-//! with git. Each case builds two random trees and checks what it gives for
-//! the commit between them against `git diff-tree`. The trees hold text,
-//! empty, binary and executable files, symlinks and submodules, and a path
-//! can be a file in one tree and a folder in the other. Some files move to
-//! another path, so that renames show up too.
+//! `commit::load` asks git which files changed, and diffs their texts
+//! with imara-diff. Each case builds two random trees and checks what it
+//! gives for the commit between them against `git diff-tree`. The trees
+//! hold text, empty, binary and executable files, symlinks and submodules,
+//! and a path can be a file in one tree and a folder in the other. Some
+//! files move to another path, so that renames and copies show up too.
 //!
 //! The same trees are also committed as two unrelated root commits, and
 //! `commit::compare` between those is checked against `git diff-tree` in
@@ -19,9 +19,6 @@
 //! highlighting, and that applying the hunks to the old text gives the new
 //! text. It doesn't compare the hunks with git's, because imara-diff and
 //! git don't always pick the same lines as changed.
-//!
-//! Copies are left out. Gix finds them in a different way from git, which
-//! `todo/bugs.md` describes.
 
 use crate::common;
 
@@ -29,9 +26,9 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
 
+use bstr::{BStr, BString, ByteSlice as _};
 use common::Scratch;
 use common::settings::{Settings, settings};
-use gix::bstr::{BStr, BString, ByteSlice as _};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use tergi::git::commit::{self, CommitDetail};
@@ -114,6 +111,7 @@ struct Entry {
 enum Renames {
     Off,
     On,
+    Copies,
 }
 
 impl Renames {
@@ -121,6 +119,7 @@ impl Renames {
         match self {
             Renames::Off => "false",
             Renames::On => "true",
+            Renames::Copies => "copies",
         }
     }
 
@@ -128,6 +127,7 @@ impl Renames {
         match self {
             Renames::Off => None,
             Renames::On => Some("-M"),
+            Renames::Copies => Some("-C"),
         }
     }
 }
@@ -228,7 +228,7 @@ fn case() -> impl Strategy<Value = Case> {
     (
         prop::collection::vec(entry, 1..8),
         0u32..4,
-        prop::sample::select(vec![Renames::Off, Renames::On]),
+        prop::sample::select(vec![Renames::Off, Renames::On, Renames::Copies]),
         prop::bool::weighted(0.3),
         settings(),
     )
@@ -449,35 +449,8 @@ fn untracked(s: &Scratch, tree: &str) -> Vec<Change> {
         .collect()
 }
 
-/// Split renames of files whose content changed into a deleted file and an
-/// added file. Git and gix measure how similar two files are in different
-/// ways, so they don't always agree on these. Renames of files that stayed
-/// the same have to match.
-fn exact_renames(changes: &[Change]) -> Vec<Change> {
-    let mut out = Vec::new();
-    for c in changes {
-        match (&c.old, &c.new) {
-            (Some(old), Some(new)) if c.status == 'R' && old.id != new.id => {
-                out.push(Change {
-                    status: 'D',
-                    old: Some(old.clone()),
-                    new: None,
-                });
-                out.push(Change {
-                    status: 'A',
-                    old: None,
-                    new: Some(new.clone()),
-                });
-            }
-            _ => out.push(c.clone()),
-        }
-    }
-    out.sort();
-    out
-}
-
 fn change_of(f: &FileDiff) -> Change {
-    let side = |path: &Option<BString>, mode: &Option<String>, id: Option<gix::ObjectId>| {
+    let side = |path: &Option<BString>, mode: &Option<String>, id: Option<tergi::git::ObjectId>| {
         path.as_ref().map(|p| Side {
             path: p.to_str().expect("utf-8").to_string(),
             mode: mode.clone().unwrap_or_default(),
@@ -547,7 +520,10 @@ fn text_of(s: &Scratch, side: &Side) -> Option<String> {
 /// Check what `commit::load` gives against git's listing.
 fn check_detail(s: &Scratch, detail: &CommitDetail, want: &[Change]) -> Result<(), TestCaseError> {
     let got: Vec<Change> = detail.files.iter().map(|f| change_of(f)).collect();
-    prop_assert_eq!(exact_renames(&got), exact_renames(want), "files");
+    let (mut sorted_got, mut sorted_want) = (got.clone(), want.to_vec());
+    sorted_got.sort();
+    sorted_want.sort();
+    prop_assert_eq!(sorted_got, sorted_want, "files");
 
     let paths: Vec<&BStr> = detail.files.iter().map(|f| f.path()).collect();
     let mut by_path = paths.clone();
@@ -597,20 +573,18 @@ fn git_diff(s: &Scratch, case: &Case, old: Option<&str>, new: &str) -> Vec<Chang
     raw(&git(s, &args))
 }
 
-fn rev_parse(s: &Scratch, rev: &str) -> gix::ObjectId {
+fn rev_parse(s: &Scratch, rev: &str) -> tergi::git::ObjectId {
     let id = String::from_utf8(git(s, &["rev-parse", rev])).expect("utf-8");
-    gix::ObjectId::from_hex(id.trim().as_bytes()).expect("id")
+    tergi::git::ObjectId::from_hex(id.trim().as_bytes()).expect("id")
 }
 
 fn load(s: &Scratch, case: &Case, rev: &str) -> CommitDetail {
-    let repo = gix::open(s.path()).expect("open");
-    commit::load(&repo, rev_parse(s, rev), case.context, usize::MAX).expect("load")
+    commit::load(&s.git, rev_parse(s, rev), case.context, usize::MAX).expect("load")
 }
 
 fn compare(s: &Scratch, case: &Case, from: &str, to: &str) -> CommitDetail {
-    let repo = gix::open(s.path()).expect("open");
     let (from, to) = (rev_parse(s, from), rev_parse(s, to));
-    let c = commit::compare(&repo, from, to, case.context, usize::MAX).expect("compare");
+    let c = commit::compare(&s.git, from, to, case.context, usize::MAX).expect("compare");
     assert_eq!((c.id, c.base.as_ref().map(|b| b.id)), (to, Some(from)));
     c
 }

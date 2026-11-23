@@ -4,7 +4,7 @@
 //! in the app, since mouse handling needs it. Then everything is drawn from
 //! a shared reference, recording clickable areas in a hit list as we go.
 
-use gix::bstr::ByteSlice as _;
+use bstr::ByteSlice as _;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Margin, Position, Rect};
@@ -405,7 +405,7 @@ fn draw_topbar(app: &App, buf: &mut Buffer, r: Rect) {
     );
     let branch = match (&app.refs.head_branch, app.refs.head) {
         (Some(b), _) => format!("⎇ {b}"),
-        (None, Some(h)) => format!("detached at {}", h.to_hex_with_len(7)),
+        (None, Some(h)) => format!("detached at {}", h.short()),
         (None, None) => app
             .workdir
             .as_ref()
@@ -859,7 +859,7 @@ fn draw_history(app: &App, buf: &mut Buffer, hits: &mut Hits) {
         };
         // The short id goes on the right, if there's room for it after
         // the author and the date.
-        let id = c.id.to_hex_with_len(7).to_string();
+        let id = c.id.short();
         let date = if app.cfg.relative_dates {
             short_date(c.time, now)
         } else {
@@ -1568,10 +1568,7 @@ fn draw_planner(app: &App, buf: &mut Buffer, hits: &mut Hits) {
     let a = app.areas.planner;
     let t = &app.theme;
     fill(buf, a, t.bg);
-    let base = p.base.map_or_else(
-        || "the root".to_string(),
-        |b| b.to_hex_with_len(7).to_string(),
-    );
+    let base = p.base.map_or_else(|| "the root".to_string(), |b| b.short());
     put(
         buf,
         a.x + 1,
@@ -1625,14 +1622,7 @@ fn draw_planner(app: &App, buf: &mut Buffer, hits: &mut Hits) {
         hits.push((rr, Target::PlannerRow(i)));
         hits.push((ar, Target::PlannerAction(i)));
         let st = Style::default().bg(bg).fg(t.fg);
-        let x = put(
-            buf,
-            a.x + 12,
-            y,
-            &r.id.to_hex_with_len(7).to_string(),
-            8,
-            st.fg(t.accent),
-        );
+        let x = put(buf, a.x + 12, y, &r.id.short(), 8, st.fg(t.accent));
         let mut sum_style = st;
         if r.action == PlanAction::Drop {
             sum_style = sum_style.fg(t.faint).add_modifier(Modifier::CROSSED_OUT);

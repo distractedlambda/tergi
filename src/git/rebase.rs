@@ -10,10 +10,10 @@ use std::os::unix::ffi::OsStringExt as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use gix::ObjectId;
-use gix::bstr::BString;
+use bstr::BString;
 
 use super::cli::{Git, RunOpts, shell_quote};
+use crate::git::ObjectId;
 use crate::util::{fs_path, os_str, path_bytes};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,10 +150,7 @@ pub fn check(plan: &Plan) -> Result<()> {
         if let Action::Reword(msg) | Action::Squash(msg) = &step.action
             && is_blank_message(msg)
         {
-            bail!(
-                "The new message for commit {} is empty.",
-                step.id.to_hex_with_len(7)
-            );
+            bail!("The new message for commit {} is empty.", step.id.short());
         }
     }
     // A rebase with `--root` replays the commits onto an empty commit that

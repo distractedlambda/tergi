@@ -25,11 +25,12 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
+use bstr::{BStr, BString, ByteSlice as _};
 use common::Scratch;
 use common::settings::{Settings, settings};
-use gix::bstr::{BStr, BString, ByteSlice as _};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
+use tergi::git::ObjectId;
 use tergi::git::commit::{self, FileTexts};
 use tergi::git::diff::{FileDiff, FileStatus};
 use tergi::git::ops::{ApplyMode, apply_lines};
@@ -375,7 +376,7 @@ fn raw(out: &[u8], split_types: bool) -> Vec<Change> {
 /// What tergi says about a file, in the same form as `Change`. Ids are
 /// left out of working tree diffs, which only have abbreviated ones.
 fn change_of(f: &FileDiff, with_ids: bool) -> Change {
-    let id = |id: Option<gix::ObjectId>| id.filter(|_| with_ids).map(|i| i.to_string());
+    let id = |id: Option<ObjectId>| id.filter(|_| with_ids).map(|i| i.to_string());
     let side = |path: &Option<BString>, mode: &Option<String>, i| {
         path.as_ref().map(|p| Side {
             path: p.clone(),
@@ -675,15 +676,23 @@ fn check_staging(
 /// Commit the index and check what `commit::load` gives for that commit.
 fn check_commit(s: &Scratch) -> Result<(), TestCaseError> {
     s.sh(&["commit", "-q", "--allow-empty", "-m", "next"]);
-    let repo = gix::open(s.path()).expect("open");
-    let id = repo.head_id().expect("head").detach();
-    let detail = commit::load(&repo, id, 3, usize::MAX).expect("load");
+    let id = s.sh(&["rev-parse", "HEAD"]);
+    let id = ObjectId::from_hex(id.trim().as_bytes()).expect("id");
+    let detail = commit::load(&s.git, id, 3, usize::MAX).expect("load");
 
-    // Renames show up as a deleted and an added file in the listing.
+    // Renames show up as a deleted and an added file in the listing, and
+    // copies as an added file.
     let mut got = Vec::new();
     for (f, t) in detail.files.iter().zip(&detail.texts) {
         let c = change_of(f, true);
-        if f.status == FileStatus::Renamed {
+        if f.status == FileStatus::Copied {
+            let added = Change {
+                status: 'A',
+                old: None,
+                new: c.new,
+            };
+            got.push((added, f, t));
+        } else if f.status == FileStatus::Renamed {
             got.push((
                 Change {
                     status: 'D',
@@ -727,7 +736,7 @@ fn check_commit(s: &Scratch) -> Result<(), TestCaseError> {
     prop_assert_eq!(got_changes, want.iter().collect::<Vec<_>>(), "commit files");
 
     for (_, f, t) in got {
-        let data = |id: Option<gix::ObjectId>| id.map(|i| blob(s, &i.to_string()));
+        let data = |id: Option<ObjectId>| id.map(|i| blob(s, &i.to_string()));
         let (old, new) = (data(f.old_id), data(f.new_id));
         let binary = [&old, &new].into_iter().flatten().any(|d| d.contains(&0));
         prop_assert_eq!(f.binary, binary, "commit binary flag of {:?}", f.path());
@@ -776,11 +785,6 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
         .expect("load");
     check_workdir(&s, case, &wd)?;
     check_staging(&rt, &s, case, &wd)?;
-    // Gix finds copies in a different way from git, which `todo/bugs.md`
-    // describes, so the commit is compared without them.
-    if case.settings.get("diff.renames") == Some("copies") {
-        s.sh(&["config", "diff.renames", "true"]);
-    }
     check_commit(&s)
 }
 

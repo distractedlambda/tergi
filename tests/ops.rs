@@ -5,9 +5,9 @@ use crate::common;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
 
+use bstr::BString;
 use common::Scratch;
-use gix::ObjectId;
-use gix::bstr::BString;
+use tergi::git::ObjectId;
 use tergi::git::commit;
 use tergi::git::ops::{self, ApplyMode, apply_lines};
 use tergi::git::rebase::{self, RepoState};
@@ -210,10 +210,9 @@ fn a_stash_shows_its_untracked_files() {
     s.write("c.txt", "untracked\n");
     s.write("dir/d.txt", "deep\n");
     s.sh(&["stash", "push", "-q", "--include-untracked"]);
-    let repo = gix::open(s.path()).expect("open");
     let load = |rev: &str| {
         let id = ObjectId::from_hex(s.sh(&["rev-parse", rev]).trim().as_bytes()).expect("id");
-        commit::load(&repo, id, 3, usize::MAX).expect("load")
+        commit::load(&s.git, id, 3, usize::MAX).expect("load")
     };
     let files = |c: &commit::CommitDetail| -> Vec<(char, String)> {
         c.files
@@ -244,8 +243,7 @@ fn a_stash_shows_its_untracked_files() {
     );
 }
 
-/// Git pairs up empty files as renames, but gix leaves them out unless
-/// asked.
+/// Git pairs up empty files as renames.
 #[test]
 fn an_empty_file_can_be_renamed() {
     let s = Scratch::new();
@@ -253,9 +251,8 @@ fn an_empty_file_can_be_renamed() {
     s.commit_all("init");
     s.sh(&["mv", "a.txt", "b.txt"]);
     let head = s.commit_all("move");
-    let repo = gix::open(s.path()).expect("open");
     let id = ObjectId::from_hex(head.as_bytes()).expect("id");
-    let c = commit::load(&repo, id, 3, usize::MAX).expect("load");
+    let c = commit::load(&s.git, id, 3, usize::MAX).expect("load");
     let files: Vec<_> = c
         .files
         .iter()
@@ -265,10 +262,40 @@ fn an_empty_file_can_be_renamed() {
 
     // Turning renames off in the config still works.
     s.sh(&["config", "diff.renames", "false"]);
-    let repo = gix::open(s.path()).expect("open");
-    let c = commit::load(&repo, id, 3, usize::MAX).expect("load");
+    let c = commit::load(&s.git, id, 3, usize::MAX).expect("load");
     let letters: Vec<char> = c.files.iter().map(|f| f.status.letter()).collect();
     assert_eq!(letters, ['D', 'A']);
+}
+
+/// With `diff.renames = copies`, git looks for the source of a copy among
+/// the old versions of the files that the commit changed. The changed
+/// file shows up too.
+#[test]
+fn a_copy_of_a_changed_file() {
+    let s = Scratch::new();
+    let old = "one\ntwo\nthree\nfour\nfive\n";
+    s.write("a.txt", old);
+    s.commit_all("init");
+    s.write("a.txt", "changed\n");
+    s.write("b.txt", old);
+    let head = s.commit_all("copy");
+    s.sh(&["config", "diff.renames", "copies"]);
+    let id = ObjectId::from_hex(head.as_bytes()).expect("id");
+    let c = commit::load(&s.git, id, 3, usize::MAX).expect("load");
+    let files: Vec<_> = c
+        .files
+        .iter()
+        .map(|f| (f.status.letter(), f.old_path.clone(), f.new_path.clone()))
+        .collect();
+    assert_eq!(
+        files,
+        [
+            ('M', Some("a.txt".into()), Some("a.txt".into())),
+            ('C', Some("a.txt".into()), Some("b.txt".into())),
+        ]
+    );
+    // The copy is diffed against the old `a.txt`, which it equals.
+    assert!(c.files[1].hunks.is_empty());
 }
 
 #[tokio::test]

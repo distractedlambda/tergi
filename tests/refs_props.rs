@@ -17,14 +17,14 @@ use crate::common;
 
 use std::collections::{HashMap, HashSet};
 
+use bstr::{BString, ByteSlice as _};
 use common::Scratch;
 use common::settings::{Settings, settings};
-use gix::ObjectId;
-use gix::bstr::{BString, ByteSlice as _};
 use proptest::prelude::*;
 use proptest::sample::Index;
 use proptest::test_runner::TestCaseError;
 use tergi::app::cmd::{SideKey, SideRow, sidebar_rows};
+use tergi::git::ObjectId;
 use tergi::git::refs::{LabelKind, Refs};
 
 /// Names for remotes. Two of them are a remote and a folder of another.

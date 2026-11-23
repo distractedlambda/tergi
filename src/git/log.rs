@@ -1,9 +1,11 @@
-//! Walking the history with gitoxide, in batches, on a background thread.
+//! Walking the history with `git log`, in batches, on a background thread.
 
-use anyhow::{Context, Result};
-use gix::ObjectId;
-use gix::traverse::commit::topo;
+use std::io::BufRead as _;
 
+use anyhow::{Context, Result, bail};
+
+use super::ObjectId;
+use super::cli::Git;
 use super::graph::{GraphBuilder, GraphRow};
 use crate::util::Generation;
 
@@ -27,46 +29,70 @@ pub struct Batch {
     pub done: bool,
 }
 
+/// What `walk` asks git for, one field for each part of a `CommitInfo`.
+/// Git ends each field with a NUL, and `-z` ends each commit with one.
+const FORMAT: &str = "--format=%H%x00%P%x00%an%x00%ae%x00%ad%x00%B";
+const FIELDS: usize = 6;
+
 /// Walk all commits reachable from `tips` in topological order, sending
 /// them to `sink` in batches. The walk stops early when `generation` is no
 /// longer current in `walks`, which means a newer walk has replaced this one.
+///
+/// This blocks, so run it on a blocking thread.
 pub fn walk(
-    repo: &gix::ThreadSafeRepository,
-    tips: Vec<ObjectId>,
+    git: &Git,
+    tips: &[ObjectId],
     generation: u64,
     walks: &Generation,
     mut sink: impl FnMut(Batch),
 ) -> Result<()> {
-    let mut repo = repo.to_thread_local();
-    repo.object_cache_size_if_unset(64 * 1024 * 1024);
     let mut graph = GraphBuilder::new();
     let mut commits = Vec::new();
     let mut rows = Vec::new();
     // Send a small first batch so the first screen appears quickly.
     let mut batch_size = 200;
 
-    // Tags can point at trees and blobs. git.git has one for a GPG key, for
-    // example. The walk refuses to start from those, so leave them out.
-    let tips: Vec<ObjectId> = tips
-        .into_iter()
-        .filter(|id| {
-            repo.find_header(*id)
-                .is_ok_and(|h| h.kind() == gix::object::Kind::Commit)
-        })
-        .collect();
-
     if !tips.is_empty() {
-        let walk = topo::Builder::from_iters(&repo.objects, tips, None::<Vec<ObjectId>>)
-            .with_commit_graph(repo.commit_graph_if_enabled().ok().flatten())
-            .sorting(topo::Sorting::TopoOrder)
-            .build()
-            .context("could not start the history walk")?;
-        for info in walk {
+        // The tips go in on stdin, because a repository can have more tags
+        // than fit on a command line. Git skips tips that are trees or
+        // blobs, which some tags point at.
+        let input: String = tips.iter().map(|id| format!("{id}\n")).collect();
+        let args = [
+            "log",
+            "--stdin",
+            "--topo-order",
+            "-z",
+            "--date=raw",
+            "--no-show-signature",
+            "--no-notes",
+            "--no-color",
+            FORMAT,
+        ];
+        let mut git_log = git.stream_blocking(&args, input.into_bytes())?;
+        let mut fields: Vec<Vec<u8>> = Vec::with_capacity(FIELDS);
+        let mut field = Vec::new();
+        loop {
+            field.clear();
+            let n = git_log
+                .stdout()
+                .read_until(0, &mut field)
+                .context("reading the history from git failed")?;
+            if n == 0 {
+                break;
+            }
+            if field.pop() != Some(0) {
+                bail!("git log ended in the middle of a commit");
+            }
+            fields.push(std::mem::take(&mut field));
+            if fields.len() < FIELDS {
+                continue;
+            }
             if !walks.is_current(generation) {
+                // Dropping `git_log` stops git.
                 return Ok(());
             }
-            let info = info.context("history walk failed")?;
-            let commit = load_commit(&repo, info.id)?;
+            let commit = parse_commit(&fields)?;
+            fields.clear();
             rows.push(graph.push(commit.id, &commit.parents));
             commits.push(commit);
             if commits.len() >= batch_size {
@@ -79,6 +105,10 @@ pub fn walk(
                 batch_size = 5000;
             }
         }
+        if !fields.is_empty() {
+            bail!("git log ended in the middle of a commit");
+        }
+        git_log.finish()?;
     }
     sink(Batch {
         generation,
@@ -89,27 +119,84 @@ pub fn walk(
     Ok(())
 }
 
-pub fn load_commit(repo: &gix::Repository, id: ObjectId) -> Result<CommitInfo> {
-    let obj = repo.find_commit(id).context("missing commit")?;
-    let c = obj.decode().context("bad commit")?;
-    let author = c.author().context("bad author")?;
-    let (time, offset) = author
-        .time()
-        .map(|t| (t.seconds, t.offset))
-        .unwrap_or((0, 0));
-    let summary = c
-        .message
-        .split(|&b| b == b'\n')
-        .map(|l| String::from_utf8_lossy(l).trim().to_string())
-        .find(|l| !l.is_empty())
-        .unwrap_or_default();
+/// Read one commit from the fields that `FORMAT` asks for.
+fn parse_commit(fields: &[Vec<u8>]) -> Result<CommitInfo> {
+    let [id, parents, name, email, date, message] = fields else {
+        bail!("git log printed a commit with the wrong number of fields");
+    };
+    let parents = parents
+        .split(|&b| b == b' ')
+        .filter(|p| !p.is_empty())
+        .map(ObjectId::from_hex)
+        .collect::<Result<_>>()?;
+    let (time, offset) = parse_raw_date(date);
     Ok(CommitInfo {
-        id,
-        parents: c.parents().collect(),
-        summary,
-        author: String::from_utf8_lossy(author.name).trim().to_string(),
-        email: String::from_utf8_lossy(author.email).trim().to_string(),
+        id: ObjectId::from_hex(id)?,
+        parents,
+        summary: summary(message),
+        author: String::from_utf8_lossy(name).trim().to_string(),
+        email: String::from_utf8_lossy(email).trim().to_string(),
         time,
         offset,
     })
+}
+
+/// The first line of a message that isn't blank, without the spaces
+/// around it.
+fn summary(message: &[u8]) -> String {
+    message
+        .split(|&b| b == b'\n')
+        .map(|l| String::from_utf8_lossy(l).trim().to_string())
+        .find(|l| !l.is_empty())
+        .unwrap_or_default()
+}
+
+/// Read a date as `--date=raw` prints it, such as `1112911993 -0130`.
+/// Gives the seconds since the epoch, and the time zone in seconds east
+/// of UTC. A date that doesn't parse counts as the epoch in UTC.
+pub fn parse_raw_date(date: &[u8]) -> (i64, i32) {
+    let date = String::from_utf8_lossy(date);
+    let mut parts = date.split_ascii_whitespace();
+    let time = parts.next().and_then(|t| t.parse::<i64>().ok());
+    let zone = parts.next().and_then(|z| {
+        let (sign, digits) = match z.as_bytes().first()? {
+            b'+' => (1, &z[1..]),
+            b'-' => (-1, &z[1..]),
+            _ => return None,
+        };
+        if digits.len() != 4 {
+            return None;
+        }
+        let hours: i32 = digits[..2].parse().ok()?;
+        let minutes: i32 = digits[2..].parse().ok()?;
+        Some(sign * (hours * 3600 + minutes * 60))
+    });
+    match time {
+        Some(t) => (t, zone.unwrap_or(0)),
+        None => (0, 0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_dates() {
+        assert_eq!(parse_raw_date(b"1112911993 -0130"), (1112911993, -5400));
+        assert_eq!(parse_raw_date(b"0 +0000"), (0, 0));
+        assert_eq!(parse_raw_date(b"-5 +1400"), (-5, 50400));
+        assert_eq!(parse_raw_date(b"12 bogus"), (12, 0));
+        assert_eq!(parse_raw_date(b""), (0, 0));
+    }
+
+    #[test]
+    fn summaries() {
+        assert_eq!(
+            summary(b"\n\n  Blank lines first  \n\nbody\n"),
+            "Blank lines first"
+        );
+        assert_eq!(summary(b"Summary\nsame paragraph\n"), "Summary");
+        assert_eq!(summary(b"\n \t\n"), "");
+    }
 }

@@ -56,7 +56,7 @@ task panics, `App::next` and `App::try_recv` raise the same panic in the
 caller. A panic in the background then stops the app with the real
 message, instead of leaving it waiting for an event that never comes.
 
-Blocking work, such as the gitoxide history walk or parsing a large
+Blocking work, such as the history walk or parsing a large
 diff, goes through `util::blocking`. It runs the closure on Tokio's
 blocking pool, and a panic in it carries on in the task that waited
 for it.

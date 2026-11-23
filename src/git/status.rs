@@ -1,7 +1,7 @@
 //! Parsing `git status --porcelain=v2 --branch -z`.
 
 use anyhow::Result;
-use gix::bstr::{BStr, BString, ByteSlice as _};
+use bstr::{BStr, BString, ByteSlice as _};
 
 use super::cli::Git;
 

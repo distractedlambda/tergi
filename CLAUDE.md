@@ -61,8 +61,8 @@ everything else already queued before it draws again.
 All slow work happens in background Tokio tasks that the `App` owns in a
 `JoinSet` (`App::spawn`). Tasks send their results back as `AppEvent`s
 over an unbounded channel. If a task panics, the panic comes back out of
-`App::next` or `App::try_recv`. Blocking work, such as the gix history
-walk, goes through `util::blocking`.
+`App::next` or `App::try_recv`. Blocking work, such as the history walk,
+goes through `util::blocking`.
 
 `App::handle` and everything it calls are plain functions, so handling
 an event never waits for git. When a handler needs to read something
@@ -87,15 +87,18 @@ selected ref again by name after a reload, planner rows are found by
 commit id, and a staging `Unit` names its file by path and keeps the
 diff that its hunks and lines came from.
 
-### Reading with gix, writing with the git CLI
+### Everything goes through the git CLI
 
-- Reads that need to be fast use gitoxide. These are the history walk in
-  `git/log.rs` and commit diffs in `git/commit.rs`, which diff the text
-  with imara-diff.
-- Every write, and the status and working tree diffs, run the `git`
-  executable through `git/cli.rs`. That way hooks, signing, credential
-  helpers and the user's config behave as they do on the command line.
-  `Git` keeps a log of the commands it ran, which the `@` overlay shows.
+- Every read and write runs the `git` executable through `git/cli.rs`.
+  That way hooks, signing, credential helpers and the user's config
+  behave as they do on the command line. `Git` keeps a log of the
+  commands that change something, which the `@` overlay shows.
+- The history walk in `git/log.rs` streams `git log` from a blocking
+  thread, and stops git when a newer walk replaces it. Commit diffs in
+  `git/commit.rs` get the list of files from `git diff --raw` and the
+  blobs from `git cat-file --batch`, and diff the text with imara-diff.
+  `Git::read_blocking` and `Git::stream_blocking` run git from blocking
+  code.
 - Operations that change the repository go through `App::spawn_op`. Only
   one can run at a time. When it finishes, the app shows the result,
   applies its `After` action and refreshes everything.

@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use gix::bstr::BString;
+use bstr::BString;
 use redb::{
     Database, DatabaseError, MultimapTableDefinition, ReadTransaction, ReadableDatabase as _,
     ReadableMultimapTable as _, ReadableTable as _, TableDefinition, TableError,

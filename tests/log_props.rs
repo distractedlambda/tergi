@@ -22,10 +22,10 @@ use std::process::{Command, Stdio};
 
 use common::Scratch;
 use common::settings::{Settings, settings};
-use gix::ObjectId;
 use proptest::prelude::*;
 use proptest::sample::Index;
 use proptest::test_runner::TestCaseError;
+use tergi::git::ObjectId;
 use tergi::git::log;
 use tergi::git::refs::Refs;
 use tergi::util::Generation;
@@ -419,13 +419,12 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
         prop_assert_eq!(tag.target, id(peeled.trim()), "tag {}", tag.name);
     }
 
-    let repo = gix::open(s.path()).expect("open").into_sync();
     let walks = Generation::default();
     let generation = walks.next();
     let mut batches = Vec::new();
     log::walk(
-        &repo,
-        refs.tips(&Default::default()),
+        &s.git,
+        &refs.tips(&Default::default()),
         generation,
         &walks,
         |b| batches.push(b),

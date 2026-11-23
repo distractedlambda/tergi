@@ -1,7 +1,7 @@
 //! Random git settings for the property tests.
 //!
-//! tergi runs the user's git, which reads the user's config, and gix reads
-//! it too. The tests otherwise only see the dev image's config. Each case
+//! tergi runs the user's git, which reads the user's config. The tests
+//! otherwise only see the dev image's config. Each case
 //! of a test that uses the real git can pick a random set of settings from
 //! here, and `Scratch::with` writes them to the scratch repository. tergi
 //! should behave the same under all of them, so the checks don't change.
@@ -26,6 +26,8 @@ const SETTINGS: &[(&str, &[&str])] = &[
     ("diff.context", &["0", "1", "7"]),
     ("diff.interHunkContext", &["2", "10"]),
     ("diff.suppressBlankEmpty", &["true"]),
+    ("diff.relative", &["true"]),
+    ("diff.ignoreSubmodules", &["all", "dirty"]),
     ("color.diff", &["always"]),
     ("color.status", &["always"]),
     ("core.autocrlf", &["input"]),

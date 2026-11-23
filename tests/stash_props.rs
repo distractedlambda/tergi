@@ -13,9 +13,9 @@ use crate::common;
 
 use common::Scratch;
 use common::settings::{Settings, settings};
-use gix::ObjectId;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
+use tergi::git::ObjectId;
 use tergi::git::ops;
 use tergi::git::refs::Refs;
 

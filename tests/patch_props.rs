@@ -21,9 +21,9 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
+use bstr::ByteSlice as _;
 use common::Scratch;
 use common::settings::{Settings, settings};
-use gix::bstr::ByteSlice as _;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use tergi::git::commit::FileTexts;

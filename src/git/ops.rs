@@ -11,12 +11,12 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStringExt as _;
 
 use anyhow::{Result, bail};
-use gix::ObjectId;
-use gix::bstr::BString;
+use bstr::BString;
 
 use super::cli::{Git, RunOpts};
 use super::diff::{DiffLine, FileDiff, LineKind};
 use super::patch::build_patch;
+use crate::git::ObjectId;
 use crate::util::os_str;
 
 /// A ref name or other bytes as an argument for git.

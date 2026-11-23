@@ -1,7 +1,7 @@
 # Running git
 
-tergi reads the history and commit diffs with gitoxide, and does
-everything else by running the `git` executable. This document explains
+tergi does everything by running the `git` executable, reads as well
+as writes. This document explains
 how tergi runs git, how fetch, pull and push work, and why git and ssh
 never ask the user anything.
 
@@ -17,8 +17,12 @@ too. Its view of the index, the ignore rules and filters such as
 line-ending conversion is the one that counts, and line staging has to
 build patches that git will accept against that view.
 
-gitoxide is used where speed matters and the result is only shown, not
-written. That means the history walk and commit diffs.
+Reads go through git as well, even the history walk and commit diffs,
+which need to be fast. That way tergi shows what `git log` and
+`git show` would show. Git applies the user's rename settings and
+`refs/replace`, finds the repository the way the user's other git
+commands do, and fetches missing objects in a partial clone.
+`history.md` and `diffs.md` explain how those two stay fast.
 
 ## How a command runs
 
@@ -73,6 +77,17 @@ added to the command log, whether it succeeds or not.
 Both write any input while they read the output. A large patch could
 otherwise fill git's output pipe while we are still writing, and both
 sides would wait for each other forever.
+
+The history walk and commit loading run on blocking threads, so they
+can't await. They use two more reads that block instead:
+
+- `Git::read_blocking` works like `read`. It writes the input on a
+  second thread while it reads the output.
+- `Git::stream_blocking` starts git and hands back a `Stream`, whose
+  output the caller reads as it comes. Another thread collects stderr,
+  so git never waits for us to read it. `Stream::finish` waits for git
+  and turns a failure into an error. Dropping a `Stream` before that
+  kills git, which is how a walk stops when a newer one replaces it.
 
 When a command fails, the error is git's stderr, or its stdout if
 stderr is empty. That is what the error dialog shows.

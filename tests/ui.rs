@@ -12,9 +12,9 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
+use bstr::BString;
 use common::Scratch;
 use common::ui::Ui;
-use gix::bstr::BString;
 use tergi::app::cmd::{Cmd, Context, Overlay, SideRow, Unit};
 use tergi::app::doc::{Row, Section, Source};
 use tergi::app::input::{SCROLL_LOCK, Target};
@@ -234,6 +234,26 @@ fn menus_from_the_keyboard_open_in_the_middle() {
     // selected row, because that's what it acts on.
     ui.key(KeyCode::Char('.'));
     assert!(anchor(&ui).is_some());
+}
+
+/// Ids in a SHA-256 repository are longer, but everything else works the
+/// same.
+#[test]
+fn opens_a_sha256_repository() {
+    let s = Scratch::sha256();
+    write_change(&s);
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    ui.select_commit(1);
+    let commit = ui.app.detail.commit.clone().expect("commit");
+    assert_eq!(commit.id.as_bytes().len(), 32);
+    assert_eq!(commit.message, "Add a fourth note\n");
+    let files: Vec<String> = commit.files.iter().map(|f| f.path().to_string()).collect();
+    assert_eq!(files, ["notes.txt"]);
+    assert_eq!(
+        commit.texts[0].new.as_deref(),
+        Some("one\ntwo\nthree\nfour\n")
+    );
 }
 
 #[test]
@@ -1025,7 +1045,7 @@ fn fixes_up_commits_selected_with_v() {
 
 /// A branch "side" that changes `a.txt`, and a commit "main" next to it
 /// that adds `b.txt`. Returns their ids.
-fn two_branches(s: &Scratch) -> (gix::ObjectId, gix::ObjectId) {
+fn two_branches(s: &Scratch) -> (tergi::git::ObjectId, tergi::git::ObjectId) {
     s.write("a.txt", "base\n");
     s.commit_all("base");
     s.sh(&["checkout", "-q", "-b", "side"]);
@@ -1034,7 +1054,7 @@ fn two_branches(s: &Scratch) -> (gix::ObjectId, gix::ObjectId) {
     s.sh(&["checkout", "-q", "main"]);
     s.write("b.txt", "main\n");
     let main = s.commit_all("main");
-    let id = |h: &str| gix::ObjectId::from_hex(h.trim().as_bytes()).expect("id");
+    let id = |h: &str| tergi::git::ObjectId::from_hex(h.trim().as_bytes()).expect("id");
     (id(&side), id(&main))
 }
 

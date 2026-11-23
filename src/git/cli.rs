@@ -4,9 +4,10 @@
 //! the user's config behave exactly as they do on the command line.
 
 use std::ffi::{OsStr, OsString};
+use std::io::{Read as _, Write as _};
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -68,8 +69,11 @@ impl Git {
         self.log.lock().map(|l| l.clone()).unwrap_or_default()
     }
 
-    fn base_command(&self) -> Command {
-        let mut cmd = Command::new("git");
+    /// A `git` command with the settings every command gets. It is a std
+    /// command so that blocking code can run it too. Async code turns it
+    /// into a Tokio command with `Command::from`.
+    fn base_command(&self) -> std::process::Command {
+        let mut cmd = std::process::Command::new("git");
         cmd.current_dir(&self.workdir)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_PAGER", "cat")
@@ -106,7 +110,7 @@ impl Git {
     }
 
     pub async fn read_opts<S: AsRef<OsStr>>(&self, args: &[S], opts: &RunOpts) -> Result<Output> {
-        let mut cmd = self.base_command();
+        let mut cmd = Command::from(self.base_command());
         // Nobody wants the answer once the task asking for it is gone. Commands
         // that change the repository are left to finish, so they don't stop
         // halfway through.
@@ -125,7 +129,7 @@ impl Git {
     /// The setting is a shell command, which can name a program by a path
     /// that isn't UTF-8, so it comes back as it is.
     pub async fn editor(&self) -> Result<OsString> {
-        let mut cmd = self.base_command();
+        let mut cmd = Command::from(self.base_command());
         cmd.env_remove("GIT_EDITOR");
         let out = self
             .exec(cmd, &["var", "GIT_EDITOR"], &RunOpts::default(), false)
@@ -140,7 +144,7 @@ impl Git {
     }
 
     pub async fn run_opts<S: AsRef<OsStr>>(&self, args: &[S], opts: &RunOpts) -> Result<Output> {
-        let cmd = self.base_command();
+        let cmd = Command::from(self.base_command());
         self.exec(cmd, args, opts, true).await
     }
 
@@ -172,31 +176,106 @@ impl Git {
         };
         let ((), out) = tokio::join!(write, child.wait_with_output());
         let out = out.context("git did not finish")?;
-        let code = out.status.code().unwrap_or(-1);
-        let ok = out.status.success() || opts.ok_codes.contains(&code);
-        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        self.finish(&args, opts, logged, out.status, out.stdout, &out.stderr)
+    }
+
+    /// Run a read-only command from blocking code, such as a background
+    /// thread. Like `read`, it isn't logged and takes no optional locks.
+    pub fn read_blocking<S: AsRef<OsStr>>(&self, args: &[S], opts: &RunOpts) -> Result<Output> {
+        let args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
+        let mut cmd = self.base_command();
+        cmd.env("GIT_OPTIONAL_LOCKS", "0").args(&args);
+        for (k, v) in &opts.env {
+            cmd.env(k, v);
+        }
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        if opts.stdin.is_some() {
+            cmd.stdin(Stdio::piped());
+        }
+        let mut child = cmd.spawn().context("could not run git")?;
+        let stdin = child.stdin.take();
+        // As in `exec`, write the input on another thread while this one
+        // reads the output, so neither side waits for the other forever.
+        let out = std::thread::scope(|scope| {
+            if let (Some(mut stdin), Some(input)) = (stdin, &opts.stdin) {
+                scope.spawn(move || {
+                    let _ = stdin.write_all(input);
+                });
+            }
+            child.wait_with_output()
+        });
+        let out = out.context("git did not finish")?;
+        self.finish(&args, opts, false, out.status, out.stdout, &out.stderr)
+    }
+
+    /// Start a read-only command whose output the caller reads as it
+    /// comes, from blocking code. `input` is written to its stdin. Stderr
+    /// is collected on another thread, so that git can't block on it, and
+    /// `Stream::finish` turns it into the error if git fails.
+    pub fn stream_blocking<S: AsRef<OsStr>>(&self, args: &[S], input: Vec<u8>) -> Result<Stream> {
+        let args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
+        let mut cmd = self.base_command();
+        cmd.env("GIT_OPTIONAL_LOCKS", "0").args(&args);
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().context("could not run git")?;
+        let stdin = child.stdin.take();
+        std::thread::spawn(move || {
+            if let Some(mut stdin) = stdin {
+                let _ = stdin.write_all(&input);
+            }
+        });
+        let stderr = child.stderr.take().map(|mut err| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = err.read_to_end(&mut buf);
+                buf
+            })
+        });
+        let stdout = child.stdout.take().context("no stdout")?;
+        Ok(Stream {
+            git: self.clone(),
+            command: first_arg(&args),
+            child,
+            stdout: Some(std::io::BufReader::new(stdout)),
+            stderr,
+        })
+    }
+
+    /// Log a finished command if asked, and turn a failure into an error
+    /// with git's message.
+    fn finish(
+        &self,
+        args: &[&OsStr],
+        opts: &RunOpts,
+        logged: bool,
+        status: ExitStatus,
+        stdout: Vec<u8>,
+        stderr: &[u8],
+    ) -> Result<Output> {
+        let code = status.code().unwrap_or(-1);
+        let ok = status.success() || opts.ok_codes.contains(&code);
+        let stderr = String::from_utf8_lossy(stderr).into_owned();
         if logged {
-            let mut output = String::from_utf8_lossy(&out.stdout).into_owned();
+            let mut output = String::from_utf8_lossy(&stdout).into_owned();
             output.push_str(&stderr);
             self.push_log(LogEntry {
                 time: SystemTime::now(),
-                command: format!("git {}", shell_join(&args)),
+                command: format!("git {}", shell_join(args)),
                 ok,
                 output,
             });
         }
         if !ok {
             let msg = if stderr.trim().is_empty() {
-                String::from_utf8_lossy(&out.stdout).trim().to_string()
+                String::from_utf8_lossy(&stdout).trim().to_string()
             } else {
                 stderr.trim().to_string()
             };
-            bail!("git {} failed:\n{}", first_arg(&args), msg);
+            bail!("git {} failed:\n{}", first_arg(args), msg);
         }
-        Ok(Output {
-            stdout: out.stdout,
-            stderr,
-        })
+        Ok(Output { stdout, stderr })
     }
 
     /// Run a long command such as fetch or push. Progress lines from stderr
@@ -209,7 +288,7 @@ impl Git {
         mut progress: impl FnMut(&str),
     ) -> Result<Output> {
         let args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
-        let mut cmd = self.base_command();
+        let mut cmd = Command::from(self.base_command());
         cmd.args(&args);
         for (k, v) in &opts.env {
             cmd.env(k, v);
@@ -275,6 +354,59 @@ impl Git {
     }
 }
 
+/// A running git command, from `Git::stream_blocking`. Dropping it before
+/// `finish` kills git.
+pub struct Stream {
+    git: Git,
+    command: String,
+    child: std::process::Child,
+    stdout: Option<std::io::BufReader<std::process::ChildStdout>>,
+    stderr: Option<std::thread::JoinHandle<Vec<u8>>>,
+}
+
+impl Stream {
+    pub fn stdout(&mut self) -> &mut std::io::BufReader<std::process::ChildStdout> {
+        self.stdout
+            .as_mut()
+            .unwrap_or_else(|| unreachable!("stdout is only taken in finish"))
+    }
+
+    /// Wait for git to exit. Fails with git's message if it failed.
+    pub fn finish(mut self) -> Result<()> {
+        // Git may still be writing. Read the rest, so it doesn't block on
+        // a full pipe.
+        if let Some(mut out) = self.stdout.take() {
+            std::io::copy(&mut out, &mut std::io::sink()).context("reading from git failed")?;
+        }
+        let status = self.child.wait().context("git did not finish")?;
+        let stderr = self
+            .stderr
+            .take()
+            .and_then(|h| h.join().ok())
+            .unwrap_or_default();
+        let args = [OsStr::new(&self.command)];
+        self.git
+            .finish(
+                &args,
+                &RunOpts::default(),
+                false,
+                status,
+                Vec::new(),
+                &stderr,
+            )
+            .map(drop)
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        if self.stdout.is_some() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
 /// Keep only the final state of each progress line, so the log doesn't fill
 /// up with hundreds of "Receiving objects: 12%" updates.
 fn clean_progress(s: &str) -> String {
@@ -320,7 +452,7 @@ pub fn shell_quote(word: &[u8]) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use gix::bstr::BStr;
+    use bstr::BStr;
 
     use super::*;
 

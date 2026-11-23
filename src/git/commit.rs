@@ -1,14 +1,19 @@
 //! Loading a commit's metadata and its diff against its first parent, or
-//! against another commit, using gitoxide for the tree diff and imara-diff
-//! for the text diff.
+//! against another commit. Git reads the commits, lists the changed files
+//! and hands over the blobs. imara-diff diffs the texts.
 
+use std::collections::HashMap;
+use std::io::BufRead as _;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
-use gix::ObjectId;
+use anyhow::{Context, Result, bail};
+use bstr::{BString, ByteSlice as _};
 use imara_diff::{Algorithm, Diff, InternedInput};
 
+use super::ObjectId;
+use super::cli::{Git, RunOpts};
 use super::diff::{DiffLine, FileDiff, FileStatus, Hunk, LineKind};
+use super::log::parse_raw_date;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Person {
@@ -49,217 +54,325 @@ pub struct Base {
 /// Blobs bigger than this aren't diffed unless the user asks.
 pub const MAX_BLOB: usize = 4 * 1024 * 1024;
 
-pub fn load(
-    repo: &gix::Repository,
-    id: ObjectId,
-    context: u32,
-    line_limit: usize,
-) -> Result<CommitDetail> {
-    load_against(repo, id, None, context, line_limit)
+// These run git and block, so call them from a blocking thread.
+
+pub fn load(git: &Git, id: ObjectId, context: u32, line_limit: usize) -> Result<CommitDetail> {
+    load_against(git, id, None, context, line_limit)
 }
 
 /// Load `to` with its diff against `from` instead of its parent. The two
 /// commits needn't be related.
 pub fn compare(
-    repo: &gix::Repository,
+    git: &Git,
     from: ObjectId,
     to: ObjectId,
     context: u32,
     line_limit: usize,
 ) -> Result<CommitDetail> {
-    load_against(repo, to, Some(from), context, line_limit)
+    load_against(git, to, Some(from), context, line_limit)
 }
 
 /// Load `id` with its diff against `base`, or against its first parent if
 /// there is no base.
 pub fn load_against(
-    repo: &gix::Repository,
+    git: &Git,
     id: ObjectId,
     base: Option<ObjectId>,
     context: u32,
     line_limit: usize,
 ) -> Result<CommitDetail> {
-    let commit = repo.find_commit(id).context("commit not found")?;
-    let (message, author, committer, parents) = {
-        let c = commit.decode().context("bad commit")?;
-        let person = |s: gix::actor::SignatureRef<'_>| {
-            let t = s.time().unwrap_or_default();
-            Person {
-                name: String::from_utf8_lossy(s.name).trim().to_string(),
-                email: String::from_utf8_lossy(s.email).trim().to_string(),
-                time: t.seconds,
-                offset: t.offset,
-            }
-        };
-        (
-            String::from_utf8_lossy(c.message).into_owned(),
-            person(c.author().context("bad author")?),
-            person(c.committer().context("bad committer")?),
-            c.parents().collect::<Vec<_>>(),
-        )
-    };
-    let new_tree = commit.tree().context("commit has no tree")?;
-    let (old_tree, base) = match base {
+    let ids: Vec<ObjectId> = [Some(id), base].into_iter().flatten().collect();
+    let mut commits = read_commits(git, &ids)?;
+    let commit = commits.remove(&id).context("commit not found")?;
+    let base = match base {
+        Some(b) if b == id => Some(Base {
+            id: b,
+            message: commit.message.clone(),
+        }),
         Some(b) => {
-            let c = repo.find_commit(b).context("commit not found")?;
-            let message = String::from_utf8_lossy(c.decode().context("bad commit")?.message);
-            let message = message.into_owned();
-            let base = Base { id: b, message };
-            (c.tree().context("commit has no tree")?, Some(base))
+            let c = commits.remove(&b).context("commit not found")?;
+            Some(Base {
+                id: b,
+                message: c.message,
+            })
         }
-        None => match parents.first() {
-            Some(p) => (
-                repo.find_commit(*p)
-                    .context("parent not found")?
-                    .tree()
-                    .context("parent has no tree")?,
-                None,
-            ),
-            None => (repo.empty_tree(), None),
-        },
+        None => None,
     };
-    let (mut files, mut texts) = diff_trees(repo, &old_tree, &new_tree, context, line_limit)?;
+    let old = match &base {
+        Some(b) => b.id,
+        None => commit.parents.first().copied().unwrap_or(id.empty_tree()),
+    };
+    let mut changes = diff_trees(git, old, id)?;
     // Only a stash's own diff shows its untracked files.
     if base.is_none()
-        && let Some(untracked) = stash_untracked(repo, &parents)?
+        && let Some(untracked) = stash_untracked(git, &commit.parents)?
     {
-        let tree = untracked.tree().context("stash has no tree")?;
-        let (more, more_texts) = diff_trees(repo, &repo.empty_tree(), &tree, context, line_limit)?;
-        for mut f in more {
-            f.status = FileStatus::Untracked;
-            files.push(f);
+        for mut c in diff_trees(git, untracked.empty_tree(), untracked)? {
+            c.status = FileStatus::Untracked;
+            changes.push(c);
         }
-        texts.extend(more_texts);
-        (files, texts) = sort_by_path(files, texts);
     }
+    let blobs = read_blobs(git, &changes)?;
+    let (files, texts) = files_of(changes, &blobs, context, line_limit);
     Ok(CommitDetail {
         id,
-        parents,
-        message,
-        author,
-        committer,
+        parents: commit.parents,
+        message: commit.message,
+        author: commit.author,
+        committer: commit.committer,
         files: files.into_iter().map(Arc::new).collect(),
         texts,
         base,
     })
 }
 
-pub fn diff_trees(
-    repo: &gix::Repository,
-    old_tree: &gix::Tree<'_>,
-    new_tree: &gix::Tree<'_>,
-    context: u32,
-    line_limit: usize,
-) -> Result<(Vec<FileDiff>, Vec<FileTexts>)> {
-    use gix::object::tree::diff::ChangeDetached as C;
-    let options = gix::diff::Options::default().with_rewrites(rewrites(repo)?);
-    let changes = repo
-        .diff_tree_to_tree(Some(old_tree), Some(new_tree), options)
-        .context("tree diff failed")?;
-    let mut files = Vec::new();
-    let mut texts = Vec::new();
-    for change in changes {
-        let (status, old_path, new_path, old, new) = match change {
-            C::Addition {
-                entry_mode,
-                id,
-                location,
-                ..
-            } => {
-                if entry_mode.is_tree() {
-                    continue;
-                }
-                (
-                    FileStatus::Added,
-                    None,
-                    Some(location),
-                    None,
-                    Some((id, entry_mode)),
-                )
-            }
-            C::Deletion {
-                entry_mode,
-                id,
-                location,
-                ..
-            } => {
-                if entry_mode.is_tree() {
-                    continue;
-                }
-                (
-                    FileStatus::Deleted,
-                    Some(location),
-                    None,
-                    Some((id, entry_mode)),
-                    None,
-                )
-            }
-            C::Modification {
-                previous_entry_mode,
-                previous_id,
-                entry_mode,
-                id,
-                location,
-            } => {
-                if entry_mode.is_tree() && previous_entry_mode.is_tree() {
-                    continue;
-                }
-                // Git treats a file that only gains or loses its executable
-                // bit as modified, but gix gives the two modes different
-                // kinds.
-                let same_type = (previous_entry_mode.is_blob() && entry_mode.is_blob())
-                    || previous_entry_mode.kind() == entry_mode.kind();
-                let status = if same_type {
-                    FileStatus::Modified
-                } else {
-                    FileStatus::TypeChange
-                };
-                (
-                    status,
-                    Some(location.clone()),
-                    Some(location),
-                    Some((previous_id, previous_entry_mode)),
-                    Some((id, entry_mode)),
-                )
-            }
-            C::Rewrite {
-                source_location,
-                source_entry_mode,
-                source_id,
-                entry_mode,
-                id,
-                copy,
-                location,
-                ..
-            } => {
-                if entry_mode.is_tree() {
-                    continue;
-                }
-                (
-                    if copy {
-                        FileStatus::Copied
-                    } else {
-                        FileStatus::Renamed
-                    },
-                    Some(source_location),
-                    Some(location),
-                    Some((source_id, source_entry_mode)),
-                    Some((id, entry_mode)),
-                )
+/// A commit as `read_commits` gets it from git.
+struct RawCommit {
+    parents: Vec<ObjectId>,
+    author: Person,
+    committer: Person,
+    message: String,
+}
+
+/// Read the parents, people and messages of some commits. A commit that
+/// isn't there is left out of the map.
+fn read_commits(git: &Git, ids: &[ObjectId]) -> Result<HashMap<ObjectId, RawCommit>> {
+    const FIELDS: usize = 9;
+    let mut args: Vec<String> = [
+        "log",
+        "--no-walk=unsorted",
+        "-z",
+        "--date=raw",
+        "--no-show-signature",
+        "--no-notes",
+        "--no-color",
+        "--format=%H%x00%P%x00%an%x00%ae%x00%ad%x00%cn%x00%ce%x00%cd%x00%B",
+    ]
+    .map(String::from)
+    .to_vec();
+    args.extend(ids.iter().map(ObjectId::to_string));
+    args.push("--".into());
+    let out = git.read_blocking(&args, &RunOpts::default())?.stdout;
+    let fields: Vec<&[u8]> = out.split(|&b| b == 0).collect();
+    let mut commits = HashMap::new();
+    // Each commit ends with a NUL, so the last piece is empty.
+    for [id, parents, an, ae, ad, cn, ce, cd, message] in fields.as_chunks::<FIELDS>().0 {
+        let person = |name: &[u8], email: &[u8], date: &[u8]| {
+            let (time, offset) = parse_raw_date(date);
+            Person {
+                name: String::from_utf8_lossy(name).trim().to_string(),
+                email: String::from_utf8_lossy(email).trim().to_string(),
+                time,
+                offset,
             }
         };
-        let mut f = FileDiff::new(status, old_path, new_path);
-        f.old_id = old.map(|o| o.0);
-        f.new_id = new.map(|n| n.0);
-        f.old_mode = old.map(|o| o.1.kind().as_octal_str().to_string());
-        f.new_mode = new.map(|n| n.1.kind().as_octal_str().to_string());
+        let parents = parents
+            .split(|&b| b == b' ')
+            .filter(|p| !p.is_empty())
+            .map(ObjectId::from_hex)
+            .collect::<Result<_>>()?;
+        let commit = RawCommit {
+            parents,
+            author: person(an, ae, ad),
+            committer: person(cn, ce, cd),
+            message: String::from_utf8_lossy(message).into_owned(),
+        };
+        commits.insert(ObjectId::from_hex(id)?, commit);
+    }
+    Ok(commits)
+}
 
-        let old_text = old
-            .map(|(id, mode)| blob_text(repo, id, mode))
-            .transpose()?;
-        let new_text = new
-            .map(|(id, mode)| blob_text(repo, id, mode))
-            .transpose()?;
+/// One side of a changed file in `git diff --raw`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Side {
+    path: BString,
+    mode: String,
+    id: ObjectId,
+}
+
+/// A changed file in `git diff --raw`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Change {
+    status: FileStatus,
+    similarity: Option<u8>,
+    old: Option<Side>,
+    new: Option<Side>,
+}
+
+/// List the files that differ between two trees, or the trees of two
+/// commits. This uses `git diff` rather than `git diff-tree`, because it
+/// finds renames and copies as the user's `diff.renames` and
+/// `diff.renameLimit` say, the way `git show` does.
+fn diff_trees(git: &Git, old: ObjectId, new: ObjectId) -> Result<Vec<Change>> {
+    let (old, new) = (old.to_string(), new.to_string());
+    let args = [
+        "diff",
+        "--raw",
+        "-z",
+        "--no-abbrev",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-relative",
+        "--ignore-submodules=none",
+        // We sort the files ourselves, and a `diff.orderFile` that is
+        // missing would make git fail.
+        "-O/dev/null",
+        &old,
+        &new,
+        "--",
+    ];
+    let out = git.read_blocking(&args, &RunOpts::default())?.stdout;
+    parse_raw(&out)
+}
+
+/// Read the output of `git diff --raw -z`. Each file is a line such as
+/// `:100644 100644 <old id> <new id> M` followed by its path. Renames and
+/// copies have a score after their letter, and two paths.
+fn parse_raw(out: &[u8]) -> Result<Vec<Change>> {
+    let mut fields = out.split(|&b| b == 0);
+    let mut changes = Vec::new();
+    while let Some(info) = fields.next() {
+        if info.is_empty() {
+            continue;
+        }
+        let bad = || format!("can't read git's file list at {:?}", info.as_bstr());
+        let info = info.strip_prefix(b":").with_context(bad)?;
+        let parts: Vec<&[u8]> = info.split(|&b| b == b' ').collect();
+        let [old_mode, new_mode, old_id, new_id, status] = parts[..] else {
+            bail!(bad());
+        };
+        let (letter, score) = status.split_first().with_context(bad)?;
+        let status = match letter {
+            b'A' => FileStatus::Added,
+            b'D' => FileStatus::Deleted,
+            b'M' => FileStatus::Modified,
+            b'T' => FileStatus::TypeChange,
+            b'R' => FileStatus::Renamed,
+            b'C' => FileStatus::Copied,
+            _ => bail!(bad()),
+        };
+        let similarity = score.to_str().ok().and_then(|s| s.parse().ok());
+        let mut path = || fields.next().map(BString::from).with_context(bad);
+        let old_path = path()?;
+        let new_path = match status {
+            FileStatus::Renamed | FileStatus::Copied => path()?,
+            _ => old_path.clone(),
+        };
+        let side = |path: BString, mode: &[u8], id: &[u8]| -> Result<Option<Side>> {
+            if mode.iter().all(|&b| b == b'0') {
+                return Ok(None);
+            }
+            Ok(Some(Side {
+                path,
+                mode: String::from_utf8_lossy(mode).into_owned(),
+                id: ObjectId::from_hex(id)?,
+            }))
+        };
+        changes.push(Change {
+            status,
+            similarity,
+            old: side(old_path, old_mode, old_id)?,
+            new: side(new_path, new_mode, new_id)?,
+        });
+    }
+    Ok(changes)
+}
+
+/// The commit that holds the untracked files of a stash made with
+/// `--include-untracked`, if these are such a stash's parents.
+///
+/// Such a stash has three parents: the commit it was made on, a commit
+/// with the staged changes on top of that, and a root commit with the
+/// untracked files. Git always gives the last one a message that starts
+/// with "untracked files on ". We check all of that, so an ordinary merge
+/// with three parents isn't mistaken for a stash.
+fn stash_untracked(git: &Git, parents: &[ObjectId]) -> Result<Option<ObjectId>> {
+    let [base, index, untracked] = parents else {
+        return Ok(None);
+    };
+    let commits = read_commits(git, &[*index, *untracked])?;
+    let (Some(i), Some(u)) = (commits.get(index), commits.get(untracked)) else {
+        bail!("parent not found");
+    };
+    if i.parents != [*base] || !u.parents.is_empty() {
+        return Ok(None);
+    }
+    Ok(u.message
+        .starts_with("untracked files on ")
+        .then_some(*untracked))
+}
+
+/// Read the blobs of these changes with one `git cat-file --batch`.
+/// Submodules have no blobs, so they are left out.
+fn read_blobs(git: &Git, changes: &[Change]) -> Result<HashMap<ObjectId, Vec<u8>>> {
+    let mut input = String::new();
+    let mut wanted = std::collections::HashSet::new();
+    for side in changes.iter().flat_map(|c| [&c.old, &c.new]).flatten() {
+        if side.mode != "160000" && wanted.insert(side.id) {
+            input.push_str(&format!("{}\n", side.id));
+        }
+    }
+    if wanted.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let opts = RunOpts {
+        stdin: Some(input.into_bytes()),
+        ..RunOpts::default()
+    };
+    let out = git.read_blocking(&["cat-file", "--batch"], &opts)?.stdout;
+    parse_batch(&out)
+}
+
+/// Read the output of `git cat-file --batch`. Each object is a line with
+/// its id, type and size, then that many bytes and a newline.
+fn parse_batch(mut out: &[u8]) -> Result<HashMap<ObjectId, Vec<u8>>> {
+    let mut blobs = HashMap::new();
+    while !out.is_empty() {
+        let mut line = Vec::new();
+        out.read_until(b'\n', &mut line)?;
+        let line = line.strip_suffix(b"\n").unwrap_or(&line);
+        let parts: Vec<&[u8]> = line.split(|&b| b == b' ').collect();
+        let [id, _kind, size] = parts[..] else {
+            bail!("git cat-file: {}", line.as_bstr());
+        };
+        let size: usize = size
+            .to_str()
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .with_context(|| format!("git cat-file: {}", line.as_bstr()))?;
+        if out.len() <= size {
+            bail!("git cat-file ended in the middle of an object");
+        }
+        blobs.insert(ObjectId::from_hex(id)?, out[..size].to_vec());
+        out = &out[size + 1..];
+    }
+    Ok(blobs)
+}
+
+/// Turn the changes into `FileDiff`s with their hunks, and keep the texts
+/// for highlighting. Both come back sorted by path.
+fn files_of(
+    changes: Vec<Change>,
+    blobs: &HashMap<ObjectId, Vec<u8>>,
+    context: u32,
+    line_limit: usize,
+) -> (Vec<FileDiff>, Vec<FileTexts>) {
+    let mut files = Vec::new();
+    let mut texts = Vec::new();
+    for c in changes {
+        let mut f = FileDiff::new(
+            c.status,
+            c.old.as_ref().map(|s| s.path.clone()),
+            c.new.as_ref().map(|s| s.path.clone()),
+        );
+        f.similarity = c.similarity;
+        f.old_id = c.old.as_ref().map(|s| s.id);
+        f.new_id = c.new.as_ref().map(|s| s.id);
+        f.old_mode = c.old.as_ref().map(|s| s.mode.clone());
+        f.new_mode = c.new.as_ref().map(|s| s.mode.clone());
+
+        let old_text = c.old.as_ref().map(|s| blob_text(s, blobs));
+        let new_text = c.new.as_ref().map(|s| blob_text(s, blobs));
         let binary = old_text.as_ref().is_some_and(|t| t.is_none())
             || new_text.as_ref().is_some_and(|t| t.is_none());
         let old_text = old_text.flatten();
@@ -289,25 +402,7 @@ pub fn diff_trees(
         }
         files.push(f);
     }
-    Ok(sort_by_path(files, texts))
-}
-
-/// How to find renames and copies, from `diff.renames` and
-/// `diff.renameLimit`, the way gix reads them. Unlike gix, git also pairs
-/// up empty files, so we do too.
-fn rewrites(repo: &gix::Repository) -> Result<Option<gix::diff::Rewrites>> {
-    let config = repo.config_snapshot();
-    let (rewrites, configured) =
-        gix::diff::new_rewrites(config.plumbing(), true).context("bad rename config")?;
-    let rewrites = match rewrites {
-        Some(r) => r,
-        None if configured => return Ok(None),
-        None => gix::diff::Rewrites::default(),
-    };
-    Ok(Some(gix::diff::Rewrites {
-        track_empty: true,
-        ..rewrites
-    }))
+    sort_by_path(files, texts)
 }
 
 /// Sort the files by path, keeping `texts` in the same order as `files`.
@@ -317,49 +412,17 @@ fn sort_by_path(files: Vec<FileDiff>, texts: Vec<FileTexts>) -> (Vec<FileDiff>, 
     paired.into_iter().unzip()
 }
 
-/// If these are the parents of a stash made with `--include-untracked`,
-/// the commit that holds its untracked files.
-///
-/// Such a stash has three parents: the commit it was made on, a commit
-/// with the staged changes on top of that, and a root commit with the
-/// untracked files. Git always gives the last one a message that starts
-/// with "untracked files on ". We check all of that, so an ordinary merge
-/// with three parents isn't mistaken for a stash.
-fn stash_untracked<'r>(
-    repo: &'r gix::Repository,
-    parents: &[ObjectId],
-) -> Result<Option<gix::Commit<'r>>> {
-    let [base, index, untracked] = parents else {
-        return Ok(None);
-    };
-    let index = repo.find_commit(*index).context("parent not found")?;
-    if index.parent_ids().map(|p| p.detach()).ne([*base]) {
-        return Ok(None);
+/// The text of one side of a change, or `None` if it looks binary.
+/// Submodule entries are shown the way git shows them.
+fn blob_text(side: &Side, blobs: &HashMap<ObjectId, Vec<u8>>) -> Option<Arc<str>> {
+    if side.mode == "160000" {
+        return Some(format!("Subproject commit {}\n", side.id).into());
     }
-    let untracked = repo.find_commit(*untracked).context("parent not found")?;
-    let c = untracked.decode().context("bad commit")?;
-    if c.parents().next().is_some() || !c.message.starts_with(b"untracked files on ") {
-        return Ok(None);
+    let data = blobs.get(&side.id).map_or(&[][..], Vec::as_slice);
+    if is_binary(data) {
+        return None;
     }
-    drop(c);
-    Ok(Some(untracked))
-}
-
-/// The text of a blob, or `None` if it looks binary. Submodule entries are
-/// shown the way git shows them.
-fn blob_text(
-    repo: &gix::Repository,
-    id: ObjectId,
-    mode: gix::object::tree::EntryMode,
-) -> Result<Option<Arc<str>>> {
-    if mode.is_commit() {
-        return Ok(Some(format!("Subproject commit {id}\n").into()));
-    }
-    let blob = repo.find_blob(id).context("blob not found")?;
-    if is_binary(&blob.data) {
-        return Ok(None);
-    }
-    Ok(Some(String::from_utf8_lossy(&blob.data).into()))
+    Some(String::from_utf8_lossy(data).into())
 }
 
 pub fn is_binary(data: &[u8]) -> bool {

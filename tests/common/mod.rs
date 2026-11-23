@@ -25,7 +25,14 @@ impl Scratch {
     pub fn new() -> Scratch {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().to_path_buf();
-        Scratch::init(dir, root)
+        Scratch::init(dir, root, "sha1")
+    }
+
+    /// A repository whose object ids are SHA-256 hashes.
+    pub fn sha256() -> Scratch {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        Scratch::init(dir, root, "sha256")
     }
 
     /// A repository with the given settings in its config.
@@ -43,16 +50,17 @@ impl Scratch {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().join(tergi::util::fs_path(name));
         std::fs::create_dir(&root).expect("mkdir");
-        Scratch::init(dir, root)
+        Scratch::init(dir, root, "sha1")
     }
 
-    fn init(dir: tempfile::TempDir, root: PathBuf) -> Scratch {
+    fn init(dir: tempfile::TempDir, root: PathBuf, format: &str) -> Scratch {
         let s = Scratch {
             git: Git::new(&root),
             root,
             dir,
         };
-        s.sh(&["init", "-q", "-b", "main"]);
+        let format = format!("--object-format={format}");
+        s.sh(&["init", "-q", "-b", "main", &format]);
         s.sh(&["config", "user.name", "Test User"]);
         s.sh(&["config", "user.email", "test@example.com"]);
         s.sh(&["config", "commit.gpgsign", "false"]);

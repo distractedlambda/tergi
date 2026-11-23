@@ -14,13 +14,13 @@ use crate::common;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
+use bstr::BString;
 use common::Scratch;
 use common::settings::{Settings, settings};
-use gix::ObjectId;
-use gix::bstr::BString;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use tergi::app::planner::{PlanAction, Planner};
+use tergi::git::ObjectId;
 use tergi::git::ops;
 use tergi::git::rebase::{self, Action, Outcome, RepoState};
 

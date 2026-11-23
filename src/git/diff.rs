@@ -1,8 +1,9 @@
 //! The diff model shared by commit diffs and working tree diffs, plus a parser
 //! for the unified diffs that `git diff` prints.
 
-use gix::ObjectId;
-use gix::bstr::{BStr, BString, ByteSlice as _};
+use bstr::{BStr, BString, ByteSlice as _};
+
+use crate::git::ObjectId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
