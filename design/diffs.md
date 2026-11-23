@@ -440,7 +440,7 @@ Each language has its own lexer, written with Logos and kept in
 `cmake.rs` for CMake, `javascript.rs` for JavaScript, `json.rs` for
 JSON, `python.rs` for Python, `rust.rs` for Rust, `racket.rs` for
 Racket and Scribble, `shrubbery.rs` for Rhombus, `sh.rs` for shell
-scripts, `dockerfile.rs` for Dockerfiles, `toml.rs` for TOML, `yaml.rs` for YAML, `zig.rs` for Zig,
+scripts, `fish.rs` for fish scripts, `dockerfile.rs` for Dockerfiles, `toml.rs` for TOML, `yaml.rs` for YAML, `zig.rs` for Zig,
 `llvm.rs` for LLVM IR,
 `markdown.rs` for Markdown, and `gitignore.rs` for `.gitignore` files.
 A lexer turns text into `Tokens`: byte ranges, each with a `Kind` such as `Comment`,
@@ -1308,6 +1308,91 @@ that goes on to the next line isn't one. Whether a `RUN` is just one
 here-document can depend on later lines, so the shell lexer colors the
 command either way, and only the body's colors depend on it.
 
+### fish scripts
+
+`fish.rs` follows fish 4.9: its tokenizer in `src/tokenizer.rs`, its
+parser in `src/ast.rs`, and the way it expands words. Files ending in
+`.fish` are fish scripts, and so are scripts with a `#!` line that runs
+fish, and Markdown code blocks marked `fish`.
+
+The tokenizer finds where a word ends by counting the parentheses,
+braces and brackets in it, and by skipping its quotes. Inside them,
+blanks, line feeds and operators don't end the word. So `(a; b)c` and
+`{a, b}` are one word each. One that never closes takes the word to the
+end of the text, as it does in fish. A `{` where a command starts opens
+a block instead, as in `{ echo a; }`. The tokenizer decides where that
+is, and it doesn't always agree with the parser, so we follow it.
+
+Whether a word is a keyword depends on where the parser is, which
+`Parser` keeps. `end`, `else` and `case` end a list of jobs, `and` and
+`or` start a job, `time` starts a pipeline, and `not` and `!` start a
+statement. `command`, `builtin` and `exec` decorate the command after
+them. Fish reads a keyword without its quotes and escapes, so `'if'` is
+the keyword `if`. Some keywords also depend on the token after them.
+Before `-h` or `--help`, or at the end of the text, `if`, `while`,
+`begin`, `function` and `switch` run the builtin of that name, which
+prints its help. `for`, `not` and `!` do that before any word that
+starts with `-`. `command`, `builtin` and `exec` only decorate a word
+that doesn't start with `-`, and an assignment such as `a=1` needs a
+word after it. `!` gets the operator color, and the other keywords the
+keyword color.
+
+The name of a command is an identifier when it's a plain word, as in
+the shell lexer, and so is a variable's name after its `$`. The names
+in assignments, the variable of `for`, the name of a function, the
+variable that `set` sets and the names after `function -a` are
+identifiers too. So `x` gets the same color in `set x 1`, `for x in`,
+`$x` and `$x[1]`. The `$` and the brackets of a slice get the
+punctuation color, and in the slice, numbers get the number color and
+`..` the operator color.
+
+In single quotes, only `\\` and `\'` are escapes. In double quotes,
+`\\`, `\"`, `\$` and a backslash before a line feed are, and variables
+and `$(...)` keep their colors. Outside of quotes, every backslash
+escapes the character after it, and escapes such as `\x41`, `\u00e9`
+and `\cA` are read the way fish's `unescape_one` reads them.
+`(...)` and `$(...)` hold commands, which are lexed like the rest of the
+file. In double quotes, a `$(...)` ends the string for a while, and the
+string goes on after its `)`. The braces of a brace expansion and the
+commas between its items get the punctuation color, but fish only
+expands braces with a `,` or a variable right inside them, so `{}` and
+`{a}` are plain. Redirections such as `2>`, `>?`, `&>` and `>&2`, and
+pipes such as `|`, `&|` and `2>|`, get the operator color, with the
+number of a file descriptor in the number color. With the
+`ampersand-nobg-in-token` feature, which fish turns on by default, a
+`&` right before more of a word is part of the word, as in `a&b`.
+
+Fish has some surprises that the lexer copies:
+
+- A `)` that closes nothing, or a `)` or `}` that closes the wrong
+  bracket, is an error. Fish drops the part of the word before it, so
+  that part is plain.
+- Inside braces and brackets, a word can have blanks in it. Fish skips
+  a comment after one when it looks for the end of the word and for
+  command substitutions. But the comment is still part of the word, so
+  its quotes and variables expand. A `}` in it without its `{` makes
+  fish's count of braces drop below zero, and the braces after it in
+  the word don't expand.
+- Fish removes line continuations before it expands variables. So
+  `$`, a backslash and a line feed, and then `x` on the next line is
+  the variable `x`. A continuation can also split a name, or come
+  between a name and its slice.
+- After a line continuation, a comment line doesn't end the command.
+  The words after it are still its arguments.
+- The tokenizer stops at a null character, so nothing after one gets a
+  color.
+
+The colors of a line never depend on the lines after it. Where fish
+looks at the token after a word, the lexer only looks at that token's
+first line, and after a line continuation it assumes a word that
+doesn't start with `-`. Fish reads a keyword that goes on over a line
+continuation, such as `i` and a backslash on one line and `f` on the
+next, but the lexer doesn't. A slice only gets its colors when its `]`
+is on the same line as its `[`, and whether braces expand is decided
+from the text up to the end of the `{`'s line. Command substitutions
+can nest, and each level takes some stack, so beyond 64 levels the
+lexer reads them as plain text.
+
 ### Rainbow identifiers
 
 With `rainbow_identifiers` on, which is the default, each `Identifier`
@@ -1318,7 +1403,7 @@ uses the hash to pick one of the colors in `Theme::identifiers`.
 The lexers only mark identifiers that get no other color, so keywords,
 and words such as `AND` in a CMake `if`, keep their usual colors.
 
-The C, C++, CMake, JavaScript, Python, Rust, shell, Zig, LLVM IR,
+The C, C++, CMake, JavaScript, Python, Rust, shell, fish, Zig, LLVM IR,
 Racket, Scribble and Rhombus lexers mark identifiers. The Dockerfile
 lexer marks variables, the names that `ARG`, `ENV` and `LABEL` set,
 and images and stages. The TOML, YAML and JSON
@@ -1653,8 +1738,8 @@ leave that column blank.
   hidden branches are.
 - A merge commit is diffed against its first parent only.
 - Only C, C++, CMake, JavaScript, JSON, Python, Rust, shell scripts,
-  Dockerfiles, Zig, LLVM IR, Racket, Rhombus, Scribble, TOML, YAML,
-  Markdown and `.gitignore` files are highlighted. That leaves out JSX, TypeScript
+  fish scripts, Dockerfiles, Zig, LLVM IR, Racket, Rhombus, Scribble,
+  TOML, YAML, Markdown and `.gitignore` files are highlighted. That leaves out JSX, TypeScript
   and zsh.
 - The JavaScript lexer can guess wrong about a `/`. In a statement
   such as `a ? b : {} / 2`, it reads the `{}` as a block and the `/`
@@ -1726,6 +1811,21 @@ leave that column blank.
 - A shell script that turns on `extglob` can run a command whose name
   is a pattern such as `!(a)`. The lexer reads `!` and a subshell
   there.
+- Where fish decides what a word is from the token after it, the fish
+  lexer only looks at that token's first line. After a line
+  continuation, it assumes a word that doesn't start with `-`. So in
+  `exec` followed by a backslash, and `-c x` on the next line, it takes
+  `exec` as a keyword, where fish runs the builtin `exec`. A word that
+  only fails on a later line, such as a `(` whose word ends in an
+  error there, can also change what fish makes of the word before it.
+- Fish reads a keyword that goes on over a line continuation, but the
+  fish lexer doesn't, so the words after it can read differently.
+- A fish slice whose `]` is on a later line than its `[` gets no
+  colors. Braces whose `,` only comes on a later line don't get the
+  colors of an expansion.
+- A hunk from the middle of a fish string, command substitution or
+  brace expansion over several lines that we don't have the full text
+  for reads the text as commands.
 - A hunk from the middle of a Python triple-quoted string that we
   don't have the full text for reads the string as code, and its
   closing quotes start a string. In the same way, a hunk from the

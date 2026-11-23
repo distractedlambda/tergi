@@ -14,6 +14,7 @@
 mod c;
 mod cmake;
 mod dockerfile;
+mod fish;
 mod gitignore;
 mod javascript;
 mod json;
@@ -125,6 +126,7 @@ pub enum Language {
     Cmake,
     Cpp,
     Dockerfile,
+    Fish,
     Gitignore,
     JavaScript,
     Json,
@@ -183,6 +185,7 @@ impl Language {
         }
         match name.rsplit_once('.')?.1 {
             "c" => Some(Language::C),
+            "fish" => Some(Language::Fish),
             "cmake" => Some(Language::Cmake),
             // Headers ending in `.h` can be C or C++. We read them as C++,
             // as Sublime Text does, so that `class` and `template` get
@@ -245,6 +248,7 @@ impl Language {
             "sh" | "bash" | "dash" | "ash" | "ksh" | "mksh" | "zsh" => {
                 return Some(Language::Shell);
             }
+            "fish" => return Some(Language::Fish),
             "node" | "nodejs" => return Some(Language::JavaScript),
             // A `#lang` line after the `#!` line can still pick Rhombus or
             // Scribble, as the Racket lexer reads it.
@@ -277,6 +281,7 @@ impl Language {
             Language::C | Language::Cpp => c::lex(text, self, &mut out),
             Language::Cmake => cmake::lex(text, &mut out),
             Language::Dockerfile => dockerfile::lex(text, &mut out),
+            Language::Fish => fish::lex(text, &mut out),
             Language::Gitignore => gitignore::lex(text, &mut out),
             Language::JavaScript => javascript::lex(text, &mut out),
             Language::Json => json::lex(text, &mut out),
@@ -518,6 +523,7 @@ mod tests {
         "CMakeLists.txt",
         "a.cpp",
         "Dockerfile",
+        "a.fish",
         ".gitignore",
         "a.js",
         "a.json",
@@ -680,6 +686,39 @@ mod tests {
             "${ ",
             "\\",
         ]);
+        // Pieces of fish scripts, such as blocks, slices, command
+        // substitutions and the words that only mean something in some
+        // places.
+        pieces.extend([
+            "begin",
+            "end",
+            "else if",
+            "switch x",
+            "case",
+            "and ",
+            "or ",
+            "not ",
+            "function f",
+            "set -l x",
+            "--help",
+            "$x[1..-1]",
+            "$$x",
+            "(",
+            ")",
+            "$(",
+            "{a,b}",
+            "{",
+            "}",
+            "&|",
+            ">?",
+            "&>",
+            "2>&1",
+            ">&-",
+            "a=b",
+            "\\x41",
+            "time ",
+            "command ",
+        ]);
         // Pieces of Dockerfiles, such as instructions, flags, the JSON form
         // of commands and here-documents.
         pieces.extend([
@@ -819,6 +858,10 @@ mod tests {
         assert_eq!(Language::for_path("~/.bashrc"), Some(Language::Shell));
         assert_eq!(Language::for_path("x/PKGBUILD"), Some(Language::Shell));
         assert_eq!(
+            Language::for_path("~/.config/fish/config.fish"),
+            Some(Language::Fish)
+        );
+        assert_eq!(
             Language::for_path("x/Dockerfile"),
             Some(Language::Dockerfile)
         );
@@ -877,6 +920,8 @@ mod tests {
             ("#!/bin/dash", Some(Language::Shell)),
             ("#!/bin/ksh", Some(Language::Shell)),
             ("#!/usr/bin/env zsh", Some(Language::Shell)),
+            ("#!/usr/bin/env fish", Some(Language::Fish)),
+            ("#!/usr/local/bin/fish -n", Some(Language::Fish)),
             ("#!/usr/bin/env node", Some(Language::JavaScript)),
             (
                 "#!/usr/bin/env -S node --no-warnings",
@@ -1047,11 +1092,12 @@ mod tests {
 mod reference {
     use super::Language;
 
-    const LANGUAGES: [Language; 18] = [
+    const LANGUAGES: [Language; 19] = [
         Language::C,
         Language::Cmake,
         Language::Cpp,
         Language::Dockerfile,
+        Language::Fish,
         Language::Gitignore,
         Language::JavaScript,
         Language::Json,
