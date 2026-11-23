@@ -1314,7 +1314,7 @@ With `rainbow_identifiers` on, which is the default, each `Identifier`
 token gets a color
 picked from its name, so every use of a name has the same color and
 different names usually don't. Drawing hashes the token's text and
-uses the hash to pick one of the 16 colors in `Theme::identifiers`.
+uses the hash to pick one of the colors in `Theme::identifiers`.
 The lexers only mark identifiers that get no other color, so keywords,
 and words such as `AND` in a CMake `if`, keep their usual colors.
 
@@ -1326,31 +1326,30 @@ lexers mark the names in keys, so each key in a config file has the
 same color everywhere it appears. Markdown and gitignore have nothing
 that is really a name, so their lexers don't mark anything.
 
-`Theme::build` makes the 16 colors in Oklab, where the distance
-between two colors matches how different they look much better than
-in sRGB. A name's color should be easy to tell apart from keywords,
-strings and the other syntax colors, from plain text, and from the
-colors of other names. The colors should also be about equally
-bright, or some names would catch the eye more than others. Spreading
-hues evenly around the color wheel isn't enough, because some of them
-always land on a hue the theme already uses.
+`Theme::build` makes the colors in Oklab, where the distance between
+two colors matches how different they look much better than in sRGB.
+A name's color should be easy to tell apart from keywords, strings and
+the other syntax colors, and from plain text. The colors should also
+look alike apart from their hue. When some are brighter or more vivid
+than others, those names catch the eye more, and the muted ones look
+like text in the wrong color.
 
-So `identifier_colors` starts from the theme's string, number,
-keyword, type and function colors. Their average lightness, and 80%
-of their average chroma, set where it looks for colors. That way the
-colors look like they belong to the theme but stand out a little less
-than other tokens. The chroma is at least 0.08, because Nord's colors
+So `identifier_colors` gives them all the same lightness and chroma.
+The lightness is the average of the theme's string, number, keyword,
+type and function colors, so that the colors look like they belong to
+the theme. The chroma is 80% of their average, so identifiers stand
+out a little less than other tokens, but at least 0.08. Nord's colors
 are so muted that its hues would be hard to tell apart without that
-floor.
+floor. Identifiers are most of the text in code. So if some of the
+colors would be harder to read than the text, they all move toward
+the text's lightness together until they are about as easy to read.
 
-It looks at bands of lightness 0.04 wide, centered up to 0.08 lighter
-or darker than that average. In each band it tries 72 hues at
-chromas from 40% to 100% of that chroma. Identifiers are most of the
-text in code, so it leaves out colors that would be much harder to
-read than the text. Then it picks 16 colors one at a time. Each time
-it takes the candidate that is farthest from the syntax colors, the
-text color and the colors it has already picked. It keeps the band
-where the closest two of all those colors end up farthest apart.
+There are 16 hues, spread evenly around the color wheel. Some of them
+always land near a hue the theme already uses, so we leave out every
+color within 0.04 of a syntax color or the text color. We turn the
+wheel to the angle that leaves out the fewest. A theme ends up with
+between 11 and 16 colors. Catppuccin, which uses almost every hue for
+something, has the fewest.
 
 The hash is FNV-1a followed by the final mixing step of MurmurHash3.
 FNV-1a on its own leaves the low bits of the hash depending only on
@@ -1431,7 +1430,7 @@ leave that column blank.
   out of the tokens they compare, which keeps them readable.
 - `src/theme.rs` checks that identifier colors differ from each other,
   from the other syntax colors and from the text color, that they are
-  about as easy to read as the text and about equally bright, and that
+  about as easy to read as the text and differ only in hue, and that
   a name always
   gets the same color. `tests/ui.rs` has
   `identifiers_can_get_colors_by_name`.
@@ -1731,7 +1730,7 @@ leave that column blank.
 - A hunk from the middle of a `#lang at-exp` file that we don't have the
   full text for is lexed as plain Racket.
 - Rainbow identifiers only look at the name. Two different variables
-  with the same name get the same color, and with 16 colors, two
+  with the same name get the same color. With 16 colors or fewer, two
   different names often share one too.
 - A hunk that grew upwards keeps the section name git gave it, even
   when the line that name came from is now inside the hunk. We don't

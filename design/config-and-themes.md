@@ -134,7 +134,7 @@ the plain background. It never goes below a floor, so the color still
 shows. Some palettes, such as Solarized, have little contrast to spare,
 and this is what keeps their selections readable.
 
-Each theme also has 16 colors for rainbow identifiers, which
+Each theme also has up to 16 colors for rainbow identifiers, which
 `identifier_colors` makes from its syntax colors. `diffs.md` explains
 how.
 
