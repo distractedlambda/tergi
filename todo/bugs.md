@@ -20,6 +20,23 @@ allows the extra carriage return, but with other filters, the lines that
 differ get no colors. This was found by reading the code and hasn't been
 reproduced yet.
 
+## Working directory diffs run textconv drivers
+
+`git diff` runs the textconv driver of a file whose `diff` attribute
+names one, such as `diff.num.textconv = cat -n`. The `DIFF` arguments in
+`src/git/workdir.rs` don't pass `--no-textconv`, so the staged and
+unstaged diffs show the converted text, not the file's lines. A patch
+for line staging is built from those lines, so `git apply` can't apply
+it. The lines also don't match the blobs that `read_blobs` reads, so
+they get no colors. We checked what `git diff` prints, but haven't
+tried staging such a line in tergi.
+
+To see it, add `*.txt diff=num` to `.gitattributes`, set
+`git config diff.num.textconv "cat -n"`, commit a `.txt` file and change
+one of its lines. `git diff` shows each line with a number in front.
+Commit diffs come from `git diff-tree` and imara-diff, which don't run
+textconv, so they aren't affected.
+
 ## An empty root commit after resolving the first pick of a `--root` rebase
 
 A rebase with `--root` replays the commits onto an empty commit that git
