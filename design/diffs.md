@@ -1255,8 +1255,10 @@ A line that ends with the escape character goes on on the next one.
 BuildKit skips comment lines and blank lines inside such an
 instruction, even inside quotes. So the lexer first gathers the lines
 of an instruction, colors its comment lines, and joins the rest with
-line feeds. Then it lexes the joined text, and maps the colors back to
-the lines they came from. The escape character is `\` unless an
+nothing between them, as BuildKit does, so a word can go on on the
+next line. Then it lexes the joined text, and maps the colors back to
+the lines they came from. A token that goes on over a line gets its
+color on both lines. The escape character is `\` unless an
 `escape` directive at the top of the file makes it `` ` ``. BuildKit
 only takes it as a line continuation when something other than the
 escape character comes before it, so a line that ends in `\\` doesn't
@@ -1279,13 +1281,10 @@ at the top of the file, before any other line.
 
 `RUN`, `CMD`, `ENTRYPOINT` and `HEALTHCHECK CMD` hold commands. In the
 shell form, they're lexed with the shell lexer. We give it the joined
-lines with a `\` and a line feed between them, so that it reads them as
-one command with line continuations. A command in the JSON form, such
-as `CMD ["a", "b"]`, is lexed as JSON. BuildKit takes the arguments as
-JSON when they read as a JSON array of strings, and as a shell command
-otherwise, as in `RUN [ -f a ] && b`. We only look at the first line of
-the array, and take it as JSON if it's fine up to the end of that line.
-When the instruction ends on that line too, the array has to end there.
+text, which is what BuildKit gives the shell. A command in the JSON
+form, such as `CMD ["a", "b"]`, is lexed as JSON. BuildKit takes the
+arguments as JSON when they read as a JSON array of strings, and as a
+shell command otherwise, as in `RUN [ -f a ] && b`.
 A `SHELL` instruction that names a shell outside the sh family, such as
 `powershell` or `cmd`, makes the commands after it plain until the next
 `FROM`. We can't tell whether an image is for Windows, where the shell
@@ -1300,9 +1299,7 @@ one. The package keeps the spaces after `<<` in the word, so
 `cat << EOF` has a here-document, but `cat<<EOF` doesn't. Two quirks of
 the package matter here, and we follow both. When it can't read the
 instruction, for example because a quote isn't closed, BuildKit finds
-no here-documents at all. Then we still color the words as
-here-documents, but no lines become their bodies, so that the colors of
-the instruction don't depend on its later lines. And at a `${` with an
+no here-documents at all, and neither do we. And at a `${` with an
 operator, as in `<<EOF${x:-y}`, the package forgets the part of the
 word before it, so that word doesn't start with `<<` any more.
 
@@ -1311,7 +1308,8 @@ follows:
 
 - When a `RUN` is just one here-document, BuildKit runs its body as a
   script. We lex it as shell code, or in the language that its `#!`
-  line names, such as Python.
+  line names, such as Python. The command isn't shell code then, so
+  its word gets the colors it gets in a `COPY`.
 - Otherwise the shell reads the bodies of a `RUN`'s here-documents, so
   the shell lexer gets them along with the command, and colors them as
   it does in a script.
@@ -1330,16 +1328,6 @@ follows:
 The line that ends a body gets the attribute color, as in a shell
 script. After `<<-`, BuildKit removes the tabs at the start of each
 line of a body, and so do we before we lex it in another language.
-
-BuildKit joins the lines of an instruction with nothing between them,
-so a word can go on on the next line. We join them with a line feed, so
-that a line's colors don't depend on the line after it. For the same
-reason, a few decisions only look at the first line:
-whether `ENV` uses its old form, `ENV name value`, depends on whether
-its first word has an `=` on that line, and a delimiter with a quote
-that goes on to the next line isn't one. Whether a `RUN` is just one
-here-document can depend on later lines, so the shell lexer colors the
-command either way, and only the body's colors depend on it.
 
 ### fish scripts
 
@@ -1685,16 +1673,21 @@ leave that column blank.
   here-documents and JSON arrays. It also checks that the variables in
   each word that BuildKit expands are the ones that BuildKit's `shell`
   package finds there. The check skips what follows from the known
-  differences above, such as a word that goes on over a line, and the
-  ends of here-documents that the shell lexer reads as the shell
-  would, for example after a `#` that starts a comment or when bash
-  can't parse the command. When we added the check, the lexer took a
+  differences above, such as the ends of here-documents that the
+  shell lexer reads as the shell would, for example after a `#` that
+  starts a comment or when bash can't parse the command. When we added the check, the lexer took a
   line ending in `\\` as one that goes on, and didn't see `<< EOF`. It
   read flags with `\` as the escape character even when the file chose
   `` ` ``, and colored `\$x` in a `COPY` body as a variable. The check
   also found here-documents where the `shell` package fails or forgets
   the start of a word. After fixing those, it agreed on all the
-  Dockerfiles and on about 340,000 random texts.
+  Dockerfiles and on about 340,000 random texts. Back then the lexer
+  ended a word at the end of a line, and the check skipped words that
+  BuildKit joins over a line. After the lexer learned to join them, it
+  agreed on all the Dockerfiles and on about 300,000 random texts.
+  BuildKit looks for the space that ends a flag or a `HEALTHCHECK`
+  type one byte at a time, so it can end one inside a character such
+  as U+00A0. tergi doesn't, and the check skips those.
 - `src/highlight/fish.rs` has examples for keywords in and out of
   place, `and`, `or`, `not` and `time`, the names that `set`, `for`
   and `function` take, comments, quotes and escapes, variables and
@@ -1822,9 +1815,6 @@ leave that column blank.
 - A Dockerfile's colors come from its own instructions. A `SHELL` in
   the base image, or a Windows image without `` ` `` as the escape
   character, can make `RUN` use a shell other than the one we assume.
-- A Dockerfile command in the JSON form whose first line reads as JSON
-  but whose later lines don't is still lexed as JSON. BuildKit reads it
-  as a shell command.
 - Bash expands aliases while it reads, and an alias can change how
   the rest of a line reads. The shell lexer doesn't know them.
 - A shell script that turns on `extglob` can run a command whose name

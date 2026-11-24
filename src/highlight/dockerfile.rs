@@ -15,10 +15,8 @@
 //! the JSON form, such as `CMD ["nginx", "-g", "daemon off;"]`, are lexed
 //! as JSON.
 //!
-//! The colors of a line never depend on the lines after it. BuildKit
-//! joins the lines of an instruction with nothing between them, so a word
-//! can go on on the next line. We end words at the end of a line instead,
-//! as the shell lexer does.
+//! BuildKit joins the lines of an instruction with nothing between them,
+//! so a word can go on on the next line, and so do we.
 
 use std::ops::Range;
 
@@ -110,16 +108,6 @@ impl Text {
             self.map(r.start + from..r.end + from, kind, out);
         }
     }
-}
-
-/// An instruction's lines joined with line feeds, without the escape
-/// characters that join them.
-struct Instruction {
-    text: Text,
-    /// The range of each line in `text`, and whether it ends with an
-    /// escape character. Each line that does has a line feed after it,
-    /// even the last one.
-    lines: Vec<(Range<usize>, bool)>,
 }
 
 /// A here-document, as `heredocsFromLine` and `ParseHeredoc` find it.
@@ -270,10 +258,9 @@ impl<'a> Lexer<'a> {
     /// Lex the instruction that starts on line `i`, along with the bodies
     /// of its here-documents, and return the line after them.
     fn instruction(&mut self, i: usize) -> usize {
-        let mut ins = Instruction {
-            text: Text::default(),
-            lines: Vec::new(),
-        };
+        // The instruction's lines joined with nothing between them, without
+        // the escape characters that join them.
+        let mut ins = Text::default();
         let mut next = i;
         while next < self.lines.len() {
             let line = self.lines[next];
@@ -295,7 +282,6 @@ impl<'a> Lexer<'a> {
             } else {
                 line.start
             };
-            let at = ins.text.s.len();
             let content = self.src[start..line.end].trim_end_matches([' ', '\t']);
             // BuildKit's pattern for this wants something other than the
             // escape character before it, so `a\\` at the end of a line
@@ -310,25 +296,23 @@ impl<'a> Lexer<'a> {
             } else {
                 line.end
             };
-            ins.text.push_src(self.src, start..end);
-            ins.lines.push((at..ins.text.s.len(), more));
+            ins.push_src(self.src, start..end);
             if !more {
                 break;
             }
-            ins.text.s.push('\n');
         }
         let mut toks = Vec::new();
         let next = self.command(&ins, 0, next, &mut toks);
         for (r, kind) in toks {
-            ins.text.map(r, kind, &mut self.out);
+            ins.map(r, kind, &mut self.out);
         }
         next
     }
 
     /// Lex the instruction that starts at `at` in the text. Its
     /// here-documents start on line `next`. Return the line after them.
-    fn command(&mut self, ins: &Instruction, at: usize, next: usize, toks: &mut Out) -> usize {
-        let s = &ins.text.s;
+    fn command(&mut self, ins: &Text, at: usize, next: usize, toks: &mut Out) -> usize {
+        let s = &ins.s;
         let start = skip_blanks(s, at);
         let mut end = word_end(s, start);
         // BuildKit trims all whitespace from the ends of an instruction, so
@@ -352,13 +336,13 @@ impl<'a> Lexer<'a> {
 
     fn arguments(
         &mut self,
-        ins: &Instruction,
+        ins: &Text,
         name: &str,
         a: usize,
         next: usize,
         toks: &mut Out,
     ) -> usize {
-        let s = &ins.text.s;
+        let s = &ins.s;
         match name {
             "run" => return self.run_command(ins, a, next, toks),
             "cmd" | "entrypoint" => self.shell_command(ins, a, &[]),
@@ -400,12 +384,8 @@ impl<'a> Lexer<'a> {
             }
             "env" | "label" => {
                 let words = quoted_words(s, a, self.escape);
-                // A word in quotes can go on to the next line. We only look
-                // for the `=` on the first line, so that its colors don't
-                // depend on the next.
-                let line_end = s[a..].find('\n').map_or(s.len(), |n| a + n);
                 if let Some(first) = words.first()
-                    && !s[first.start..first.end.min(line_end)].contains('=')
+                    && !s[first.clone()].contains('=')
                 {
                     // The old form, `ENV name value`, sets one variable to
                     // the rest of the line.
@@ -431,7 +411,7 @@ impl<'a> Lexer<'a> {
             "copy" | "add" => return self.copy(ins, a, next, toks),
             "volume" => {
                 if json_form(s, a) {
-                    ins.text.lex(Language::Json, a, &mut self.out);
+                    ins.lex(Language::Json, a, &mut self.out);
                 } else {
                     for w in blank_words(s, a) {
                         self.word(s, w, toks);
@@ -440,7 +420,7 @@ impl<'a> Lexer<'a> {
             }
             "shell" => {
                 if json_form(s, a) {
-                    ins.text.lex(Language::Json, a, &mut self.out);
+                    ins.lex(Language::Json, a, &mut self.out);
                     self.sh = runs_sh(&s[a..]);
                 }
             }
@@ -451,22 +431,20 @@ impl<'a> Lexer<'a> {
     }
 
     /// Lex the command of a `RUN`, and the bodies of its here-documents.
-    fn run_command(&mut self, ins: &Instruction, a: usize, next: usize, toks: &mut Out) -> usize {
-        let s = &ins.text.s;
+    fn run_command(&mut self, ins: &Text, a: usize, next: usize, toks: &mut Out) -> usize {
+        let s = &ins.s;
         if json_form(s, a) {
-            ins.text.lex(Language::Json, a, &mut self.out);
+            ins.lex(Language::Json, a, &mut self.out);
             return next;
         }
         let docs = heredocs(s, a);
-        let (bodies, next) = self.bodies(s, &docs, next);
+        let (bodies, next) = self.bodies(&docs, next);
         // When the command is just one here-document, BuildKit runs its
         // body as a script, with the program its `#!` line names if it has
-        // one. Otherwise the shell reads the bodies. Either way the command
-        // gets the same colors, because whether it's just a here-document
-        // can depend on the lines after the first.
+        // one. Otherwise the shell reads the command and the bodies.
         let script = matches!(&docs[..], [doc] if s[a..].trim_end() == &s[doc.word.clone()]);
-        if self.sh {
-            self.shell_command(ins, a, if script { &[] } else { &bodies });
+        if self.sh && !script {
+            self.shell_command(ins, a, &bodies);
         } else {
             for doc in &docs {
                 heredoc_word(doc, toks);
@@ -497,51 +475,27 @@ impl<'a> Lexer<'a> {
 
     /// Lex a command in the shell form, from `a` on, followed by the
     /// bodies of its here-documents, or in the JSON form.
-    fn shell_command(&mut self, ins: &Instruction, a: usize, bodies: &[Body]) {
-        let s = &ins.text.s;
+    fn shell_command(&mut self, ins: &Text, a: usize, bodies: &[Body]) {
+        let s = &ins.s;
         if a >= s.len() {
             return;
         }
         if json_form(s, a) {
-            ins.text.lex(Language::Json, a, &mut self.out);
+            ins.lex(Language::Json, a, &mut self.out);
             return;
         }
         if !self.sh {
             return;
         }
-        // The shell lexer reads a line continuation as such, so we put
-        // the escape characters back. Their colors are already set.
+        // The shell gets the joined lines, and the bodies after them.
         let mut text = Text::default();
-        for (r, more) in &ins.lines {
-            if r.end < a || (r.end == a && *more) {
-                continue;
+        for &(at, src, len) in &ins.pieces {
+            let start = a.max(at);
+            if start < at + len {
+                text.push_src(self.src, src + start - at..src + len);
             }
-            let start = r.start.max(a);
-            let mut end = r.end;
-            // With `` ` `` as the escape character, a line can end in
-            // ``a\` ``. BuildKit removes the `` ` ``, and the `\` escapes
-            // the start of the next line. With the `\` we put back, the
-            // shell would read an escaped `\` and end the command. So we
-            // leave the first one out too.
-            let backslashes = s[start..end]
-                .bytes()
-                .rev()
-                .take_while(|&c| c == b'\\')
-                .count();
-            if *more && backslashes % 2 == 1 {
-                end -= 1;
-                ins.text.map(end..end + 1, Kind::Escape, &mut self.out);
-            }
-            let src = ins
-                .text
-                .pieces
-                .iter()
-                .find(|p| p.0 <= start && start < p.0 + p.2);
-            if let Some(&(at, src, _)) = src {
-                text.push_src(self.src, src + start - at..src + end - at);
-            }
-            text.s.push_str(if *more { "\\\n" } else { "\n" });
         }
+        text.s.push('\n');
         for body in bodies {
             for l in body.lines.clone().chain(body.end) {
                 let line = self.lines[l];
@@ -554,10 +508,10 @@ impl<'a> Lexer<'a> {
 
     /// Lex the arguments of a `COPY` or an `ADD`, and the bodies of its
     /// here-documents, which are the contents of files.
-    fn copy(&mut self, ins: &Instruction, a: usize, next: usize, toks: &mut Out) -> usize {
-        let s = &ins.text.s;
+    fn copy(&mut self, ins: &Text, a: usize, next: usize, toks: &mut Out) -> usize {
+        let s = &ins.s;
         if json_form(s, a) {
-            ins.text.lex(Language::Json, a, &mut self.out);
+            ins.lex(Language::Json, a, &mut self.out);
             return next;
         }
         let docs = heredocs(s, a);
@@ -571,7 +525,7 @@ impl<'a> Lexer<'a> {
                 None => self.word(s, w.clone(), toks),
             }
         }
-        let (bodies, next) = self.bodies(s, &docs, next);
+        let (bodies, next) = self.bodies(&docs, next);
         // A single file whose name we know the language of, as in
         // `COPY <<EOF /app/main.py`, gets lexed in that language.
         let lang = match (&docs[..], words.last()) {
@@ -594,20 +548,9 @@ impl<'a> Lexer<'a> {
         next
     }
 
-    /// Find the bodies of the here-documents in the instruction `s`,
-    /// starting on line `next`, and return them and the line after them.
-    fn bodies(&self, s: &str, docs: &[Heredoc], mut next: usize) -> (Vec<Body>, usize) {
-        // BuildKit reads the instruction with its `shell` package to find
-        // the here-documents, and finds none if that fails. The words of
-        // the here-documents still get their colors, so that the colors of
-        // a line don't depend on the lines after it.
-        if !shell_reads(s) {
-            let none = || Body {
-                lines: next..next,
-                end: None,
-            };
-            return (docs.iter().map(|_| none()).collect(), next);
-        }
+    /// Find the bodies of the here-documents, starting on line `next`, and
+    /// return them and the line after them.
+    fn bodies(&self, docs: &[Heredoc], mut next: usize) -> (Vec<Body>, usize) {
         let mut bodies = Vec::new();
         for doc in docs {
             let start = next;
@@ -912,10 +855,9 @@ fn name_len(s: &str) -> usize {
     }
 }
 
-/// The whitespace that BuildKit splits on. The line feeds that join the
-/// lines of an instruction count too.
+/// The whitespace that BuildKit splits on.
 fn is_blank(c: u8) -> bool {
-    matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
+    matches!(c, b' ' | b'\t' | b'\r' | 0x0b | 0x0c)
 }
 
 fn skip_blanks(s: &str, i: usize) -> usize {
@@ -1059,64 +1001,47 @@ fn numbers(s: &str, r: Range<usize>, toks: &mut Out) {
 
 /// Whether the arguments at `a` are in the JSON form, such as
 /// `["a", "b"]`. BuildKit tries to read them as a JSON array of strings,
-/// and takes them as a shell command when that fails. We only look at the
-/// first line, so that its colors don't depend on the lines after it. An
-/// array that is still fine where that line ends counts as JSON, unless
-/// the instruction ends there too.
+/// and takes them as a shell command when that fails.
 fn json_form(s: &str, a: usize) -> bool {
     let a = skip_blanks(s, a);
     let b = s.as_bytes();
-    let stop = s[a..].find('\n').map_or(s.len(), |n| a + n);
-    // Whether the instruction goes on after this line. If it doesn't, the
-    // array has to end on it.
-    let open = stop < s.len();
     let ws = |mut i: usize| {
-        while i < stop && matches!(b[i], b' ' | b'\t' | b'\r') {
+        while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\r') {
             i += 1;
         }
         i
     };
     // BuildKit trims all whitespace from the end of the arguments, and
     // JSON allows its own whitespace before that.
-    let end = |i: usize| s[i..stop].trim().is_empty();
+    let end = |i: usize| s[i..].trim().is_empty();
     if b.get(a) != Some(&b'[') {
         return false;
     }
     let mut i = ws(a + 1);
-    if i < stop && b[i] == b']' {
+    if b.get(i) == Some(&b']') {
         return end(i + 1);
     }
     loop {
-        if i == stop {
-            return open;
-        }
-        if b[i] != b'"' {
+        if b.get(i) != Some(&b'"') {
             return false;
         }
         i += 1;
         loop {
-            if i == stop {
-                return open;
-            }
-            match b[i] {
+            let Some(&c) = b.get(i) else { return false };
+            match c {
                 b'"' => break,
                 b'\\' => {
                     i += 1;
-                    if i == stop {
-                        return open;
-                    }
-                    match b[i] {
-                        b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {}
-                        b'u' => {
-                            for _ in 0..4 {
-                                i += 1;
-                                if i == stop {
-                                    return open;
-                                }
-                                if !b[i].is_ascii_hexdigit() {
-                                    return false;
-                                }
+                    match b.get(i) {
+                        Some(b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't') => {}
+                        Some(b'u') => {
+                            if !b
+                                .get(i + 1..i + 5)
+                                .is_some_and(|h| h.iter().all(u8::is_ascii_hexdigit))
+                            {
+                                return false;
                             }
+                            i += 4;
                         }
                         _ => return false,
                     }
@@ -1127,12 +1052,9 @@ fn json_form(s: &str, a: usize) -> bool {
             i += 1;
         }
         i = ws(i + 1);
-        if i == stop {
-            return open;
-        }
-        match b[i] {
-            b',' => i = ws(i + 1),
-            b']' => return end(i + 1),
+        match b.get(i) {
+            Some(b',') => i = ws(i + 1),
+            Some(b']') => return end(i + 1),
             _ => return false,
         }
     }
@@ -1175,6 +1097,11 @@ fn runs_sh(json: &str) -> bool {
 fn heredocs(s: &str, a: usize) -> Vec<Heredoc> {
     let b = s.as_bytes();
     let mut docs = Vec::new();
+    // BuildKit reads the instruction with its `shell` package to find the
+    // here-documents, and finds none if that fails.
+    if !shell_reads(s) {
+        return docs;
+    }
     for w in heredoc_words(s, a) {
         let op = w.start
             + b[w.clone()]
@@ -1189,13 +1116,11 @@ fn heredocs(s: &str, a: usize) -> Vec<Heredoc> {
         let delimiter = op.end
             + b[op.end..w.end]
                 .iter()
-                .take_while(|&&c| matches!(c, b' ' | b'\t' | b'\r' | b'\n' | 0x0c))
+                .take_while(|&&c| matches!(c, b' ' | b'\t' | b'\r' | 0x0c))
                 .count();
         let rest = &s[delimiter..w.end];
-        // A delimiter with a quote that goes on to the next line could
-        // have a `<` there, which would make it not a delimiter. We don't
-        // look, so that the colors of a line don't depend on the next.
-        if rest.is_empty() || rest.contains(['<', '\n']) {
+        // A delimiter with a `<` in it isn't one.
+        if rest.is_empty() || rest.contains('<') {
             continue;
         }
         // Remove the quotes and escapes, as `ProcessWords` does.
@@ -1606,11 +1531,16 @@ CMD ["x", "--serve"]
         assert_eq!(kinds_of(text, Keyword), ["ENV", "RUN"]);
         assert_eq!(kinds_of(text, Escape), ["\\\\"]);
         // With `` ` `` as the escape character, the `\` in ``a\` `` at the
-        // end of a line escapes the start of the next line, and the
-        // command goes on.
+        // end of a line escapes the space at the start of the next line.
+        // So the command is one word, which has no plain name.
         let text = "# escape=`\nSHELL [\"sh\", \"-c\"]\nRUN a\\`\n b\n";
-        assert_eq!(kinds_of(text, Escape), ["\\`"]);
-        assert_eq!(identifiers(text), ["a"]);
+        assert_eq!(kinds_of(text, Escape), ["\\`", " "]);
+        assert_eq!(identifiers(text), [] as [&str; 0]);
+        // BuildKit joins the lines with nothing between them, so a word
+        // can go on on the next line.
+        assert_eq!(kinds_of("RU\\\nN a\\\nb c\n", Keyword), ["RU", "N"]);
+        assert_eq!(identifiers("RUN a\\\nb c\n"), ["a", "b"]);
+        assert_eq!(kinds_of("ENV a\\\n=b\n", Operator), ["="]);
         // CRLF line breaks.
         assert_eq!(
             tokens("RUN a \\\r\n  b\r\nENV x=1\r\n"),
@@ -1650,6 +1580,11 @@ CMD ["x", "--serve"]
         // JSON.
         assert_eq!(
             kinds_of("CMD [\"a\", \"b\"\n", Punctuation),
+            [] as [&str; 0]
+        );
+        // Or doesn't read as JSON on a later line.
+        assert_eq!(
+            kinds_of("CMD [\"a\", \\\n  b]\n", Punctuation),
             [] as [&str; 0]
         );
         // A JSON array that goes on over several lines.

@@ -252,20 +252,15 @@ func dockerfile(r *rand.Rand) string {
 		if name == "ONBUILD" && r.IntN(2) == 0 {
 			b.WriteString(" " + pick(r, names))
 		}
-		for n := range r.IntN(9) {
+		for range r.IntN(9) {
 			switch k := r.IntN(12); {
 			case k < 8:
 				b.WriteString(pick(r, []string{" ", " ", " ", "  ", "\t"}))
 			case k < 9:
 			default:
-				// Words can go on over a line, but tergi ends them at the
-				// end of the line. The check skips the rest of a file where
-				// that happens to the name of an instruction, so a space
-				// keeps it from happening there.
+				// Without a space before it, the word goes on over the
+				// line.
 				sep := pick(r, []string{" ", " ", ""})
-				if n == 0 {
-					sep = " "
-				}
 				b.WriteString(sep + escape + pick(r, []string{"", " "}) + "\n")
 				switch r.IntN(6) {
 				case 0:

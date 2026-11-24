@@ -36,11 +36,12 @@
 //     variables that BuildKit expands, if it expands any.
 //
 // BuildKit joins the lines of an instruction with nothing between them,
-// so a word can go on on the next line. tergi ends words at the end of a
-// line instead, so the checks skip words that BuildKit joined over a
-// line. When that changes how tergi reads the lines after it, they skip
-// the rest of the file. They also skip what follows from the other
-// differences that design/diffs.md describes, and count all they skip.
+// so a word can go on on the next line, and tergi does the same. A token
+// that goes on over a line has a piece on each line, and the checks look
+// at each piece. They skip what follows from the differences that
+// design/diffs.md describes, and count all they skip. When tergi reads an
+// instruction so differently that the lines after it can't be checked,
+// they skip the rest of the file.
 package main
 
 import (
@@ -116,9 +117,6 @@ type piece struct{ at, src, n int }
 type joined struct {
 	text   string
 	pieces []piece
-	// Whether the last line ends with the escape character, which only
-	// happens at the end of the file.
-	open bool
 }
 
 func (j *joined) push(src []byte, start, end int) {
@@ -198,6 +196,14 @@ func (f *file) token(s int) []byte {
 	return f.src[s : s+1]
 }
 
+// Report the first byte of j.text[a:b] that doesn't have the kind, on
+// whichever lines it came from.
+func (f *file) wantJoined(what string, j *joined, a, b int, kind string) {
+	for _, r := range j.sources(a, b) {
+		f.want(what, r[0], r[1], kind)
+	}
+}
+
 // Report the first byte in src[s:e] that doesn't have the kind.
 func (f *file) want(what string, s, e int, kind string) {
 	for i := s; i < e; i++ {
@@ -222,6 +228,41 @@ func (f *file) vars(s, e int) []string {
 		}
 		if f.src[p] == '$' && f.kinds[t.s-1] == "Punctuation" && f.kinds[p] == "Punctuation" {
 			names = append(names, string(f.src[t.s:t.e]))
+		}
+	}
+	return unique(names)
+}
+
+// The variables that tergi marks in j.text[a:b], as vars finds them. A
+// name can go on over a line, which splits it into pieces.
+func (f *file) joinedVars(j *joined, a, b int) []string {
+	var src []int
+	for _, r := range j.sources(a, b) {
+		for i := r[0]; i < r[1]; i++ {
+			src = append(src, i)
+		}
+	}
+	kind := func(k int) string {
+		if k < 0 || k >= len(src) {
+			return "nothing"
+		}
+		return f.kind(src[k])
+	}
+	var names []string
+	for k := range src {
+		if kind(k) != "Identifier" || kind(k-1) == "Identifier" {
+			continue
+		}
+		var name []byte
+		for e := k; kind(e) == "Identifier"; e++ {
+			name = append(name, f.src[src[e]])
+		}
+		p := k - 1
+		if p > 0 && f.src[src[p]] == '{' {
+			p--
+		}
+		if p >= 0 && f.src[src[p]] == '$' && kind(k-1) == "Punctuation" && kind(p) == "Punctuation" {
+			names = append(names, string(name))
 		}
 	}
 	return unique(names)
@@ -443,7 +484,6 @@ func (f *file) check() {
 				escapes = append(escapes, esc)
 			}
 		}
-		j.open = esc >= 0
 		if len(nodes) == 0 {
 			f.report("harness", lines[first].start, "BuildKit has no node for this instruction")
 			return
@@ -460,7 +500,7 @@ func (f *file) check() {
 		}
 		i = f.instruction(node, &j, lines, i)
 		if i < 0 {
-			f.skip("files where a word that matters goes on over a line, after that")
+			f.skip("files where tergi reads an instruction differently, after that")
 			return
 		}
 		if node.EndLine != i {
@@ -526,42 +566,14 @@ func inside(rs [][2]int, i int) bool {
 // bodies of its here-documents, which start on line `next`. Return the
 // line after them, or -1 if the rest of the file can't be checked.
 func (f *file) instruction(node *parser.Node, j *joined, lines []line, next int) int {
-	// When BuildKit joins the instruction's name over a line, tergi reads
-	// another name, and so the rest of the instruction differently. It may
-	// even find a here-document there that takes up the lines after it.
-	if _, _, ok := j.source(nameAt(node.Original, 0)); !ok {
-		return -1
-	}
-	// The same goes for a word that BuildKit joins over a line in an
-	// instruction that may have here-documents, because tergi can find
-	// other here-documents there.
-	if strings.Contains(j.text, "<<") {
-		for _, p := range j.pieces[1:] {
-			r1, _ := utf8.DecodeLastRuneInString(j.text[:p.at])
-			r2, _ := utf8.DecodeRuneInString(j.text[p.at:])
-			// An escaped space doesn't end a word either.
-			escaped := p.at > 1 && j.text[p.at-2] == '\\'
-			if p.at > 0 && (!unicode.IsSpace(r1) || escaped) && !unicode.IsSpace(r2) {
-				return -1
-			}
-		}
-	}
 	var x expect
 	sub := f.node(node, j, 0, &x)
 	if x.stop {
 		return -1
 	}
-	// tergi ends words at the end of a line, so it can find a keyword in
-	// part of a word that BuildKit joins over a line.
-	var split [][2]int
-	for _, w := range fieldRanges(j.text) {
-		if _, _, ok := j.source(w[0], w[1]); !ok {
-			split = append(split, w)
-		}
-	}
 	last := -2
 	for i := range j.text {
-		if inside(x.shell, i) || inside(split, i) {
+		if inside(x.shell, i) {
 			continue
 		}
 		s, _, ok := j.source(i, i+1)
@@ -583,11 +595,7 @@ func (f *file) instruction(node *parser.Node, j *joined, lines []line, next int)
 		}
 	}
 	for _, k := range x.keywords {
-		if s, e, ok := j.source(k[0], k[1]); ok {
-			f.want("keyword", s, e, "Keyword")
-		} else {
-			f.skip("keywords split over lines")
-		}
+		f.wantJoined("keyword", j, k[0], k[1], "Keyword")
 	}
 
 	name := strings.ToLower(sub.Value)
@@ -650,33 +658,6 @@ func bashParses(cmd string, docs []parser.Heredoc) bool {
 	return exec.Command("bash", "-n", "-c", b.String()).Run() == nil
 }
 
-// The ranges of the words in s, split at whitespace.
-func fieldRanges(s string) [][2]int {
-	var out [][2]int
-	start := -1
-	for i, r := range s {
-		switch {
-		case unicode.IsSpace(r) && start >= 0:
-			out = append(out, [2]int{start, i})
-			start = -1
-		case !unicode.IsSpace(r) && start < 0:
-			start = i
-		}
-	}
-	if start >= 0 {
-		out = append(out, [2]int{start, len(s)})
-	}
-	return out
-}
-
-// Where the name of the instruction in text is, if text starts at base in
-// the joined text.
-func nameAt(text string, base int) (int, int) {
-	t := strings.TrimSpace(text)
-	ts := base + len(text) - len(strings.TrimLeftFunc(text, unicode.IsSpace))
-	return ts, ts + len(reWhitespace.Split(t, 2)[0])
-}
-
 // Check the arguments of a node, whose text starts at `base` in the joined
 // text, and return the node of the instruction, which is the one inside
 // an ONBUILD.
@@ -709,10 +690,13 @@ func (f *file) node(node *parser.Node, j *joined, base int, x *expect) *parser.N
 		if !known[name] {
 			break
 		}
-		// tergi ends a flag at the end of a line, so it starts the
-		// arguments somewhere else.
-		if _, _, ok := j.source(restAt+fl.start, restAt+fl.end); !ok {
-			f.skip("instructions with a flag that goes on over a line")
+		// extractBuilderFlags looks for spaces one byte at a time, as
+		// parseHealthConfig does, so it can take the byte 0xa0 in a
+		// character such as U+00A0 for one and end the flag inside the
+		// character. tergi doesn't, so it starts the arguments somewhere
+		// else.
+		if fl.end < len(rest) && rest[fl.end] >= 0x80 {
+			f.skip("flags that BuildKit ends inside a character")
 			x.shell = append(x.shell, [2]int{base, len(j.text)})
 			return node
 		}
@@ -725,8 +709,7 @@ func (f *file) node(node *parser.Node, j *joined, base int, x *expect) *parser.N
 			f.skip("flags with quotes or escapes in their names")
 			continue
 		}
-		s, e, _ := j.source(restAt+fl.start, restAt+fl.start+n)
-		f.want("flag", s, e, "Attribute")
+		f.wantJoined("flag", j, restAt+fl.start, restAt+fl.start+n, "Attribute")
 	}
 	args := strings.TrimSpace(rest[argsAt:])
 	a := restAt + argsAt + len(rest[argsAt:]) - len(strings.TrimLeftFunc(rest[argsAt:], unicode.IsSpace))
@@ -740,12 +723,7 @@ func (f *file) node(node *parser.Node, j *joined, base int, x *expect) *parser.N
 	switch name {
 	case "onbuild":
 		if node.Next != nil && len(node.Next.Children) == 1 {
-			child := node.Next.Children[0]
-			if _, _, ok := j.source(nameAt(child.Original, a)); !ok {
-				x.stop = true
-				return node
-			}
-			return f.node(child, j, a, x)
+			return f.node(node.Next.Children[0], j, a, x)
 		}
 		return node
 	case "healthcheck":
@@ -805,12 +783,6 @@ func (f *file) node(node *parser.Node, j *joined, base int, x *expect) *parser.N
 		}
 		words := parseWords(args, f.escape)
 		if len(words) == 0 {
-			break
-		}
-		// tergi only looks for the `=` that says which form this is on
-		// the first line.
-		if _, _, ok := j.source(a+words[0][0], a+words[0][1]); !ok {
-			f.skip("ENV and LABEL whose first word goes on over a line")
 			break
 		}
 		if !strings.Contains(args[words[0][0]:words[0][1]], "=") {
@@ -896,13 +868,6 @@ func (f *file) json(j *joined, a int, args string, json bool) bool {
 	if got == json {
 		return got
 	}
-	// tergi only looks at the first line, so it reads an array that's
-	// fine on its first line as JSON. That includes a line that goes on at
-	// the end of the file, since more lines could follow.
-	if !json && (len(j.sources(a, a+len(args))) > 1 || j.open) {
-		f.skip("JSON arrays that BuildKit rejects after their first line")
-		return got
-	}
 	if json {
 		f.report("JSON", s, "%q is JSON, but tergi colors it as something else", args)
 	} else {
@@ -922,13 +887,8 @@ func (f *file) word(j *joined, lex *shell.Lex, a int, word string) {
 		f.skip("words that BuildKit can't expand")
 		return
 	}
-	s, e, ok := j.source(a, a+len(word))
-	if !ok {
-		f.skip("words split over lines")
-		return
-	}
-	if got := f.vars(s, e); !slices.Equal(got, want) {
-		f.report("variables", s, "%q has the variables %q, but tergi marks %q", word, want, got)
+	if got := f.joinedVars(j, a, a+len(word)); !slices.Equal(got, want) {
+		f.report("variables", f.at(j, a), "%q has the variables %q, but tergi marks %q", word, want, got)
 	}
 }
 
