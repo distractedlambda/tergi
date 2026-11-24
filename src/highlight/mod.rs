@@ -444,12 +444,11 @@ impl<'a> Lexed<'a> {
     }
 }
 
-/// Lex the first `max` lines of `text` and split its tokens up by line,
-/// for tests. Each line's spans leave out its newline.
+/// Lex `text` and split its tokens up by line, for tests. Each line's
+/// spans leave out its newline.
 #[cfg(test)]
-fn highlight_text(lang: Language, text: &str, max: usize) -> Vec<LineSpans> {
-    let end = text.split_inclusive('\n').take(max).map(str::len).sum();
-    let lexed = Lexed::new(lang, &text[..end]);
+fn highlight_text(lang: Language, text: &str) -> Vec<LineSpans> {
+    let lexed = Lexed::new(lang, text);
     (0..lexed.starts.len() - 1)
         .filter_map(|i| lexed.line(i))
         .map(|(start, line)| lexed.spans(start, start + line.len()))
@@ -999,7 +998,7 @@ mod tests {
         let text = "let x = /* a\nb */ 1;\r\n\"s\nt\" y\n";
         let k = |s, e, k| (s, e, k);
         assert_eq!(
-            highlight_text(Language::Rust, text, usize::MAX),
+            highlight_text(Language::Rust, text),
             [
                 vec![
                     k(0, 3, Kind::Keyword),
@@ -1016,7 +1015,6 @@ mod tests {
                 vec![k(0, 2, Kind::String), k(3, 4, Kind::Identifier)],
             ]
         );
-        assert_eq!(highlight_text(Language::Rust, text, 1).len(), 1);
     }
 
     proptest! {
@@ -1043,7 +1041,7 @@ mod tests {
         ) {
             let lang = Language::for_path(path).expect("a language for each test path");
             let lines: Vec<&str> = text.split_inclusive('\n').collect();
-            let out = highlight_text(lang, &text, usize::MAX);
+            let out = highlight_text(lang, &text);
             prop_assert_eq!(out.len(), lines.len());
             for (l, spans) in lines.iter().zip(&out) {
                 check_spans(l.strip_suffix('\n').unwrap_or(l), spans)?;
@@ -1058,8 +1056,8 @@ mod tests {
         ) {
             let lang = Language::for_path(path).expect("a language for each test path");
             let hunks = diff_texts(old.as_bytes(), new.as_bytes(), context);
-            let old_lines = highlight_text(lang, &old, usize::MAX);
-            let new_lines = highlight_text(lang, &new, usize::MAX);
+            let old_lines = highlight_text(lang, &old);
+            let new_lines = highlight_text(lang, &new);
             for (has_old, has_new) in [(true, true), (true, false), (false, true), (false, false)] {
                 let j = job(path, &hunks, has_old.then_some(&*old), has_new.then_some(&*new));
                 let hl = highlight_job(lang, &j);
@@ -1108,7 +1106,7 @@ mod tests {
                 .split_inclusive('\n')
                 .map(|l| l.strip_suffix('\n').unwrap_or(l))
                 .collect();
-            let colors = highlight_text(lang, &other, usize::MAX);
+            let colors = highlight_text(lang, &other);
             let hl = highlight_job(lang, &job(path, &hunks, None, Some(&other)));
             for (hunk, spans) in hunks.iter().zip(&hl.lines) {
                 for (line, spans) in hunk.lines.iter().zip(spans) {
