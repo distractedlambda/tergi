@@ -1863,7 +1863,7 @@ mod tests {
                 ("1", Number)
             ]
         );
-        // A piece from the middle of a file has no `#lang` line.
+        // Without a `#lang` line, the file's name decides.
         assert_eq!(
             lex(Language::Rhombus, "1; x"),
             [("1", Number), (";", Punctuation)]

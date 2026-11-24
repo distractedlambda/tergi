@@ -1206,9 +1206,9 @@ impl Lex<'_> {
 /// says. A `#lang` line at the start chooses the reader either way.
 pub fn lex(text: &str, lang: Language, out: &mut Tokens) {
     let mode = Mode::default();
-    // Without a `#lang` line, the text is a piece from the middle of a
-    // file, and its name tells us how to read it. Comments can come before
-    // the `#lang` line, as `read-language` skips them.
+    // Without a `#lang` line, the file's name, or the language of a
+    // Markdown code block, tells us how to read the text. Comments can
+    // come before the `#lang` line, as `read-language` skips them.
     let lang_line = Token::lexer_with_extras(text, mode).find(|t| *t != Ok(Token::Comment))
         == Some(Ok(Token::Lang));
     if lang == Language::Rhombus && !lang_line {
@@ -1609,7 +1609,7 @@ mod tests {
             ]
         );
         // Without a `#lang` line, a Scribble file is text from the start,
-        // because it's a piece from the middle of a document.
+        // like a Markdown code block marked `scribble`.
         assert_eq!(
             scribble("(define x 1) @f[2]"),
             [

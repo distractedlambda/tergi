@@ -490,10 +490,7 @@ with one is Racket even without an extension, and a `#lang` line after
 it still chooses the reader. With `#lang at-exp`, the lexer also reads @-forms such as `@foo[1]{text}`. With a Scribble
 language such as `#lang scribble/manual`, the whole file is text with
 @-forms in it. A `.scrbl` file is Scribble text even without a `#lang`
-line, because a hunk from the middle of a document doesn't have one. A
-hunk from the middle of an `at-exp` file is lexed as plain Racket, but
-we almost always have the full text, which starts with the `#lang`
-line.
+line, and so is a Markdown code block marked `scribble`.
 
 `default_reader` in `racket.rs` lists languages that we know use the
 default reader, such as `racket/base` and `typed/racket`. A language
@@ -538,8 +535,8 @@ with, in `lex.rkt` from the `shrubbery-lib` package. A `#lang` line
 for one of these languages makes the Racket lexer hand the rest of the
 file to it, so the language decides and not the file's name. So does a
 `#lang` line in a `.rhm` file for a language we don't know. A `.rhm`
-file without a `#lang` line is shrubbery, because it's a piece from the
-middle of a file. The Rhombus Scribble languages, such as
+file without a `#lang` line is shrubbery, and so is a Markdown code
+block marked `rhombus`. The Rhombus Scribble languages, such as
 `rhombus/scribble/manual`, read the whole file as text with @-forms in
 it. Their files are `.scrbl` files like Racket's Scribble documents.
 Without a `#lang` line, we read a `.scrbl` file as Racket Scribble.
@@ -1759,9 +1756,6 @@ leave that column blank.
   in old scripts, as operators.
 - The frontmatter of a cargo script, which is still unstable in Rust,
   is lexed as Rust code.
-- A hunk from the middle of a CMake `if` whose arguments go on over
-  several lines doesn't know it's in an `if`, so `AND` and the other
-  operators there are plain.
 - In Markdown, the text of a setext heading and a table's header row
   are colored as paragraph text, and a code span, link or tag that
   goes on over several lines only gets its color on its last line.
@@ -1828,14 +1822,10 @@ leave that column blank.
 - A hunk from the middle of a fish string, command substitution or
   brace expansion over several lines that we don't have the full text
   for reads the text as commands.
-- A hunk from the middle of a Rhombus Scribble document that we don't
-  have the full text for is lexed as Racket Scribble.
 - Other Racket languages with a reader of their own, such as
   `#lang datalog`, are lexed the way the file's name suggests. In a
   `.rkt` file, that's the default reader. `#reader scribble/reader`
   always gets the default reader.
-- A hunk from the middle of a `#lang at-exp` file that we don't have the
-  full text for is lexed as plain Racket.
 - Rainbow identifiers only look at the name. Two different variables
   with the same name get the same color. With 16 colors or fewer, two
   different names often share one too.
