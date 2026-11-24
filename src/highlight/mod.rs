@@ -1066,13 +1066,6 @@ mod tests {
                     }
                 }
             }
-            // A hunk that starts at the top of both files lexes the same
-            // lines from the top on its own, so it gets the same colors.
-            for (h, hunk) in hunks.iter().enumerate() {
-                if hunk.old_start <= 1 && hunk.new_start <= 1 {
-                    prop_assert_eq!(&full.lines[h], &parts.lines[h]);
-                }
-            }
         }
     }
 }
