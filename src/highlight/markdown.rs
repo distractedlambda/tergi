@@ -2,12 +2,13 @@
 //!
 //! It follows CommonMark 0.31.2, along with the tables and task lists of
 //! GitHub Flavored Markdown. Blocks are read a line at a time, the way the
-//! CommonMark reference parser reads them. When a paragraph ends, its text
-//! is read for code spans, links, raw HTML, escapes and entities. These can
-//! go on over several lines of the paragraph, and they get their colors on
-//! each line they cover. Emphasis is plain, because colors can't show it.
-//! Code blocks that name a language we have a lexer for are lexed in that
-//! language.
+//! CommonMark reference parser reads them. Once the document ends, and we
+//! know which link labels it defines, the text of paragraphs and table
+//! cells is read for code spans, links, raw HTML, escapes and entities.
+//! These can go on over several lines of a paragraph, and they get their
+//! colors on each line they cover. Emphasis is plain, because colors can't
+//! show it. Code blocks that name a language we have a lexer for are lexed
+//! in that language.
 
 use std::collections::HashSet;
 use std::ops::Range;

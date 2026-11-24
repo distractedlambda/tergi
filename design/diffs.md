@@ -801,8 +801,8 @@ lists of GitHub Flavored Markdown. Files ending in `.md`, `.markdown`,
 Blocks are read a line at a time, the way `incorporateLine` in
 commonmark.js, the reference parser, reads them. That includes its
 column counting, where a tab stops every four columns and a container
-can use up part of one. Headings, both the `#` kind and the underline
-of a setext heading, get the keyword color. Code spans and code blocks
+can use up part of one. Headings, both the `#` kind and the setext
+kind with its underline, get the keyword color. Code spans and code blocks
 get the string color. The markers of block quotes and list items,
 thematic breaks, fences, task markers and the pipes of tables get the
 punctuation color. A fenced code block whose info string names a
@@ -813,32 +813,29 @@ tag names as keywords, attribute names as attributes, values as
 strings and comments as comments. Emphasis is plain, since colors
 can't show it.
 
-Markdown mostly lets a line's colors depend only on the lines before
-it, but a few things don't:
+A paragraph keeps its lines until it ends, so that its text can be
+read as a whole. Code spans, links, raw HTML and link reference
+definitions can go on over several lines of a paragraph, and they get
+their colors on each line they cover. Whether a backtick starts a code
+span depends on whether a closing one comes later, and the lexer can
+look there. In the same way, the text of a setext heading gets the
+keyword color once its underline shows up. When a delimiter row turns
+the last line of a paragraph into a table's header row, the lines
+before it are lexed as a paragraph and the header as a row.
 
-- The text of a setext heading only becomes a heading at its
-  underline, and a table's header row only becomes one at the
-  delimiter row after it. So only the underline and the delimiter row
-  get colors.
-- Code spans, links, raw HTML and link reference definitions can go
-  on over several lines of a paragraph, and whether a backtick starts
-  a code span depends on whether a closing one comes later. So each
-  line of a paragraph is lexed as if the paragraph ended with it. A
-  code span that covers several lines only gets its color on the line
-  where it ends, and the same goes for links and tags.
+Whether `[text][label]`, `[label][]` or `[label]` is a link depends on
+whether the document defines `label`, maybe further down. So the
+lexer colors the definitions at the start of each paragraph when the
+paragraph ends, but keeps the rest of its text, and the text of each
+table cell, until the end of the document. By then it knows every
+label. Labels match as CommonMark says, without regard to case or to
+how much space they hold.
 
-Lexing each line of a paragraph from the start would take time that
-grows with the square of the paragraph's length. So the paragraph
-remembers the last line where nothing was left open, such as a
-backtick without its closing one or a `[` without its `]`, and lexes
-from there. When something stays open, it still lexes at most the last
-64 lines.
-
-Whether `[text][label]` is a link depends on whether the document
-defines `label`, maybe further down. We can't look there, so we take
-every label as defined. The one exception is a link like `[foo]` that
-is only a label. Text in brackets is often not a link at all, so that
-stays plain.
+A backtick or a `<!--` that never closes would make the lexer read the
+rest of the paragraph to look for its end. Many of them in a long
+paragraph would take time that grows with the square of its length. So
+the lexer remembers each closing text it didn't find and doesn't look
+for it again.
 
 The worker only highlights files that appear on screen.
 `request_visible_highlights` runs while drawing and asks for every file
@@ -1713,13 +1710,15 @@ leave that column blank.
   full of code spans, links and tags. It parses them with
   `pulldown-cmark` and checks that code spans and code blocks have the
   string color, headings the keyword color, rules and task markers the
-  punctuation color, and that text is plain. It skips the lines that a
-  code span, link or tag goes on from. They agreed on about 1.2 million
-  documents while we wrote the lexer. The generator defines every link
-  label that its pieces can make, and it ends each table with a blank
-  line. After a table, pulldown-cmark reads an indented line as code if
-  it has a pipe, and as a row if it doesn't. We always read it as a
-  row.
+  punctuation color, and so do the brackets of links. Text is plain
+  and raw HTML isn't. It checks every line of a code span, tag or
+  heading that covers several. They agreed on about 1.2 million
+  documents while we wrote the lexer, and on 200,000 more once it lexed
+  whole paragraphs and looked up labels. The generator defines some of
+  the link labels that its pieces can make and leaves out others, and
+  it ends each table with a blank line. After a table, pulldown-cmark
+  reads an indented line as code if it has a pipe, and as a row if it
+  doesn't. We always read it as a row.
 - `src/highlight/gitignore.rs` has examples for comments, negation,
   escapes and bracket expressions. Its property test builds random
   patterns, many of them with tricky bracket expressions. From the
@@ -1756,12 +1755,8 @@ leave that column blank.
   in old scripts, as operators.
 - The frontmatter of a cargo script, which is still unstable in Rust,
   is lexed as Rust code.
-- In Markdown, the text of a setext heading and a table's header row
-  are colored as paragraph text, and a code span, link or tag that
-  goes on over several lines only gets its color on its last line.
-- A Markdown reference link whose label isn't defined, such as
-  `[a][b]`, still gets the colors of a link. Named entities such as
-  `&foo;` get the escape color whether or not HTML defines them.
+- In Markdown, named entities such as `&foo;` get the escape color
+  whether or not HTML defines them.
 - A hunk from the middle of a multi-line TOML array that we don't have
   the full text for reads its values as keys. Strings keep their
   color, but numbers, `true` and `false` are plain. A
