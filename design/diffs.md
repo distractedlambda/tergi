@@ -1385,7 +1385,8 @@ Fish has some surprises that the lexer copies:
 
 - A `)` that closes nothing, or a `)` or `}` that closes the wrong
   bracket, is an error. Fish drops the part of the word before it, so
-  that part is plain.
+  that part is plain. Inside an unclosed `(` or `[`, the word can go
+  on for several lines before the error, and all of it is dropped.
 - Inside braces and brackets, a word can have blanks in it. Fish skips
   a comment after one when it looks for the end of the word and for
   command substitutions. But the comment is still part of the word, so
@@ -1396,21 +1397,16 @@ Fish has some surprises that the lexer copies:
   `$`, a backslash and a line feed, and then `x` on the next line is
   the variable `x`. A continuation can also split a name, or come
   between a name and its slice.
+- Fish reads a keyword without its line continuations too. So `i` and
+  a backslash on one line, and `f` on the next, is the keyword `if`.
 - After a line continuation, a comment line doesn't end the command.
-  The words after it are still its arguments.
+  The words after it are still its arguments. When the parser looks at
+  the token after a word, it skips those lines too.
 - The tokenizer stops at a null character, so nothing after one gets a
   color.
 
-The colors of a line never depend on the lines after it. Where fish
-looks at the token after a word, the lexer only looks at that token's
-first line, and after a line continuation it assumes a word that
-doesn't start with `-`. Fish reads a keyword that goes on over a line
-continuation, such as `i` and a backslash on one line and `f` on the
-next, but the lexer doesn't. A slice only gets its colors when its `]`
-is on the same line as its `[`, and whether braces expand is decided
-from the text up to the end of the `{`'s line. Command substitutions
-can nest, and each level takes some stack, so beyond 64 levels the
-lexer reads them as plain text.
+Command substitutions can nest, and each level takes some stack, so
+beyond 64 levels the lexer reads them as plain text.
 
 ### Rainbow identifiers
 
@@ -1687,7 +1683,9 @@ leave that column blank.
   place, `and`, `or`, `not` and `time`, the names that `set`, `for`
   and `function` take, comments, quotes and escapes, variables and
   slices, command substitutions, brace expansions, redirections and
-  pipes. `dev/reference/fish` builds a program inside fish 4.9.3's
+  pipes. Some of them go on over several lines, such as a keyword with
+  a line continuation in it, or a word whose error comes on a later
+  line. `dev/reference/fish` builds a program inside fish 4.9.3's
   source that uses fish's own parser and highlighter. It runs on the
   1,594 `.fish` files in fish's source and on random texts. It takes
   the colors of keywords, operators, statement braces, redirections and
@@ -1696,14 +1694,15 @@ leave that column blank.
   highlighter doesn't do what fish does, such as quotes in a comment
   inside a command substitution. It also checks that the identifiers
   are the same, in order. It stops comparing a file at fish's first
-  parse error, and at the known differences above, such as a keyword
-  that goes on over a line continuation. When we added the check, the
-  lexer missed a variable name after a line continuation, or after
-  several, and a slice after one. It let a `#` inside braces hide
-  variables and quotes, miscounted a stray `}`, read `$(` in a comment
-  inside braces, and took `0&|` as a pipe from file descriptor 0.
-  After fixing those, it agreed on all the files and on 200,000 random
-  texts.
+  parse error. When we added the check, the lexer missed a variable
+  name after a line continuation, or after several, and a slice after
+  one. It let a `#` inside braces hide variables and quotes, miscounted
+  a stray `}`, read `$(` in a comment inside braces, and took `0&|` as
+  a pipe from file descriptor 0. After fixing those, it agreed on all
+  the files and on 200,000 random texts. Once the lexer could look
+  past the end of a line, it agreed with fish on 20,000 random texts
+  with seed 7. A run of 200,000 with seed 11 found 4 texts that
+  `todo/bugs.md` lists.
 - `src/highlight/javascript.rs` has examples for each kind of
   JavaScript token, and a list of places where a `/` divides or starts
   a regular expression. `dev/reference/javascript` parses the 6,513
@@ -1822,18 +1821,6 @@ leave that column blank.
 - A shell script that turns on `extglob` can run a command whose name
   is a pattern such as `!(a)`. The lexer reads `!` and a subshell
   there.
-- Where fish decides what a word is from the token after it, the fish
-  lexer only looks at that token's first line. After a line
-  continuation, it assumes a word that doesn't start with `-`. So in
-  `exec` followed by a backslash, and `-c x` on the next line, it takes
-  `exec` as a keyword, where fish runs the builtin `exec`. A word that
-  only fails on a later line, such as a `(` whose word ends in an
-  error there, can also change what fish makes of the word before it.
-- Fish reads a keyword that goes on over a line continuation, but the
-  fish lexer doesn't, so the words after it can read differently.
-- A fish slice whose `]` is on a later line than its `[` gets no
-  colors. Braces whose `,` only comes on a later line don't get the
-  colors of an expansion.
 - Other Racket languages with a reader of their own, such as
   `#lang datalog`, are lexed the way the file's name suggests. In a
   `.rkt` file, that's the default reader. `#reader scribble/reader`
