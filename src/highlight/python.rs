@@ -336,8 +336,8 @@ impl State<'_> {
 
     /// Pop the innermost frame that the bracket `close` closes, along with
     /// any unclosed brackets inside it. A bracket that doesn't match
-    /// anything changes nothing, since a hunk can start in the middle of
-    /// some brackets. Only a `}` can close a field.
+    /// anything is an error, and it changes nothing. Only a `}` can close
+    /// a field.
     fn close(&mut self, close: u8) -> Option<Frame> {
         let open = match close {
             b')' => b'(',

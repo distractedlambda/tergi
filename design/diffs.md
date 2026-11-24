@@ -1847,12 +1847,6 @@ leave that column blank.
 - A hunk from the middle of a fish string, command substitution or
   brace expansion over several lines that we don't have the full text
   for reads the text as commands.
-- A hunk from the middle of a Python triple-quoted string that we
-  don't have the full text for reads the string as code, and its
-  closing quotes start a string. In the same way, a hunk from the
-  middle of an f-string field that goes on over several lines reads
-  the rest of the f-string as code, and its closing quote starts a
-  string.
 - A hunk from the middle of a Rhombus Scribble document that we don't
   have the full text for is lexed as Racket Scribble.
 - Other Racket languages with a reader of their own, such as
