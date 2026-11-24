@@ -550,7 +550,10 @@ async fn texts_for_conflicted_files() {
     let wd = Workdir::load(&s.git, 3, 100_000).await.expect("load");
     assert_eq!(wd.conflicted.len(), 1);
     assert_eq!(wd.conflicted_texts[0].old, None);
-    assert_eq!(wd.conflicted_texts[0].new.as_deref(), Some(&*s.read("f.rs")));
+    assert_eq!(
+        wd.conflicted_texts[0].new.as_deref(),
+        Some(&*s.read("f.rs"))
+    );
     assert!(s.read("f.rs").contains("<<<<<<<"));
 }
 
