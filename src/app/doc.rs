@@ -369,7 +369,7 @@ pub fn section_texts<'a>(
         Section::Untracked => workdir.map(|w| w.untracked_texts.as_slice()),
         Section::Unstaged => workdir.map(|w| w.unstaged_texts.as_slice()),
         Section::Staged => workdir.map(|w| w.staged_texts.as_slice()),
-        Section::Conflicted => None,
+        Section::Conflicted => workdir.map(|w| w.conflicted_texts.as_slice()),
     }
 }
 

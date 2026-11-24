@@ -450,6 +450,79 @@ name unless the user turns off rainbow identifiers (see below). The theme maps k
 colors when the line is drawn, so switching themes doesn't need to lex
 anything again.
 
+The worker only highlights files that appear on screen.
+`request_visible_highlights` runs while drawing and asks for every file
+with a row on screen that hasn't been asked for yet. Each job carries the
+file's hunks and the full text of each side that we have.
+
+The highlighter always lexes the whole text of a side, never a hunk on
+its own. Then `highlight_job` picks out the lines the diff shows by
+their line numbers and splits up the tokens on them. That way a line in
+the middle of a multi-line string or comment gets the right colors. It
+also means that a lexer may look ahead across lines to decide what
+something is, such as where a construct that started on an earlier line
+ends. A line's colors may depend on the lines after it. Lexing is fast
+enough that files of any size are lexed whole. Context lines take the
+new side's colors when it has them, and the old side's otherwise. A
+line of a side whose text we don't have gets no colors.
+
+We have the full text of both sides of almost every text diff. A commit
+diff has them from `git cat-file`. For an unstaged file, the old side is
+in the index and the new side is on disk. For a symlink, the text on
+disk is the path it points to, which is what git stores. For a staged
+file, the old side is in HEAD and the new side is in the index. An
+untracked or conflicted file has only a new side, which is on disk.
+`Workdir::load` reads the index and HEAD versions with `read_blobs`,
+which runs `git cat-file --batch`. It skips files that git's diff calls
+binary. It asks for blobs by the ids in the diff's `index` lines, which
+`--full-index` makes complete. Asking by path wouldn't work for every
+name. `git cat-file` reads one name per line, and a path like `1:x`
+names a stage of the index.
+
+A side of a text file can still be without its text, and then its
+lines are plain:
+
+- If `git cat-file` fails while loading the working directory, every
+  staged side and every old side of an unstaged file has no text. A
+  commit diff reads its blobs as part of loading, so if that fails, the
+  whole load fails and the pane shows the error.
+- A file on disk that can't be read gives no new side. It may have been
+  deleted after `git status` ran, or it can't be opened. Something that
+  isn't a regular file or a symlink, such as a FIFO, isn't read either.
+  An untracked or conflicted file that can't be read shows no lines at
+  all, because its lines come from the text.
+- A file on disk that has become binary since git diffed it gives no
+  new side.
+- The id of a submodule names a commit in the submodule, which git
+  usually reports as missing. Its lines are git's `Subproject commit`
+  lines, and they rarely have a language anyway.
+- Untracked files after the first 200 aren't read. They have no lines
+  until the user asks for them with Enter, and that reads the text.
+
+The text we have needn't be what git diffed. An unstaged file can
+change on disk between `git diff` and reading it. The watcher then
+reloads, but until that finishes the text is newer than the diff. Git
+also compares the working tree after its clean filters, such as
+`core.autocrlf`, the `ident` attribute and git-lfs, and `git diff` runs
+textconv drivers on both sides. So `Lexed::colors` checks each line of
+the diff against the text's line with that number, and a line that
+reads differently gets no colors. A carriage return at the end of the
+text's line that the diff doesn't have is allowed, so files whose CRLF
+endings `core.autocrlf` takes out keep their colors. Lines that do
+match get the colors from lexing the text we have. When an earlier
+line changed, such as by opening a comment, those can be wrong until
+the reload. Colors always stay inside the line they belong to, because
+spans are cut at the end of the diff's line.
+
+The language is chosen by the file's extension, in
+`Language::for_path`. Scripts often have no extension, so when the
+name doesn't give a language, `Language::for_shebang` looks for a `#!`
+line that runs Python, a shell in the sh family, Node or Racket.
+Examples are `#!/usr/bin/env python3`,
+`#!/usr/bin/env -S uv run --script`, `#!/bin/sh`, `#!/usr/bin/env node`
+and `#!/usr/bin/env racket`. We check the first line of the text of
+each side we have. Files in other languages aren't highlighted.
+
 Colors come from lexing alone. There is no parser, so the lexers can't
 tell which names are functions, types, macros or constants. In Rust,
 every name that isn't a keyword or part of an attribute's path is an
@@ -836,45 +909,6 @@ rest of the paragraph to look for its end. Many of them in a long
 paragraph would take time that grows with the square of its length. So
 the lexer remembers each closing text it didn't find and doesn't look
 for it again.
-
-The worker only highlights files that appear on screen.
-`request_visible_highlights` runs while drawing and asks for every file
-with a row on screen that hasn't been asked for yet. Each job carries the
-file's hunks and, when we have it, the full text of each side.
-
-With the full text, the worker lexes the whole file, up to the last line
-the diff shows. That way a line in the middle of a multi-line string or
-comment gets the right colors. Then it splits the tokens up by line and
-picks out the lines the diff shows by their line numbers. Lexing is fast
-enough that files of any size we load are lexed whole. Without the full
-text, it lexes each hunk's old side and new side on its own. It joins
-the side's lines with newlines, leaving one off only where the file has
-none, so a hunk at the top of a file gets the same colors either way.
-Context lines use the new side's colors when it has them.
-
-We have the full text of both sides of every diff. A commit diff has
-them from `git cat-file`. For an unstaged file, the old side is in the index
-and the new side is on disk. For a symlink, the text on disk is the path
-it points to, which is what git stores. For a staged file, the old side
-is in HEAD and the new side is in the index. `Workdir::load` reads the
-index and HEAD versions with `read_blobs`, which runs
-`git cat-file --batch`. It skips files that git's diff calls binary.
-A submodule's id names a commit in the submodule, which git usually
-reports as missing. It asks for blobs by the ids in
-the diff's `index` lines, which `--full-index` makes complete. Asking by
-path wouldn't work for every name. `git cat-file` reads one name per
-line, and a path like `1:x` names a stage of the index.
-
-The language is chosen by the file's extension, in
-`Language::for_path`. Scripts often have no extension, so when the
-name doesn't give a language, `Language::for_shebang` looks for a `#!`
-line that runs Python, a shell in the sh family, Node or Racket.
-Examples are `#!/usr/bin/env python3`,
-`#!/usr/bin/env -S uv run --script`, `#!/bin/sh`, `#!/usr/bin/env node`
-and `#!/usr/bin/env racket`. We check the first line of both
-sides of the diff. Without the full text of a side, we only see its
-first line if a hunk shows it. Files in other languages aren't
-highlighted.
 
 ### JavaScript
 
@@ -1734,7 +1768,10 @@ leave that column blank.
   `[\*-[:alpha:]`.
 - `src/highlight/mod.rs` has property tests that lexers never panic and
   give tokens in order on character boundaries, and that every hunk line
-  gets the same colors with or without the full text, where it should.
+  gets the colors of its line in its side's full text, or none without
+  that text. Another one gives the highlighter texts that differ from
+  the ones git diffed, and checks that a line only gets colors where the
+  text reads the same.
 
 ## Known gaps
 
@@ -1750,26 +1787,15 @@ leave that column blank.
 - The JavaScript lexer can guess wrong about a `/`. In a statement
   such as `a ? b : {} / 2`, it reads the `{}` as a block and the `/`
   as the start of a regular expression.
-- A hunk from the middle of a JavaScript template literal that we
-  don't have the full text for reads the template's text as code.
 - The JavaScript lexer reads `<!--` and `-->`, which start comments
   in old scripts, as operators.
 - The frontmatter of a cargo script, which is still unstable in Rust,
   is lexed as Rust code.
 - In Markdown, named entities such as `&foo;` get the escape color
   whether or not HTML defines them.
-- A hunk from the middle of a multi-line TOML array that we don't have
-  the full text for reads its values as keys. Strings keep their
-  color, but numbers, `true` and `false` are plain. A
-  nested array that starts a line there, as in `[1, 2],`, gets the
-  color of a table header.
 - YAML 1.1 readers, such as PyYAML and older versions of go-yaml, read
   `yes`, `no`, `on` and `off` as booleans. YAML 1.2 doesn't, and we
   follow it, so they get the string color.
-- A hunk from the middle of a YAML block scalar or a quoted scalar
-  over several lines that we don't have the full text for is read as
-  ordinary YAML. So `a: b` in a shell script under `run: |` reads as a
-  key and a value.
 - In C and C++, a splice in the middle of a token, as in `L\` at the
   end of a line followed by `'x'`, splits the token in two. The
   compiler joins them.
@@ -1778,13 +1804,6 @@ leave that column blank.
 - Python only reads `case` as a keyword in the body of a `match`
   statement. The lexer doesn't keep track of those, so it reads the
   annotation `case[x]: int` as the start of a `case`.
-- A hunk from the middle of a shell here-document, or of a quoted
-  string over several lines, that we don't have the full text for
-  reads the text as commands.
-- A hunk from the middle of a Dockerfile instruction that goes on over
-  several lines, or from a here-document's body, that we don't have
-  the full text for reads each line as an instruction. Lines such as
-  `&& make` don't start with one, so they're plain.
 - A Dockerfile's colors come from its own instructions. A `SHELL` in
   the base image, or a Windows image without `` ` `` as the escape
   character, can make `RUN` use a shell other than the one we assume.
@@ -1815,9 +1834,6 @@ leave that column blank.
 - A fish slice whose `]` is on a later line than its `[` gets no
   colors. Braces whose `,` only comes on a later line don't get the
   colors of an expansion.
-- A hunk from the middle of a fish string, command substitution or
-  brace expansion over several lines that we don't have the full text
-  for reads the text as commands.
 - Other Racket languages with a reader of their own, such as
   `#lang datalog`, are lexed the way the file's name suggests. In a
   `.rkt` file, that's the default reader. `#reader scribble/reader`

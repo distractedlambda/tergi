@@ -21,11 +21,12 @@ pub struct Workdir {
     pub staged: Vec<Arc<FileDiff>>,
     pub untracked: Vec<Arc<FileDiff>>,
     pub conflicted: Vec<Arc<FileDiff>>,
-    /// Full text of both sides of each unstaged, staged and untracked file,
-    /// for syntax highlighting. Indexed like the lists above.
+    /// Full text of both sides of each file, for syntax highlighting.
+    /// Indexed like the lists above.
     pub unstaged_texts: Vec<FileTexts>,
     pub staged_texts: Vec<FileTexts>,
     pub untracked_texts: Vec<FileTexts>,
+    pub conflicted_texts: Vec<FileTexts>,
 }
 
 /// How every `git diff` we parse starts. The user's config can change what
@@ -93,6 +94,7 @@ impl Workdir {
             let staged = staged_diff.map_or_else(Vec::new, |d| parse_unified(&d, line_limit));
 
             let mut conflicted = Vec::new();
+            let mut conflicted_texts = Vec::new();
             for (path, data) in conflicted_files {
                 let mut f = FileDiff::new(
                     FileStatus::Conflicted,
@@ -103,15 +105,18 @@ impl Workdir {
                 // combined diff. We show them separately, so drop them from
                 // `unstaged`.
                 unstaged.retain(|u| u.path() != path.as_bstr());
+                let mut texts = FileTexts::default();
                 match data {
                     Some(Contents::Binary) => f.binary = true,
                     Some(Contents::Text(text)) => {
                         f.hunks = diff_texts(b"", &text, context);
                         f.old_path = Some(path);
+                        texts.new = Some(String::from_utf8_lossy(&text).into());
                     }
                     None => {}
                 }
                 conflicted.push(f);
+                conflicted_texts.push(texts);
             }
 
             let (untracked, untracked_texts): (Vec<_>, _) = untracked_files
@@ -129,6 +134,7 @@ impl Workdir {
                 unstaged_texts: Vec::new(),
                 staged_texts: Vec::new(),
                 untracked_texts,
+                conflicted_texts,
             }
         })
         .await;

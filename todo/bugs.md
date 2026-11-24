@@ -15,8 +15,10 @@ With `core.autocrlf = input` and a file with CRLF line endings, every
 line of the text ends in a carriage return, but the index lines don't.
 `view` in `src/git/context.rs` then finds no lines that both sides
 share, so the edges of the file's unstaged hunks can't move out past
-git's context. Highlighting gets the CRLF text too. This was found by
-reading the code and hasn't been reproduced yet.
+git's context. Highlighting checks each line against the diff and
+allows the extra carriage return, but with other filters, the lines that
+differ get no colors. This was found by reading the code and hasn't been
+reproduced yet.
 
 ## An empty root commit after resolving the first pick of a `--root` rebase
 

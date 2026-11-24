@@ -6,10 +6,10 @@
 //! Identifiers are marked as such instead, so that drawing can give each
 //! name a color of its own, unless the user turns that off.
 //!
-//! When we have the full text of a file, we lex the whole file so that
-//! multi-line strings and comments come out right, then pick out the lines
-//! the diff shows. When we only have the diff, we lex each hunk's old and
-//! new side on its own.
+//! We always lex the full text of each side of a diff, then pick out the
+//! lines the diff shows. So multi-line strings and comments come out
+//! right, and a lexer may look ahead across lines to decide what a token
+//! is. Lines of a side whose text we don't have get no colors.
 
 mod c;
 mod cmake;
@@ -357,6 +357,10 @@ async fn worker(
         if !files.is_current(job.key.generation) {
             continue;
         }
+        // Without the text of either side, no line gets colors.
+        if job.old.is_none() && job.new.is_none() {
+            continue;
+        }
         let Some(lang) = language(&job) else {
             continue;
         };
@@ -369,51 +373,51 @@ async fn worker(
 /// line at the top of either side.
 fn language(job: &Job) -> Option<Language> {
     Language::for_path(&job.path).or_else(|| {
-        [
-            first_line(job, job.new.as_deref(), |l| l.new_no),
-            first_line(job, job.old.as_deref(), |l| l.old_no),
-        ]
-        .into_iter()
-        .flatten()
-        .find_map(Language::for_shebang)
+        [&job.new, &job.old]
+            .into_iter()
+            .flatten()
+            .find_map(|t| Language::for_shebang(t.lines().next()?))
     })
 }
 
-/// The first line of one side of a job's file. Without the full text of
-/// the side, we only have it if a hunk shows it.
-fn first_line<'a>(
-    job: &'a Job,
-    text: Option<&'a str>,
-    no: fn(&DiffLine) -> Option<u32>,
-) -> Option<&'a str> {
-    match text {
-        Some(t) => t.lines().next(),
-        None => job
-            .hunks
-            .iter()
-            .flat_map(|h| &h.lines)
-            .find(|l| no(l) == Some(1))
-            .map(|l| l.text.as_str()),
-    }
+/// The full text of one side of a diff, lexed.
+struct Lexed<'a> {
+    text: &'a str,
+    tokens: Vec<(Range<usize>, Kind)>,
+    /// Where each line starts, and then the end of the text.
+    starts: Vec<usize>,
 }
 
-/// Lex `text` and split its tokens up by line, for the first `max` lines.
-/// Each line's spans leave out its newline.
-fn highlight_text(lang: Language, text: &str, max: usize) -> Vec<LineSpans> {
-    let end = text.split_inclusive('\n').take(max).map(str::len).sum();
-    let text = &text[..end];
-    let tokens = lang.lex(text).0;
-    let mut out = Vec::new();
-    let mut first = 0;
-    let mut start = 0;
-    for line in text.split_inclusive('\n') {
-        let end = start + line.strip_suffix('\n').unwrap_or(line).len();
-        // A token can cover several lines, so keep it until it ends.
-        while tokens.get(first).is_some_and(|(r, _)| r.end <= start) {
-            first += 1;
+impl<'a> Lexed<'a> {
+    fn new(lang: Language, text: &'a str) -> Self {
+        let mut starts = vec![0];
+        starts.extend(text.match_indices('\n').map(|(i, _)| i + 1));
+        if starts.last() != Some(&text.len()) {
+            starts.push(text.len());
         }
+        Lexed {
+            text,
+            tokens: lang.lex(text).0,
+            starts,
+        }
+    }
+
+    /// The line at `i`, counting from 0, without its newline, and the
+    /// byte where it starts.
+    fn line(&self, i: usize) -> Option<(usize, &'a str)> {
+        let (&start, &next) = (self.starts.get(i)?, self.starts.get(i + 1)?);
+        let line = &self.text[start..next];
+        Some((start, line.strip_suffix('\n').unwrap_or(line)))
+    }
+
+    /// The spans of the tokens in `start..end`, from `start` on.
+    fn spans(&self, start: usize, end: usize) -> LineSpans {
+        // Tokens don't overlap, so their ends are in order too. A token
+        // can cover several lines, so the first one here can start
+        // before the line.
+        let first = self.tokens.partition_point(|(r, _)| r.end <= start);
         let mut spans = Vec::new();
-        for (r, kind) in &tokens[first..] {
+        for (r, kind) in &self.tokens[first..] {
             if r.start >= end {
                 break;
             }
@@ -422,93 +426,62 @@ fn highlight_text(lang: Language, text: &str, max: usize) -> Vec<LineSpans> {
                 spans.push(((s - start) as u32, (e - start) as u32, *kind));
             }
         }
-        out.push(spans);
-        start += line.len();
+        spans
     }
-    out
-}
 
-/// Highlight one side of a hunk on its own.
-fn highlight_side<'a>(lang: Language, lines: impl Iterator<Item = &'a DiffLine>) -> Vec<LineSpans> {
-    let mut text = String::new();
-    for l in lines {
-        text.push_str(&l.text);
-        if !l.no_eol {
-            text.push('\n');
+    /// The colors of the line numbered `no`, counting from 1, which the
+    /// diff shows as `shown`. The text we read needn't be what git
+    /// diffed. The file can change on disk in between, and git compares
+    /// the working tree after its filters, such as `core.autocrlf`. So a
+    /// line that reads differently gets no colors, apart from a carriage
+    /// return at its end that the diff doesn't have.
+    fn colors(&self, no: Option<u32>, shown: &str) -> Option<LineSpans> {
+        let (start, line) = self.line((no? as usize).checked_sub(1)?)?;
+        if line != shown && line.strip_suffix('\r') != Some(shown) {
+            return None;
         }
+        Some(self.spans(start, start + shown.len()))
     }
-    highlight_text(lang, &text, usize::MAX)
 }
 
+/// Lex the first `max` lines of `text` and split its tokens up by line,
+/// for tests. Each line's spans leave out its newline.
+#[cfg(test)]
+fn highlight_text(lang: Language, text: &str, max: usize) -> Vec<LineSpans> {
+    let end = text.split_inclusive('\n').take(max).map(str::len).sum();
+    let lexed = Lexed::new(lang, &text[..end]);
+    (0..lexed.starts.len() - 1)
+        .filter_map(|i| lexed.line(i))
+        .map(|(start, line)| lexed.spans(start, start + line.len()))
+        .collect()
+}
+
+/// Lex the full text of each side, and pick out the lines the diff shows
+/// by their line numbers. Lines of a side whose text we don't have get no
+/// colors.
 fn highlight_job(lang: Language, job: &Job) -> FileHighlight {
-    let max_line = |no: fn(&DiffLine) -> Option<u32>| {
-        job.hunks
+    let old = job.old.as_deref().map(|t| Lexed::new(lang, t));
+    let new = job.new.as_deref().map(|t| Lexed::new(lang, t));
+    let from_old = |l: &DiffLine| old.as_ref()?.colors(l.old_no, &l.text);
+    let from_new = |l: &DiffLine| new.as_ref()?.colors(l.new_no, &l.text);
+    let lines = job.hunks.iter().map(|hunk| {
+        hunk.lines
             .iter()
-            .flat_map(|h| &h.lines)
-            .filter_map(no)
-            .max()
-            .unwrap_or(0) as usize
-    };
-    let old_full = job
-        .old
-        .as_ref()
-        .map(|t| highlight_text(lang, t, max_line(|l| l.old_no)));
-    let new_full = job
-        .new
-        .as_ref()
-        .map(|t| highlight_text(lang, t, max_line(|l| l.new_no)));
-
-    let mut result = FileHighlight::default();
-    for hunk in &job.hunks {
-        // Lex each side of the hunk on its own when we don't have the full
-        // text for that side.
-        let old_side = old_full
-            .is_none()
-            .then(|| highlight_side(lang, hunk.lines.iter().filter(|l| l.kind != LineKind::Add)));
-        let new_side = new_full
-            .is_none()
-            .then(|| highlight_side(lang, hunk.lines.iter().filter(|l| l.kind != LineKind::Del)));
-        let mut oi = 0;
-        let mut ni = 0;
-        let mut out = Vec::with_capacity(hunk.lines.len());
-        for line in &hunk.lines {
-            let pick = |full: &Option<Vec<LineSpans>>,
-                        side: &Option<Vec<LineSpans>>,
-                        no: Option<u32>,
-                        i: usize|
-             -> LineSpans {
-                let spans = match (full, side) {
-                    (Some(f), _) => no.and_then(|n| f.get(n as usize - 1)),
-                    (None, Some(s)) => s.get(i),
-                    _ => None,
-                };
-                spans.cloned().unwrap_or_default()
-            };
-            let from_old = || pick(&old_full, &old_side, line.old_no, oi);
-            let from_new = || pick(&new_full, &new_side, line.new_no, ni);
-            let spans = match line.kind {
-                LineKind::Del => from_old(),
-                LineKind::Add => from_new(),
-                // Prefer the new side for context, which is what's on disk.
-                LineKind::Context => {
-                    if new_full.is_some() || old_full.is_none() {
-                        from_new()
-                    } else {
-                        from_old()
-                    }
+            .map(|l| {
+                match l.kind {
+                    LineKind::Del => from_old(l),
+                    LineKind::Add => from_new(l),
+                    // Prefer the new side for context, which is what's on
+                    // disk.
+                    LineKind::Context => from_new(l).or_else(|| from_old(l)),
                 }
-            };
-            if line.kind != LineKind::Add {
-                oi += 1;
-            }
-            if line.kind != LineKind::Del {
-                ni += 1;
-            }
-            out.push(spans);
-        }
-        result.lines.push(out);
+                .unwrap_or_default()
+            })
+            .collect()
+    });
+    FileHighlight {
+        lines: lines.collect(),
     }
-    result
 }
 
 #[cfg(test)]
@@ -951,24 +924,74 @@ mod tests {
     fn finds_scripts_by_first_line() {
         let script = "#!/usr/bin/env python3\nprint(1)\n";
         let edited = "#!/usr/bin/env python3\nprint(2)\n";
-        let lang = |path, old: &str, new: &str, full: bool| {
-            let hunks = diff_texts(old.as_bytes(), new.as_bytes(), 3);
-            language(&job(path, &hunks, full.then_some(old), full.then_some(new)))
+        let lang = |path, old: Option<&str>, new: Option<&str>| {
+            let hunks = diff_texts(
+                old.unwrap_or("").as_bytes(),
+                new.unwrap_or("").as_bytes(),
+                3,
+            );
+            language(&job(path, &hunks, old, new))
         };
-        for full in [true, false] {
-            assert_eq!(lang("bin/x", script, edited, full), Some(Language::Python));
-            // Only one side has to be a Python script.
-            assert_eq!(lang("bin/x", "", script, full), Some(Language::Python));
-            assert_eq!(lang("bin/x", script, "", full), Some(Language::Python));
-            assert_eq!(lang("bin/x", "x\n", "y\n", full), None);
-            // The name comes first.
-            assert_eq!(lang("x.sh", script, edited, full), Some(Language::Shell));
-        }
-        // Without the full text, a hunk has to show the first line.
-        let long = format!("{script}{}", "x\n".repeat(10));
-        let changed = format!("{long}y\n");
-        assert_eq!(lang("bin/x", &long, &changed, true), Some(Language::Python));
-        assert_eq!(lang("bin/x", &long, &changed, false), None);
+        let python = Some(Language::Python);
+        assert_eq!(lang("bin/x", Some(script), Some(edited)), python);
+        // Only one side has to be a Python script.
+        assert_eq!(lang("bin/x", Some(""), Some(script)), python);
+        assert_eq!(lang("bin/x", Some(script), Some("")), python);
+        assert_eq!(lang("bin/x", Some("x\n"), Some("y\n")), None);
+        // The name comes first.
+        assert_eq!(
+            lang("x.sh", Some(script), Some(edited)),
+            Some(Language::Shell)
+        );
+        // Only the texts we have count, even when a hunk shows the first
+        // line of another.
+        assert_eq!(lang("bin/x", None, Some(edited)), python);
+        assert_eq!(lang("bin/x", Some("x\n"), None), None);
+        assert_eq!(lang("bin/x", None, None), None);
+        assert_eq!(lang("x.py", None, None), python);
+    }
+
+    #[test]
+    fn checks_lines_against_the_diff() {
+        let old = "/* a\nb */\nc\n";
+        let new = "/* a\nb */\nd\n";
+        let hunks = diff_texts(old.as_bytes(), new.as_bytes(), 3);
+        let comment = |n| vec![(0, n, Kind::Comment)];
+        let plain = || vec![(0, 1, Kind::Identifier)];
+        let colors = |old: Option<&str>, new: Option<&str>| {
+            highlight_job(Language::C, &job("a.c", &hunks, old, new)).lines
+        };
+        // The lines are "/* a", "b */", "-c" and "+d".
+        assert_eq!(
+            colors(Some(old), Some(new)),
+            [[comment(4), comment(4), plain(), plain()]]
+        );
+        // The file changed on disk after git diffed it. Its first line
+        // reads differently, so it gets no colors, but its second line is
+        // the same and still gets the colors from the text we have.
+        let changed = "/* x\nb */\nd\n";
+        assert_eq!(
+            colors(None, Some(changed)),
+            [[vec![], comment(4), vec![], plain()]]
+        );
+        // A context line takes the old side's colors when the new side
+        // reads differently.
+        assert_eq!(
+            colors(Some(old), Some(changed)),
+            [[comment(4), comment(4), plain(), plain()]]
+        );
+        // Lines that the text doesn't have get no colors.
+        assert_eq!(
+            colors(None, Some("/* a\nb */\n")),
+            [[comment(4), comment(4), vec![], vec![]]]
+        );
+        // The text has carriage returns that `core.autocrlf` took out
+        // before git diffed it.
+        let crlf = "/* a\r\nb */\r\nd\r\n";
+        assert_eq!(
+            colors(None, Some(crlf)),
+            [[comment(4), comment(4), vec![], plain()]]
+        );
     }
 
     #[test]
@@ -1035,35 +1058,72 @@ mod tests {
         ) {
             let lang = Language::for_path(path).expect("a language for each test path");
             let hunks = diff_texts(old.as_bytes(), new.as_bytes(), context);
-            let run = |o: bool, n: bool| {
-                let j = job(path, &hunks, o.then_some(&*old), n.then_some(&*new));
-                highlight_job(lang, &j)
-            };
-            let full = run(true, true);
-            let parts = run(false, false);
+            let old_lines = highlight_text(lang, &old, usize::MAX);
+            let new_lines = highlight_text(lang, &new, usize::MAX);
             for (has_old, has_new) in [(true, true), (true, false), (false, true), (false, false)] {
-                let hl = run(has_old, has_new);
+                let j = job(path, &hunks, has_old.then_some(&*old), has_new.then_some(&*new));
+                let hl = highlight_job(lang, &j);
                 prop_assert_eq!(hl.lines.len(), hunks.len());
-                for (h, (hunk, spans)) in hunks.iter().zip(&hl.lines).enumerate() {
+                for (hunk, spans) in hunks.iter().zip(&hl.lines) {
                     prop_assert_eq!(spans.len(), hunk.lines.len());
-                    for (i, (line, spans)) in hunk.lines.iter().zip(spans).enumerate() {
+                    for (line, spans) in hunk.lines.iter().zip(spans) {
                         check_spans(&line.text, spans)?;
-                        // A line with the full text of its side gets the colors
-                        // that it gets when both sides have it, and one without
-                        // gets the colors that it gets when neither side has it.
-                        // Context lines use the new side when they can.
-                        let side = match line.kind {
-                            LineKind::Del => Some(has_old),
-                            LineKind::Add => Some(has_new),
-                            LineKind::Context if has_new || !has_old => Some(has_new),
-                            LineKind::Context => None,
+                        // A line gets the colors of its line in its side's
+                        // full text, and none without that text. Context
+                        // lines use the new side when they can.
+                        let from_old = || {
+                            has_old.then_some(())?;
+                            Some(&old_lines[line.old_no? as usize - 1])
                         };
-                        match side {
-                            Some(true) => prop_assert_eq!(spans, &full.lines[h][i]),
-                            Some(false) => prop_assert_eq!(spans, &parts.lines[h][i]),
-                            None => {}
-                        }
+                        let from_new = || {
+                            has_new.then_some(())?;
+                            Some(&new_lines[line.new_no? as usize - 1])
+                        };
+                        let want = match line.kind {
+                            LineKind::Del => from_old(),
+                            LineKind::Add => from_new(),
+                            LineKind::Context => from_new().or_else(from_old),
+                        };
+                        prop_assert_eq!(spans, &want.cloned().unwrap_or_default());
                     }
+                }
+            }
+        }
+
+        /// The texts we read can differ from the ones git diffed, such
+        /// as when a file changes on disk in between. Then a line only
+        /// gets colors where its side's text reads the same, maybe with
+        /// a carriage return at the end, and the colors stay inside the
+        /// line.
+        #[test]
+        fn texts_that_differ_from_the_diff(
+            path in prop::sample::select(PATHS),
+            (old, new, other) in prop::collection::vec(line(), 1..6)
+                .prop_flat_map(|pool| (text(pool.clone()), text(pool.clone()), text(pool))),
+            context in 0u32..4,
+        ) {
+            let lang = Language::for_path(path).expect("a language for each test path");
+            let hunks = diff_texts(old.as_bytes(), new.as_bytes(), context);
+            let lines: Vec<&str> = other
+                .split_inclusive('\n')
+                .map(|l| l.strip_suffix('\n').unwrap_or(l))
+                .collect();
+            let colors = highlight_text(lang, &other, usize::MAX);
+            let hl = highlight_job(lang, &job(path, &hunks, None, Some(&other)));
+            for (hunk, spans) in hunks.iter().zip(&hl.lines) {
+                for (line, spans) in hunk.lines.iter().zip(spans) {
+                    check_spans(&line.text, spans)?;
+                    let i = line.new_no.map(|n| n as usize - 1);
+                    let want = match i.and_then(|i| Some((lines.get(i)?, &colors[i]))) {
+                        Some((l, c)) if *l == line.text => c.clone(),
+                        Some((l, c)) if l.strip_suffix('\r') == Some(line.text.as_str()) => c
+                            .iter()
+                            .filter(|s| (s.0 as usize) < line.text.len())
+                            .map(|&(s, e, k)| (s, e.min(line.text.len() as u32), k))
+                            .collect(),
+                        _ => vec![],
+                    };
+                    prop_assert_eq!(spans, &want);
                 }
             }
         }
