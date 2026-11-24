@@ -27,6 +27,7 @@ pub fn lex(text: &str, out: &mut Tokens) {
         start += line.len();
     }
     p.close_leaf();
+    p.lex_inlines();
     let mut toks = p.out;
     toks.sort_by_key(|(r, _)| r.start);
     for (r, kind) in toks {
@@ -207,6 +208,14 @@ struct Parser<'a> {
     matched: usize,
     leaf_ok: bool,
     all_closed: bool,
+
+    /// The labels of the link reference definitions, as `fold_label` gives
+    /// them.
+    labels: HashSet<String>,
+    /// Text that we lex for inline content once we know every label, and
+    /// where to start in it. A link can come before the definition of its
+    /// label.
+    inlines: Vec<(Joined, usize)>,
 }
 
 impl<'a> Parser<'a> {
@@ -223,6 +232,8 @@ impl<'a> Parser<'a> {
             matched: 0,
             leaf_ok: false,
             all_closed: true,
+            labels: HashSet::new(),
+            inlines: Vec::new(),
         }
     }
 
@@ -636,14 +647,16 @@ impl<'a> Parser<'a> {
         };
         let joined = Joined::new(self.text, &p.lines, false);
         let mut toks = Vec::new();
+        let mut labels = HashSet::new();
         let end = if p.defs {
-            definitions(&joined.text, &mut toks)
+            definitions(&joined.text, &mut toks, &mut labels)
         } else {
             0
         };
         if end == joined.text.len() {
             return false;
         }
+        self.labels.extend(labels);
         for (r, kind) in toks {
             joined.map(r, kind, &mut self.out);
         }
@@ -665,36 +678,55 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Color the link reference definitions that a paragraph can start
+    /// with, and keep the rest of it for `lex_inlines`.
     fn lex_paragraph(&mut self, lines: &[Range<usize>], defs: bool) {
         let joined = Joined::new(self.text, lines, false);
         let mut toks = Vec::new();
-        paragraph(&joined.text, defs, &mut toks);
+        let end = if defs {
+            definitions(&joined.text, &mut toks, &mut self.labels)
+        } else {
+            0
+        };
         for (r, kind) in toks {
             joined.map(r, kind, &mut self.out);
         }
+        if end < joined.text.len() {
+            self.inlines.push((joined, end));
+        }
     }
 
-    /// Color a row of a table. Each cell is lexed on its own.
+    /// Lex the inline content of the document, now that we know which
+    /// labels it defines.
+    fn lex_inlines(&mut self) {
+        for (joined, from) in std::mem::take(&mut self.inlines) {
+            let mut toks = Vec::new();
+            inline(&joined.text, from, &self.labels, &mut toks);
+            for (r, kind) in toks {
+                joined.map(r, kind, &mut self.out);
+            }
+        }
+    }
+
+    /// Color the pipes of a row of a table. Each cell is lexed on its own.
     fn table_row(&mut self, row: Range<usize>) {
         let start = row.start;
-        let row = &self.text[row];
-        let b = row.as_bytes();
+        let b = self.text[row].as_bytes();
         let mut cell = 0;
         let mut i = 0;
         while i <= b.len() {
             match b.get(i) {
                 Some(b'\\') => i += 1,
                 Some(b'|') | None => {
-                    let mut toks = Vec::new();
-                    inline(&row[cell..i], 0, &mut toks);
-                    for (r, kind) in toks {
-                        self.out
-                            .push((start + cell + r.start..start + cell + r.end, kind));
+                    let cell = std::mem::replace(&mut cell, i + 1);
+                    if cell < i {
+                        let r = start + cell..start + i;
+                        let joined = Joined::new(self.text, std::slice::from_ref(&r), false);
+                        self.inlines.push((joined, 0));
                     }
                     if i < b.len() {
                         self.out.push((start + i..start + i + 1, Kind::Punctuation));
                     }
-                    cell = i + 1;
                 }
                 _ => {}
             }
@@ -973,20 +1005,16 @@ fn html_end(kind: u8, line: &str) -> bool {
     }
 }
 
-/// Color the text of a paragraph. If `defs` is true, it can start with link
-/// reference definitions.
-fn paragraph(s: &str, defs: bool, out: &mut Out) {
-    let pos = if defs { definitions(s, out) } else { 0 };
-    inline(s, pos, out);
-}
-
-/// Color the link reference definitions at the start of `s`, and give
-/// where they end.
-fn definitions(s: &str, out: &mut Out) -> usize {
+/// Color the link reference definitions at the start of `s`, add their
+/// labels to `labels`, and give where they end.
+fn definitions(s: &str, out: &mut Out, labels: &mut HashSet<String>) -> usize {
     let mut pos = 0;
     while pos < s.len()
         && let Some(end) = definition(s, pos, out)
     {
+        if let Some(close) = label(s, pos) {
+            labels.insert(fold_label(&s[pos + 1..close]));
+        }
         pos = end;
     }
     pos
@@ -1058,6 +1086,13 @@ fn is_punct(c: u8) -> bool {
 /// A link label in brackets at `p`. Gives the position of the closing
 /// bracket.
 fn label(s: &str, p: usize) -> Option<usize> {
+    let close = brackets(s, p)?;
+    (!s[p + 1..close].trim().is_empty()).then_some(close)
+}
+
+/// Text in brackets at `p` that could be a link label, but may be blank.
+/// Gives the position of the closing bracket.
+fn brackets(s: &str, p: usize) -> Option<usize> {
     let b = s.as_bytes();
     if b.get(p) != Some(&b'[') {
         return None;
@@ -1067,17 +1102,25 @@ fn label(s: &str, p: usize) -> Option<usize> {
         match b.get(q)? {
             b'\\' => q += 2,
             b'[' => return None,
-            b']' => break,
+            b']' => return Some(q),
             _ => q += 1,
         }
         if q - p > 1000 {
             return None;
         }
     }
-    if s[p + 1..q].trim().is_empty() {
-        return None;
-    }
-    Some(q)
+}
+
+/// A link label the way CommonMark compares them, with the space around
+/// it left out, each run of space inside it as one space, and its case
+/// folded.
+fn fold_label(label: &str) -> String {
+    let words: Vec<&str> = label
+        .split([' ', '\t', '\n', '\r'])
+        .filter(|w| !w.is_empty())
+        .collect();
+    // Going through upper case folds `ß` to `ss`, as case folding does.
+    words.join(" ").to_uppercase().to_lowercase()
 }
 
 /// A link destination at `p`, as in `/url` or `<url>`.
@@ -1169,12 +1212,16 @@ struct Missing {
 }
 
 /// Color code spans, links, raw HTML, escapes and entities in `s`, from
-/// `from` on, following the CommonMark rules for inline content.
-fn inline(s: &str, from: usize, out: &mut Out) {
+/// `from` on, following the CommonMark rules for inline content. `labels`
+/// are the labels that the document defines.
+fn inline(s: &str, from: usize, labels: &HashSet<String>, out: &mut Out) {
     struct Opener {
         at: usize,
         image: bool,
         active: bool,
+        /// Whether another opener came after it. Then its text holds a
+        /// bracket, so it can't be a label.
+        bracket_after: bool,
     }
     let mut missing = Missing::default();
     let mut openers: Vec<Opener> = Vec::new();
@@ -1210,16 +1257,17 @@ fn inline(s: &str, from: usize, out: &mut Out) {
                     lex.bump(e - r.end);
                 }
             }
-            Ok(Inline::Image) => openers.push(Opener {
-                at: r.start,
-                image: true,
-                active: true,
-            }),
-            Ok(Inline::Open) => openers.push(Opener {
-                at: r.start,
-                image: false,
-                active: true,
-            }),
+            Ok(tok @ (Inline::Image | Inline::Open)) => {
+                if let Some(last) = openers.last_mut() {
+                    last.bracket_after = true;
+                }
+                openers.push(Opener {
+                    at: r.start,
+                    image: tok == Inline::Image,
+                    active: true,
+                    bracket_after: false,
+                });
+            }
             Ok(Inline::Close) => {
                 let Some(op) = openers.pop() else {
                     continue;
@@ -1227,9 +1275,18 @@ fn inline(s: &str, from: usize, out: &mut Out) {
                 if !op.active {
                     continue;
                 }
+                let len = if op.image { 2 } else { 1 };
+                // The text of the link is its label, unless it has one of
+                // its own. We don't look up text that can't be a label, or
+                // brackets nested deeply would take time that grows with
+                // the square of their number.
+                let label = (!op.bracket_after).then(|| &s[op.at + len..r.start]);
                 let mut tail = Vec::new();
-                if let Some(e) = link_tail(s, r.end, &mut tail) {
-                    let len = if op.image { 2 } else { 1 };
+                let end = inline_link(s, r.end, &mut tail).or_else(|| {
+                    tail.clear();
+                    reference(s, r.end, label, labels, &mut tail)
+                });
+                if let Some(e) = end {
                     out.push((op.at..op.at + len, Kind::Punctuation));
                     out.push((r.clone(), Kind::Punctuation));
                     out.extend(tail);
@@ -1265,27 +1322,46 @@ fn closing_backticks(rest: &str, n: usize) -> Option<usize> {
     None
 }
 
-/// What follows the `]` of a link: a destination in parentheses, or the
-/// label of a reference in brackets. We don't know which labels the
-/// document defines, since a definition can come after its use. So we take
-/// any label as defined, except in a link like `[foo]` that is only a
-/// label, which more often isn't a link at all.
-fn link_tail(s: &str, p: usize, out: &mut Out) -> Option<usize> {
-    let b = s.as_bytes();
-    match b.get(p) {
-        Some(b'(') => {}
-        Some(b'[') => {
-            if b.get(p + 1) == Some(&b']') {
-                out.push((p..p + 2, Kind::Punctuation));
-                return Some(p + 2);
+/// The rest of a link after the `]` of its text, when it's a reference:
+/// a label in brackets, empty brackets or nothing. With empty brackets or
+/// nothing, the link's text is its label, if it can be. It's only a link
+/// if the document defines the label.
+fn reference(
+    s: &str,
+    p: usize,
+    text: Option<&str>,
+    labels: &HashSet<String>,
+    out: &mut Out,
+) -> Option<usize> {
+    let defined = |l: &str| labels.contains(&fold_label(l));
+    match brackets(s, p) {
+        Some(close) if close == p + 1 => {
+            text.filter(|t| defined(t))?;
+            out.push((p..p + 2, Kind::Punctuation));
+            Some(p + 2)
+        }
+        Some(close) => {
+            if !defined(&s[p + 1..close]) {
+                return None;
             }
-            let close = label(s, p)?;
             out.push((p..p + 1, Kind::Punctuation));
             out.push((p + 1..close, Kind::Attribute));
             out.push((close..close + 1, Kind::Punctuation));
-            return Some(close + 1);
+            Some(close + 1)
         }
-        _ => return None,
+        None => {
+            text.filter(|t| defined(t))?;
+            Some(p)
+        }
+    }
+}
+
+/// The rest of a link after the `]` of its text, when it's an inline link
+/// with a destination and maybe a title in parentheses.
+fn inline_link(s: &str, p: usize, out: &mut Out) -> Option<usize> {
+    let b = s.as_bytes();
+    if b.get(p) != Some(&b'(') {
+        return None;
     }
     let mut toks = vec![(p..p + 1, Kind::Punctuation)];
     let mut q = ws(s, p + 1);
@@ -1703,7 +1779,7 @@ Setext
     fn links() {
         use Kind::*;
         assert_eq!(
-            tokens("![a](<b c> 'd') [e][f] [g][] [h] <i@j.k> <ab:m>"),
+            tokens("![a](<b c> 'd') [e][f] [g][] [h] <i@j.k> <ab:m>\n\n[F]: /f\n[g]: /g\n[h]: /h"),
             [
                 ("![", Punctuation),
                 ("](", Punctuation),
@@ -1716,13 +1792,36 @@ Setext
                 ("]", Punctuation),
                 ("[", Punctuation),
                 ("][]", Punctuation),
+                ("[", Punctuation),
+                ("]", Punctuation),
                 ("<", Punctuation),
                 ("i@j.k", Attribute),
                 (">", Punctuation),
                 ("<", Punctuation),
                 ("ab:m", Attribute),
                 (">", Punctuation),
+                ("[", Punctuation),
+                ("]:", Punctuation),
+                ("/f", Attribute),
+                ("[", Punctuation),
+                ("]:", Punctuation),
+                ("/g", Attribute),
+                ("[", Punctuation),
+                ("]:", Punctuation),
+                ("/h", Attribute),
             ]
+        );
+        // References are only links if their labels are defined. A link
+        // whose destination doesn't work out can still be a reference.
+        // Labels match without regard to case or runs of space.
+        let defs = "\n\n[a]: /a\n[b  C]: /b\n";
+        assert_eq!(
+            kinds_of(&format!("[x][y] [y][] [y] [a][y]{defs}"), Attribute),
+            ["/a", "/b"]
+        );
+        assert_eq!(
+            kinds_of(&format!("[a](/u [B\nc][] [x][a]{defs}"), Punctuation),
+            ["[", "]", "[", "][]", "[", "][", "]", "[", "]:", "[", "]:"]
         );
         // Links can't hold links, but they can hold images.
         assert_eq!(
@@ -1842,6 +1941,10 @@ Setext
             "[r][foo]",
             "[foo][]",
             "[foo]",
+            "[FOO]",
+            "[x][y]",
+            "[y][]",
+            "[y]",
             "[",
             "(",
             ")",
@@ -1947,13 +2050,28 @@ Setext
     }
 
     fn document() -> impl Strategy<Value = String> {
-        prop::collection::vec((block(), any::<bool>()), 1..5).prop_map(|bs| {
-            // Full references are only links when their label is defined,
-            // and the lexer takes every label to be. So we define every
-            // label that the pieces above can make next to another one.
-            // At the end, an unclosed code block could hide the definitions.
-            let mut s =
-                String::from("[foo]: /f\n[r]: /r\n[a]: /a\n[b c]: /b\n[l]: /l\n[a b]: /ab\n\n");
+        let defs = prop::sample::subsequence(
+            &[
+                "[foo]: /f",
+                "[r]: /r",
+                "[a]: /a",
+                "[b c]: /b",
+                "[l]: /l",
+                "[a b]: /ab",
+            ][..],
+            0..=6,
+        );
+        (defs, prop::collection::vec((block(), any::<bool>()), 1..5)).prop_map(|(defs, bs)| {
+            // References are only links when their labels are defined, so
+            // we define some of the labels that the pieces above can make.
+            // The blocks may define others. At the end, an unclosed code
+            // block could hide the definitions.
+            let mut s = String::new();
+            for d in defs {
+                s.push_str(d);
+                s.push('\n');
+            }
+            s.push('\n');
             for (b, blank) in bs {
                 for l in b {
                     s.push_str(&l);
@@ -1972,8 +2090,10 @@ Setext
     #[test]
     fn long_paragraphs_are_fast() {
         let text = format!(
-            "` [ <a\n{}",
-            "word `x` `` [a](b) [c]( <i> <!-- <? <![CDATA[ <!x <j k=\"\n".repeat(20_000)
+            "` [ <a\n{}{}a{}",
+            "word `x` `` [a](b) [c]( <i> <!-- <? <![CDATA[ <!x <j k=\"\n".repeat(20_000),
+            "[".repeat(50_000),
+            "]".repeat(50_000)
         );
         let start = std::time::Instant::now();
         let mut out = Tokens::default();
@@ -1983,8 +2103,9 @@ Setext
 
     proptest! {
         /// Compare the colors with what pulldown-cmark parses. Code spans
-        /// and code blocks are strings, headings are keywords, markers are
-        /// punctuation, raw HTML is colored, and text is plain.
+        /// and code blocks are strings, headings are keywords, markers and
+        /// the brackets of links are punctuation, raw HTML is colored, and
+        /// text is plain.
         #[test]
         fn agrees_with_pulldown_cmark(text in document()) {
             use pulldown_cmark::{CodeBlockKind, Event, LinkType, Options, Parser, Tag, TagEnd};
@@ -2030,7 +2151,14 @@ Setext
                     }
                     Event::End(TagEnd::Heading(_)) => heading -= 1,
                     Event::Start(Tag::Link { link_type, .. }) => {
-                        links.push(matches!(link_type, LinkType::Autolink | LinkType::Email));
+                        let auto = matches!(link_type, LinkType::Autolink | LinkType::Email);
+                        if !auto && heading == 0 {
+                            check(r.start..r.start + 1, &[Some(Kind::Punctuation)], "link")?;
+                        }
+                        links.push(auto);
+                    }
+                    Event::Start(Tag::Image { .. }) if heading == 0 => {
+                        check(r.start..r.start + 2, &[Some(Kind::Punctuation)], "image")?;
                     }
                     Event::End(TagEnd::Link) => {
                         links.pop();
