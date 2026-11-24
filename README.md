@@ -49,6 +49,7 @@ tergi path/to/repo
 - The **history** in the middle shows the commit graph. Each commit
   takes two rows: the summary and its labels, then the author, the date
   and the short commit id. The first entry is the working directory.
+  Each stash shows up on top of the commit it was made on.
 - The **detail pane** on the right shows the selected commit with its
   full diff. For the working directory, it shows the commit message box
   and your changes, grouped into conflicts, untracked, unstaged and
@@ -178,6 +179,9 @@ In the message box, Esc leaves the box instead, and Alt+A toggles amend.
 Reword and squash open the message for editing at the top of the detail
 pane, where the commit's message is normally shown. Ctrl+Enter saves it
 and Esc cancels.
+
+On a stash, in the history or the sidebar, `.` Space applies it, `.g`
+pops it and `.d` drops it.
 
 In the sidebar, Space folds a section, and `.` Space checks out the
 selected branch. `.H` hides the selected branch or remote branch from the

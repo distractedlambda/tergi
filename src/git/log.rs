@@ -1,5 +1,7 @@
 //! Walking the history with `git log`, in batches, in a background task.
 
+use std::collections::HashSet;
+
 use anyhow::{Context, Result, bail};
 use tokio::io::AsyncBufReadExt as _;
 
@@ -34,13 +36,20 @@ pub struct Batch {
 const FORMAT: &str = "--format=%H%x00%P%x00%aN%x00%aE%x00%ad%x00%B";
 const FIELDS: usize = 6;
 
-/// Walk all commits reachable from `tips` in topological order, sending
-/// them to `sink` in batches. The walk stops as soon as `generation` is no
-/// longer current in `walks`, which means a newer walk has replaced this
-/// one.
+/// Walk all commits reachable from `tips` and `stashes` in topological
+/// order, sending them to `sink` in batches. The walk stops as soon as
+/// `generation` is no longer current in `walks`, which means a newer walk
+/// has replaced this one.
+///
+/// A stash shows up as a commit on top of the commit it was made on. Git
+/// keeps the staged changes and the untracked files of a stash in commits
+/// of their own, which are its second and third parents. The walk leaves
+/// those parents out, and leaves out their commits too, unless something
+/// else leads to them.
 pub async fn walk(
     git: &Git,
     tips: &[ObjectId],
+    stashes: &[ObjectId],
     generation: u64,
     walks: &Generation,
     mut sink: impl FnMut(Batch),
@@ -52,13 +61,14 @@ pub async fn walk(
     tokio::select! {
         biased;
         () = walks.replaced(generation) => Ok(()),
-        r = read(git, tips, generation, walks, &mut sink) => r,
+        r = read(git, tips, stashes, generation, walks, &mut sink) => r,
     }
 }
 
 async fn read(
     git: &Git,
     tips: &[ObjectId],
+    stashes: &[ObjectId],
     generation: u64,
     walks: &Generation,
     sink: &mut impl FnMut(Batch),
@@ -69,11 +79,26 @@ async fn read(
     // Send a small first batch so the first screen appears quickly.
     let mut batch_size = 200;
 
-    if !tips.is_empty() {
+    let tip_set: HashSet<ObjectId> = tips.iter().copied().collect();
+    // A stash that a branch or tag points at is shown as it is.
+    let stash_set: HashSet<ObjectId> = stashes
+        .iter()
+        .copied()
+        .filter(|id| !tip_set.contains(id))
+        .collect();
+    // Commits that git may only list because a stash leads to them through
+    // a parent that we leave out.
+    let mut left_out: HashSet<ObjectId> = HashSet::new();
+
+    if !tips.is_empty() || !stash_set.is_empty() {
         // The tips go in on stdin, because a repository can have more tags
         // than fit on a command line. Git skips tips that are trees or
         // blobs, which some tags point at.
-        let input: String = tips.iter().map(|id| format!("{id}\n")).collect();
+        let input: String = tips
+            .iter()
+            .chain(stashes.iter().filter(|id| stash_set.contains(id)))
+            .map(|id| format!("{id}\n"))
+            .collect();
         let args = [
             "log",
             "--stdin",
@@ -111,8 +136,21 @@ async fn read(
             if !walks.is_current(generation) {
                 return Ok(());
             }
-            let commit = parse_commit(&fields)?;
+            let mut commit = parse_commit(&fields)?;
             fields.clear();
+            // Git lists a commit only after all of its children. So if no
+            // lane of the graph waits for this one by now, nothing we show
+            // leads to it.
+            if left_out.remove(&commit.id)
+                && !tip_set.contains(&commit.id)
+                && !graph.waits_for(commit.id)
+            {
+                left_out.extend(commit.parents);
+                continue;
+            }
+            if stash_set.contains(&commit.id) && commit.parents.len() > 1 {
+                left_out.extend(commit.parents.drain(1..));
+            }
             rows.push(graph.push(commit.id, &commit.parents));
             commits.push(commit);
             if commits.len() >= batch_size {

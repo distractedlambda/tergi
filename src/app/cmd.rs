@@ -822,6 +822,20 @@ impl App {
             ];
         };
         let id = c.id;
+        if self.refs.stash(id).is_some() {
+            return vec![
+                act(
+                    Some(Key::ch(' ')),
+                    "Apply stash",
+                    Cmd::StashApply(id, false),
+                )
+                .hint(),
+                act(Some(Key::ch('g')), "Pop stash", Cmd::StashApply(id, true)).hint(),
+                act(Some(Key::ch('d')), "Drop stash", Cmd::StashDrop(id)).hint(),
+                act(Some(Key::ch('v')), "Select commits", Cmd::SelectCommits).direct(),
+                act(Some(Key::ch('y')), "Copy commit hash", Cmd::CopyHash(id)),
+            ];
+        }
         let has_parent = !c.parents.is_empty();
         let merge = c.parents.len() > 1;
         let staged = self.workdir.as_ref().is_some_and(|w| w.status.has_staged());
@@ -882,11 +896,14 @@ impl App {
     /// The actions on the commits selected with `v`, newest first.
     fn marked_actions(&self, ids: Vec<ObjectId>) -> Vec<ActionDef> {
         let h = &self.history;
+        // The history shows a stash with one parent, but git rebases it as
+        // the merge it is.
         let merge = ids.iter().any(|id| {
-            h.index
-                .get(id)
-                .and_then(|&i| h.commits.get(i))
-                .is_some_and(|c| c.parents.len() > 1)
+            self.refs.stash(*id).is_some()
+                || h.index
+                    .get(id)
+                    .and_then(|&i| h.commits.get(i))
+                    .is_some_and(|c| c.parents.len() > 1)
         });
         let n = ids.len();
         let commits = commits_noun(n);

@@ -756,6 +756,10 @@ fn check_labels(s: &Scratch, refs: &Refs) -> Result<(), TestCaseError> {
         let at = peel(&cat(&[b"refs/tags/", &t.name]));
         want.push((at, format!("{:?}", LabelKind::Tag), t.name.clone()));
     }
+    for (i, st) in refs.stashes.iter().enumerate() {
+        let at = peel(format!("stash@{{{i}}}").as_bytes());
+        want.push((at, format!("{:?}", LabelKind::Stash), st.refname().into()));
+    }
     let labels: HashMap<ObjectId, Vec<tergi::git::refs::Label>> = refs.labels(&Default::default());
     let mut got: Vec<(ObjectId, String, BString)> = labels
         .iter()

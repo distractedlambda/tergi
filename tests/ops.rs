@@ -460,7 +460,7 @@ fn names_go_through_the_mailmap() {
     let walks = Generation::default();
     let generation = walks.next();
     let mut commits = Vec::new();
-    common::block_on(log::walk(&s.git, &[id], generation, &walks, |b| {
+    common::block_on(log::walk(&s.git, &[id], &[], generation, &walks, |b| {
         commits.extend(b.commits);
     }))
     .expect("walk");
@@ -488,7 +488,7 @@ async fn a_replaced_walk_stops_while_git_is_silent() {
     let generation = walks.next();
     let mut batches = 0;
     let tips = [id];
-    let walk = log::walk(&s.git, &tips, generation, &walks, |_| batches += 1);
+    let walk = log::walk(&s.git, &tips, &[], generation, &walks, |_| batches += 1);
     let replace = async {
         // If git didn't get stuck, the walk finishes in this time and
         // sends a batch.

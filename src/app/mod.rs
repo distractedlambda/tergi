@@ -229,6 +229,8 @@ pub struct History {
     pub generation: Generation,
     pub loading: bool,
     pub tips: Vec<ObjectId>,
+    /// The stashes the walk started from, apart from `tips`.
+    pub stashes: Vec<ObjectId>,
     /// We keep the selected commit rather than its row, because a reload
     /// can move rows around. Row 0 is the working directory, and row
     /// `i + 1` is `commits[i]`.
@@ -979,16 +981,17 @@ impl App {
         });
     }
 
-    fn start_history_walk(&mut self, tips: Vec<ObjectId>) {
+    fn start_history_walk(&mut self, tips: Vec<ObjectId>, stashes: Vec<ObjectId>) {
         let generation = self.history.generation.next();
         self.history.loading = true;
         self.history.replace_on_next = true;
         self.history.tips = tips.clone();
+        self.history.stashes = stashes.clone();
         let repo = self.repo.clone();
         let tx = self.tx.clone();
         let walks = self.history.generation.clone();
         self.spawn(async move {
-            let r = log::walk(&repo.git, &tips, generation, &walks, |b| {
+            let r = log::walk(&repo.git, &tips, &stashes, generation, &walks, |b| {
                 let _ = tx.send(AppEvent::History(b));
             })
             .await;
@@ -1150,6 +1153,7 @@ impl App {
     /// the hidden branches. Walk the history again if the tips changed.
     fn update_tips(&mut self) {
         let tips = self.refs.tips(&self.hidden);
+        let stashes = self.refs.stash_tips();
         let labels = self.refs.labels(&self.hidden);
         let changed_labels = labels != self.labels;
         self.labels = labels;
@@ -1157,15 +1161,16 @@ impl App {
         if changed_labels && self.detail.source.is_commit() {
             self.rebuild_doc();
         }
-        let changed_tips = {
-            let mut a = tips.clone();
-            let mut b = self.history.tips.clone();
+        let differ = |a: &[ObjectId], b: &[ObjectId]| {
+            let (mut a, mut b) = (a.to_vec(), b.to_vec());
             a.sort();
             b.sort();
             a != b
         };
+        let changed_tips =
+            differ(&tips, &self.history.tips) || differ(&stashes, &self.history.stashes);
         if changed_tips || self.history.generation.current() == 0 {
-            self.start_history_walk(tips);
+            self.start_history_walk(tips, stashes);
         }
     }
 
@@ -1249,6 +1254,7 @@ impl App {
         let source = match (self.history.compared(), self.history.selected) {
             (Some((from, to)), _) => doc::Source::Compare { from, to },
             (None, Selected::Workdir) => doc::Source::Workdir,
+            (None, Selected::Commit(id)) if self.refs.stash(id).is_some() => doc::Source::Stash(id),
             (None, Selected::Commit(id)) => doc::Source::Commit(id),
         };
         self.show_source(source);

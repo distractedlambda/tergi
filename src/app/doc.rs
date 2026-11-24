@@ -1152,6 +1152,7 @@ fn badges(labels: Option<&Vec<Label>>, theme: &Theme) -> Vec<Span<'static>> {
             LabelKind::Local => theme.badge_local,
             LabelKind::Remote => theme.badge_remote,
             LabelKind::Tag => theme.badge_tag,
+            LabelKind::Stash => theme.badge_stash,
         };
         spans.push(Span::styled(
             format!(" {} ", l.name),

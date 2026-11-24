@@ -42,15 +42,18 @@ From the refs the app makes two things:
   the commit details.
 - `tips`, the commits the walk starts from. These are HEAD, every
   branch, every remote branch and every tag, without duplicates.
-  Stashes aren't tips. They show up in the sidebar instead.
+
+The walk starts from the stashes too, but it treats them apart from
+the tips, as the section on stashes below explains. Stashes get labels
+like `stash@{0}`.
 
 Both leave out the branches the user has hidden, as the next section
 explains.
 
-`update_tips` only starts a new walk when the set of tips changed, or
-when there hasn't been a walk yet. For example, creating a branch where
-another ref already points changes no tips. Then the history stays as it
-is and only the labels change.
+`update_tips` only starts a new walk when the set of tips or stashes
+changed, or when there hasn't been a walk yet. For example, creating a
+branch where another ref already points changes no tips. Then the
+history stays as it is and only the labels change.
 
 ## Hidden branches
 
@@ -128,6 +131,35 @@ first batch has 200 commits, so the first screen appears quickly. Later
 batches have 5,000. The graph row for each commit is worked out in the
 same task, as part of the walk. That takes about a microsecond for each
 commit, so it doesn't need a blocking thread.
+
+### Stashes
+
+A stash is a merge commit. Its first parent is the commit it was made
+on. Its second parent is a commit that holds the staged changes, and a
+stash made with `--include-untracked` has a third, a root commit with
+the untracked files. Drawing all of that would add two commits and a
+line or two to the graph for every stash, and none of them mean much to
+the user. So the history shows a stash as a commit with only its first
+parent, on top of the commit it was made on.
+
+`log::walk` gives git the stash commits along with the tips. When a
+stash comes by, it keeps the first parent and puts the others in a set
+of commits to leave out. When one of those comes by, the walk leaves it
+out if nothing it has shown leads to it. Git lists a commit only after
+all of its children, so by then every commit that has it as a parent has
+been through the walk. If one of them was shown, a lane of the graph
+waits for the commit (`GraphBuilder::waits_for`), and it stays. A tip
+always stays too. The parents of a commit that is left out go into the
+set as well.
+
+A stash that a branch or tag points at is shown whole, like any other
+tip. That only happens if someone points one there by hand.
+
+The history and the sidebar offer the same actions on a stash: apply,
+pop and drop. The rewriting actions don't apply to it, and selecting
+several commits that include a stash turns them off, since git would
+rebase it as the merge that it is. The commit details still show all of
+its parents, as git has them.
 
 ### Replacing a walk
 
@@ -248,11 +280,14 @@ how many whole entries fit in the pane, which is how far paging moves.
   the same color.
 - `tests/log_props.rs` builds random histories with merges, several
   roots and dates out of order. It points branches, remote branches and
-  tags at them, including tags of tags and tags of trees and blobs. Then
-  it checks that `Refs::load` and `log::walk` find the same commits as
-  `git rev-list --all`, with the right parents, and children before
-  their parents. Some cases have a commit-graph file that covers all of
-  the history or only part of it.
+  tags at them, including tags of tags and tags of trees and blobs. It
+  adds stashes on any commit, with or without untracked files, and
+  sometimes a branch at a stash or at the commit with its staged
+  changes. Then it checks that `Refs::load` and `log::walk` find the
+  same commits as `git rev-list`, with the right parents, and children
+  before their parents. Each stash must have only its first parent.
+  Some cases have a commit-graph file that covers all of the history or
+  only part of it.
 - `tests/refs_props.rs` builds random remotes, remote branches, local
   branches with upstreams that are ahead, behind or gone, tags and
   stashes. The names hold slashes and bytes that aren't UTF-8, and some
@@ -265,8 +300,8 @@ how many whole entries fit in the pane, which is how far paging moves.
   through tergi by id. Each stash holds its own text, so applying one
   shows which stash git used. After each step it checks the stash list
   from git and from `Refs::load` against a model.
-- `tests/ui.rs` has `selection_follows_its_commit_through_a_reload` and
-  `first_load_starts_at_the_top`.
+- `tests/ui.rs` has `selection_follows_its_commit_through_a_reload`,
+  `first_load_starts_at_the_top` and `stashes_show_in_the_history`.
 - `hidden_branches_give_no_tips_or_labels` in `src/git/refs.rs` checks
   the filtering, and the tests in `src/state.rs` check saving and
   reading the database, and waiting while another handle holds it.

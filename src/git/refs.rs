@@ -89,6 +89,7 @@ pub enum LabelKind {
     Local,
     Remote,
     Tag,
+    Stash,
 }
 
 /// A ref name drawn next to a commit in the history.
@@ -221,6 +222,12 @@ impl Refs {
                 name: t.name.clone(),
             });
         }
+        for s in &self.stashes {
+            map.entry(s.id).or_default().push(Label {
+                kind: LabelKind::Stash,
+                name: s.refname().into(),
+            });
+        }
         map
     }
 
@@ -245,6 +252,17 @@ impl Refs {
         let mut seen = HashSet::new();
         v.retain(|id| seen.insert(*id));
         v
+    }
+
+    /// The stash commits, which the walk starts from too, but without
+    /// the commits that hold a stash's staged changes and untracked files.
+    pub fn stash_tips(&self) -> Vec<ObjectId> {
+        self.stashes.iter().map(|s| s.id).collect()
+    }
+
+    /// The stash with this commit id, if there is one.
+    pub fn stash(&self, id: ObjectId) -> Option<&Stash> {
+        self.stashes.iter().find(|s| s.id == id)
     }
 
     pub fn current_branch(&self) -> Option<&Branch> {

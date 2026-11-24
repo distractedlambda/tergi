@@ -864,7 +864,7 @@ fn commits_and_amends_from_the_message_box() {
 #[test]
 fn rewords_a_commit_and_runs_a_plan() {
     let s = repo_with_change();
-    s.sh(&["stash", "-q"]);
+    s.sh(&["reset", "-q", "--hard"]);
     s.write("more.txt", "more\n");
     s.commit_all("Add more");
     let mut ui = Ui::open(&s);
@@ -1191,7 +1191,7 @@ fn selects_commits_with_shift_and_the_mouse() {
 
 /// Open the planner on three commits. Its rows are newest first.
 fn open_planner(s: &Scratch) -> Ui {
-    s.sh(&["stash", "-q"]);
+    s.sh(&["reset", "-q", "--hard"]);
     s.write("more.txt", "more\n");
     s.commit_all("Add more");
     let mut ui = Ui::open(s);
@@ -1390,6 +1390,47 @@ fn stashes_one_file_from_the_detail_pane() {
         Some("On main: new.txt")
     );
     assert_eq!(s.index("a.txt"), "staged\n");
+}
+
+/// A stash shows up in the history on top of the commit it was made on,
+/// without the commits that git keeps its staged changes and untracked
+/// files in. Selecting it shows the stash and offers its actions.
+#[test]
+fn stashes_show_in_the_history() {
+    let s = repo_with_change();
+    s.write("new.txt", "new\n");
+    s.sh(&["stash", "-q", "-u"]);
+    let id = |rev: &str| {
+        let hex = s.sh(&["rev-parse", rev]);
+        tergi::git::ObjectId::from_hex(hex.trim().as_bytes()).expect("id")
+    };
+    let (stash, head) = (id("stash@{0}"), id("HEAD"));
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(3);
+    let i = ui.app.history.index[&stash];
+    assert_eq!(ui.app.history.commits[i].parents, [head]);
+    assert!(ui.screen().contains("stash@{0}"), "{}", ui.screen());
+
+    ui.app.select_history(i + 1);
+    assert_eq!(ui.app.detail.source, Source::Stash(stash));
+    ui.dot(' ');
+    ui.settle();
+    assert_eq!(s.read("notes.txt"), "one\n2\nthree\nfour\n");
+    assert_eq!(s.read("new.txt"), "new\n");
+
+    // Applying keeps the stash, and dropping it takes it out of the
+    // history.
+    ui.wait_loaded(3);
+    ui.dot('d');
+    assert!(
+        matches!(ui.app.overlays.last(), Some(Overlay::Confirm { .. })),
+        "{}",
+        ui.screen()
+    );
+    ui.key(KeyCode::Char('y'));
+    ui.settle();
+    assert_eq!(s.sh(&["stash", "list"]), "");
+    ui.wait_loaded(2);
 }
 
 /// Put the cursor on a row in the detail pane and press `.d`, which asks
@@ -1893,7 +1934,7 @@ fn branches_and_remotes_whose_names_are_not_utf8() {
 fn force_push_only_pushes_the_branch_the_menu_named() {
     let remote = tempfile::tempdir().expect("tempdir");
     let s = repo_with_change();
-    s.sh(&["stash", "-q"]);
+    s.sh(&["reset", "-q", "--hard"]);
     s.sh(&["init", "-q", "--bare", &remote.path().to_string_lossy()]);
     s.sh(&["remote", "add", "origin", &remote.path().to_string_lossy()]);
     s.sh(&["branch", "other"]);

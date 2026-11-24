@@ -104,6 +104,12 @@ impl GraphBuilder {
         c
     }
 
+    /// Whether a lane waits for this commit, because a commit above it
+    /// has it as a parent.
+    pub fn waits_for(&self, id: ObjectId) -> bool {
+        self.lanes.iter().flatten().any(|l| l.id == id)
+    }
+
     pub fn push(&mut self, id: ObjectId, parents: &[ObjectId]) -> GraphRow {
         let before: Vec<bool> = self.lanes.iter().map(Option::is_some).collect();
         let waiting: Vec<usize> = self

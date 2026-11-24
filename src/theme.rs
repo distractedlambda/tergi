@@ -51,6 +51,7 @@ pub struct Theme {
     pub badge_local: Color,
     pub badge_remote: Color,
     pub badge_tag: Color,
+    pub badge_stash: Color,
     pub badge_danger: Color,
     pub badge_fg: Color,
     pub tag_fg: Color,
@@ -688,6 +689,7 @@ impl Theme {
             badge_local: badge(p.green),
             badge_remote: badge(p.magenta),
             badge_tag: badge(p.yellow),
+            badge_stash: badge(p.dim),
             badge_danger: badge(p.red),
             badge_fg: rgb(p.fg),
             tag_fg: rgb(p.yellow),
@@ -1282,6 +1284,7 @@ mod tests {
                 ("local", t.badge_local),
                 ("remote", t.badge_remote),
                 ("tag", t.badge_tag),
+                ("stash", t.badge_stash),
                 ("danger", t.badge_danger),
             ] {
                 let c = contrast(hex(t.badge_fg), hex(bg));

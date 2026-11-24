@@ -920,6 +920,7 @@ fn draw_history_summary(
                 LabelKind::Local => t.badge_local,
                 LabelKind::Remote => t.badge_remote,
                 LabelKind::Tag => t.badge_tag,
+                LabelKind::Stash => t.badge_stash,
             };
             let name = truncate(&l.name.to_str_lossy(), 24);
             let mut s = Style::default().bg(lbg).fg(t.badge_fg);

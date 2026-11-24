@@ -7,12 +7,17 @@
 //! are annotated, some point at other tags, and some point at trees or
 //! blobs. HEAD is on a branch, detached, or unborn. Some cases write a
 //! commit-graph file, and some write one that only covers part of the
-//! history.
+//! history. Some cases have stashes, made on any commit, with or without
+//! untracked files. A branch can point at a stash, or at the commit that
+//! holds its staged changes.
 //!
 //! The test loads the refs with `Refs::load` and walks from their tips
-//! with `log::walk`, as the app does. It checks the result against
-//! `git rev-list --all`. Each reachable commit must come out once, after
-//! all of its children, with the right parents, author, date and summary.
+//! and stashes with `log::walk`, as the app does. It checks the result
+//! against `git rev-list`. Each reachable commit must come out once,
+//! after all of its children, with the right parents, author, date and
+//! summary. A stash must come out with only its first parent, and the
+//! commits git makes for its staged changes and untracked files must not
+//! come out, unless a branch leads to them.
 
 use crate::common;
 
@@ -103,6 +108,23 @@ struct Ref {
     commit: Index,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StashBranch {
+    None,
+    /// A branch points at the stash commit itself.
+    Stash,
+    /// A branch points at the commit with the stash's staged changes.
+    Index,
+}
+
+#[derive(Debug, Clone)]
+struct Stash {
+    /// The commit the stash was made on.
+    base: Index,
+    untracked: bool,
+    branch: StashBranch,
+}
+
 #[derive(Debug, Clone)]
 enum Head {
     /// On the branch with this index among the branches, or unborn if
@@ -129,6 +151,7 @@ struct Case {
     /// Point `refs/remotes/origin/HEAD` at the first remote branch.
     remote_head: bool,
     graph: CommitGraph,
+    stashes: Vec<Stash>,
     settings: Settings,
 }
 
@@ -178,6 +201,19 @@ fn reference() -> impl Strategy<Value = Ref> {
     })
 }
 
+fn stash() -> impl Strategy<Value = Stash> {
+    let branch = prop_oneof![
+        4 => Just(StashBranch::None),
+        1 => Just(StashBranch::Stash),
+        1 => Just(StashBranch::Index),
+    ];
+    (any::<Index>(), any::<bool>(), branch).prop_map(|(base, untracked, branch)| Stash {
+        base,
+        untracked,
+        branch,
+    })
+}
+
 fn case() -> impl Strategy<Value = Case> {
     let head = prop_oneof![
         4 => any::<Index>().prop_map(Head::Branch),
@@ -196,45 +232,49 @@ fn case() -> impl Strategy<Value = Case> {
         head,
         any::<bool>(),
         graph,
+        prop::collection::vec(stash(), 0..4),
         settings(),
     )
-        .prop_map(|(raw, long, refs, head, remote_head, graph, settings)| {
-            let mut commits = Vec::new();
-            for (k, (count, parents, mut commit)) in raw.into_iter().enumerate() {
-                if k > 0 {
-                    for p in &parents[..count] {
-                        let p = p.index(k);
-                        if !commit.parents.contains(&p) {
-                            commit.parents.push(p);
+        .prop_map(
+            |(raw, long, refs, head, remote_head, graph, stashes, settings)| {
+                let mut commits = Vec::new();
+                for (k, (count, parents, mut commit)) in raw.into_iter().enumerate() {
+                    if k > 0 {
+                        for p in &parents[..count] {
+                            let p = p.index(k);
+                            if !commit.parents.contains(&p) {
+                                commit.parents.push(p);
+                            }
                         }
                     }
+                    commits.push(commit);
                 }
-                commits.push(commit);
-            }
-            // A long line of commits, so that the walk sends more than one
-            // batch.
-            if long {
-                for _ in 0..250 {
-                    let k = commits.len();
-                    commits.push(Commit {
-                        parents: vec![k - 1],
-                        message: k % MESSAGES.len(),
-                        author: k % AUTHORS.len(),
-                        time: k as i64,
-                        offset: k % OFFSETS.len(),
-                        committed: k as i64,
-                    });
+                // A long line of commits, so that the walk sends more than one
+                // batch.
+                if long {
+                    for _ in 0..250 {
+                        let k = commits.len();
+                        commits.push(Commit {
+                            parents: vec![k - 1],
+                            message: k % MESSAGES.len(),
+                            author: k % AUTHORS.len(),
+                            time: k as i64,
+                            offset: k % OFFSETS.len(),
+                            committed: k as i64,
+                        });
+                    }
                 }
-            }
-            Case {
-                commits,
-                refs,
-                head,
-                remote_head,
-                graph,
-                settings,
-            }
-        })
+                Case {
+                    commits,
+                    refs,
+                    head,
+                    remote_head,
+                    graph,
+                    stashes,
+                    settings,
+                }
+            },
+        )
 }
 
 fn git_in(s: &Scratch, args: &[&str], stdin: &[u8]) -> String {
@@ -390,7 +430,55 @@ fn build(s: &Scratch, case: &Case) -> Vec<String> {
             s.sh(&["update-ref", "--no-deref", "HEAD", &ids[k.index(n)]]);
         }
     }
+    for (k, st) in case.stashes.iter().enumerate() {
+        make_stash(s, k, st, &ids[st.base.index(n)]);
+    }
     ids
+}
+
+/// Make a stash on `base` the way git lays one out, and add it to the
+/// list. Its commits hold the same tree as `base`, which doesn't matter
+/// to the walk.
+fn make_stash(s: &Scratch, k: usize, st: &Stash, base: &str) {
+    let tree = format!("{base}^{{tree}}");
+    let commit = |parents: &[&str], message: &str| {
+        let mut args = vec!["commit-tree", &tree, "-m", message];
+        for p in parents {
+            args.extend(["-p", p]);
+        }
+        s.sh(&args).trim().to_string()
+    };
+    let index = commit(&[base], &format!("index on {k}"));
+    let mut parents = vec![base, &index];
+    let untracked;
+    if st.untracked {
+        untracked = commit(&[], &format!("untracked files on {k}"));
+        parents.push(&untracked);
+    }
+    let stash = commit(&parents, &format!("WIP on {k}"));
+    s.sh(&["stash", "store", "-m", &format!("stash {k}"), &stash]);
+    match st.branch {
+        StashBranch::None => {}
+        StashBranch::Stash => {
+            s.sh(&["update-ref", &format!("refs/heads/s{k}"), &stash]);
+        }
+        StashBranch::Index => {
+            s.sh(&["update-ref", &format!("refs/heads/i{k}"), &index]);
+        }
+    }
+}
+
+/// Each commit that `git rev-list` lists from `args`, with its parents.
+fn rev_list(s: &Scratch, args: &[&str]) -> HashMap<ObjectId, Vec<ObjectId>> {
+    let mut all = vec!["rev-list", "--parents"];
+    all.extend(args);
+    s.sh(&all)
+        .lines()
+        .map(|line| {
+            let mut ids = line.split(' ').map(id);
+            (ids.next().expect("commit"), ids.collect())
+        })
+        .collect()
 }
 
 fn id(s: &str) -> ObjectId {
@@ -422,6 +510,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
     rt.block_on(log::walk(
         &s.git,
         &refs.tips(&Default::default()),
+        &refs.stash_tips(),
         generation,
         &walks,
         |b| batches.push(b),
@@ -438,15 +527,18 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
         commits.extend(b.commits);
     }
 
-    // `git rev-list --parents` prints each commit followed by its parents.
-    let want: HashMap<ObjectId, Vec<ObjectId>> = s
-        .sh(&["rev-list", "--all", "--parents"])
-        .lines()
-        .map(|line| {
-            let mut ids = line.split(' ').map(id);
-            (ids.next().expect("commit"), ids.collect())
-        })
-        .collect();
+    // Everything the refs lead to, and each stash with only its first
+    // parent, which brings in that parent's history.
+    prop_assert_eq!(refs.stashes.len(), case.stashes.len());
+    let mut want = rev_list(&s, &["--exclude=refs/stash", "--all"]);
+    for st in &refs.stashes {
+        if want.contains_key(&st.id) {
+            continue;
+        }
+        let base = s.sh(&["rev-parse", &format!("{}^1", st.id)]);
+        want.insert(st.id, vec![id(base.trim())]);
+        want.extend(rev_list(&s, &[base.trim()]));
+    }
 
     let mut position = HashMap::new();
     for (i, c) in commits.iter().enumerate() {
@@ -460,7 +552,10 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
         for p in &c.parents {
             prop_assert!(position[p] > position[&c.id], "{} before its child", p);
         }
-        let m = model[&c.id];
+        // Stashes and their commits aren't in the model.
+        let Some(m) = model.get(&c.id) else {
+            continue;
+        };
         prop_assert_eq!(&c.summary, MESSAGES[m.message].1);
         prop_assert_eq!(&c.author, AUTHORS[m.author].1);
         prop_assert_eq!(&c.email, AUTHORS[m.author].2);
