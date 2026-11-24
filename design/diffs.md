@@ -437,7 +437,7 @@ in the background, in a worker that `Highlighter::new` returns.
 
 Each language has its own lexer, written with Logos and kept in
 `src/highlight/`, one file per language: `c.rs` for C and C++,
-`cmake.rs` for CMake, `javascript.rs` for JavaScript, `json.rs` for
+`cmake.rs` for CMake, `javascript.rs` for JavaScript and HipHop.js, `json.rs` for
 JSON, `python.rs` for Python, `rust.rs` for Rust, `racket.rs` for
 Racket and Scribble, `shrubbery.rs` for Rhombus, `sh.rs` for shell
 scripts, `fish.rs` for fish scripts, `dockerfile.rs` for Dockerfiles, `toml.rs` for TOML, `yaml.rs` for YAML, `zig.rs` for Zig,
@@ -961,6 +961,58 @@ the escape color. A `/` inside a class such as `[/]` doesn't end it.
 One without its closing `/` ends with its line. A `#!` line at the
 very start of a file is a comment.
 
+### HipHop.js
+
+[HipHop.js](https://github.com/manuel-serrano/hiphop) adds
+synchronous reactive statements to JavaScript. Files ending in
+`.hh.js` and `.hh.mjs` are HipHop.js, and so are fenced code blocks
+in Markdown marked `hiphop`. `javascript.rs` lexes them, with the
+HipHop statements turned on.
+
+HipHop code starts at the word `hiphop` and runs to the end of that
+statement, as in `const prg = hiphop module() { ... }`. `hiphop` only
+starts one before a word or a `{`, so `hiphop.x` and `hiphop(x)` are
+names. Without a parser we have to guess where the statement ends. It
+ends at a `;` or a `,` at its own level, or at a bracket that closes
+around it. It also ends at a `}` that closes one of its blocks,
+unless the next word goes on with the statement, such as `par` in
+`fork { ... } par { ... }` or `every` in `do { ... } every (R.now)`.
+A `module` or an `interface` always ends with its body, and a `,`
+before the body belongs to its header, as in `implements A, B`.
+
+Inside the statement and its blocks, HipHop's words are keywords
+where its grammar puts them, and are names everywhere else. A signal
+can be called `suspend`, and `let count = 0` is a JavaScript
+declaration. So the lexer looks at the token before each word:
+
+- Statements such as `fork`, `loop`, `emit`, `signal`, `in` and
+  `out` are keywords where a statement starts. The word after `emit`,
+  `sustain`, `run`, `break`, `signal`, `in`, `out`, `inout`, `module`
+  and `interface` is a name.
+- `par`, `when`, `every`, `from` and `toggle` are keywords after the
+  `}` of a block. So are `kill`, `suspend` and `resume` after the `}`
+  of an `async`, where they start its handlers.
+- `immediate` and `count` are keywords in a delay, after a word such
+  as `await` or `when`. `to` is a keyword after the delay that
+  follows `from`.
+- `combine`, `transient`, `as`, `from` and `to` are keywords after a
+  name or a value, as in `out O = 0 combine f` and
+  `run M() { a as b }`. `implements`, `extends` and `mirror` are
+  keywords in the header of a module or an interface.
+
+Parentheses hold JavaScript expressions, and so do the blocks after
+`pragma`, `host`, `hop`, `async` and its handlers. HipHop's words
+are names there. The signal fields `now`, `pre`, `nowval`, `preval`
+and `signame`, as in `S.now`, are keywords anywhere in a HipHop
+statement, unless a `(` comes after them. That way `Date.now()`
+stays a call. `${` holds JavaScript that makes HipHop code, as in
+`fork ${branches}`. Inside it, another `hiphop` can start a nested
+statement.
+
+The `/` rules of JavaScript apply too. A `{` after a HipHop word such
+as `fork` or `abort` starts a block, and so does a `{` after the `)`
+of a delay or of `emit S(...)`.
+
 ### JSON
 
 `json.rs` follows RFC 8259. Files ending in `.json`, `.jsonc`,
@@ -1422,7 +1474,7 @@ uses the hash to pick one of the colors in `Theme::identifiers`.
 The lexers only mark identifiers that get no other color, so keywords,
 and words such as `AND` in a CMake `if`, keep their usual colors.
 
-The C, C++, CMake, JavaScript, Python, Rust, shell, fish, Zig, LLVM IR,
+The C, C++, CMake, JavaScript, HipHop.js, Python, Rust, shell, fish, Zig, LLVM IR,
 Racket, Scribble and Rhombus lexers mark identifiers. The Dockerfile
 lexer marks variables, the names that `ARG`, `ENV` and `LABEL` set,
 and images and stages. The TOML, YAML and JSON
@@ -1721,6 +1773,11 @@ leave that column blank.
   three, d3, webpack and prettier, with acorn. It checks whether each
   character is in a comment, a string, a template literal, a regular
   expression or a number. The lexer agrees with acorn on all of them.
+  The same file tests HipHop.js: its keywords in modules, delays,
+  declarations and `run`, the JavaScript in `pragma` and `async`
+  blocks and in `${`, and where a statement ends. When we added
+  HipHop.js, the lexer ended every statement in the 281 `.hh.js` and
+  `.hh.mjs` files of HipHop's repository before the end of the file.
 - `src/highlight/json.rs` has examples for each kind of JSON token,
   such as keys, escapes, comments and words that only start like
   values. Its property test builds random valid documents, with
@@ -1793,13 +1850,17 @@ leave that column blank.
   folds of a repository that moves to another folder are lost, as its
   hidden branches are.
 - A merge commit is diffed against its first parent only.
-- Only C, C++, CMake, JavaScript, JSON, Python, Rust, shell scripts,
+- Only C, C++, CMake, JavaScript, HipHop.js, JSON, Python, Rust, shell scripts,
   fish scripts, Dockerfiles, Zig, LLVM IR, Racket, Rhombus, Scribble,
   TOML, YAML, Markdown and `.gitignore` files are highlighted. That leaves out JSX, TypeScript
   and zsh.
 - The JavaScript lexer can guess wrong about a `/`. In a statement
   such as `a ? b : {} / 2`, it reads the `{}` as a block and the `/`
   as the start of a regular expression.
+- A HipHop statement that ends with a delay and no `;`, such as
+  `hiphop do { ... } every (R.now)`, goes on past the end of its
+  line. HipHop's words in the code after it can get the keyword
+  color until the next `;`.
 - The JavaScript lexer reads `<!--` and `-->`, which start comments
   in old scripts, as operators.
 - The frontmatter of a cargo script, which is still unstable in Rust,

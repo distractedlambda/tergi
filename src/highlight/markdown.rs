@@ -45,6 +45,7 @@ fn for_info(info: &str) -> Option<Language> {
         .to_ascii_lowercase();
     match word.as_str() {
         "javascript" => Some(Language::JavaScript),
+        "hiphop" => Some(Language::HipHop),
         "llvm" => Some(Language::LlvmIr),
         "python" | "python3" => Some(Language::Python),
         "rust" => Some(Language::Rust),

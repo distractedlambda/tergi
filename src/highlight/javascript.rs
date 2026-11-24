@@ -10,10 +10,15 @@
 //! `}` (see `Prev`). Without a parser we also can't know what a name
 //! stands for, so every name that isn't a keyword gets a color from its
 //! spelling (see `Kind::Identifier`).
+//!
+//! It also reads HipHop.js, which adds synchronous reactive statements
+//! to JavaScript. They come after the word `hiphop`, as in
+//! `hiphop module() { in A; out O; every (A.now) { emit O(); } }`, and
+//! HipHop's words are only keywords inside them (see `Statement`).
 
 use logos::{Lexer, Logos};
 
-use super::{Kind, Tokens};
+use super::{Kind, Language, Tokens};
 
 #[derive(Logos, Debug, Clone, Copy, PartialEq, Eq)]
 // White space and line terminators, as the standard lists them.
@@ -213,7 +218,9 @@ enum Prev {
     /// A statement starts. That's the case at the start of the text and
     /// after `;`, the braces of a block, the `)` after the condition of
     /// `if`, `while`, `for` or `with`, `=>`, and the keywords `else`,
-    /// `do`, `try` and `finally`.
+    /// `do`, `try` and `finally`. In HipHop code, it's also the case
+    /// after `hiphop`, the `{` of a block, and the HipHop words that a
+    /// block can follow, such as `fork`.
     Statement,
     /// An expression starts, after most operators and keywords.
     Expression,
@@ -233,10 +240,28 @@ enum Prev {
 /// The keyword that comes before the `(` of a condition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Cond {
-    /// `if`, `while` or `with`.
+    /// `if`, `while` or `with`, or a HipHop word such as `every`, or the
+    /// name after `emit`, `run` or `module`. A statement or a block comes
+    /// after the `)`.
     Plain,
     /// `for`, where `of` is a keyword inside the parentheses.
     For,
+    /// HipHop's `async`, whose block after the `)` holds JavaScript.
+    Async,
+}
+
+/// What a pair of braces holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Brace {
+    Object,
+    /// A block of JavaScript statements, or a class body.
+    Block,
+    /// A block of HipHop statements.
+    HipHop,
+    /// The JavaScript that a HipHop `async` runs, or one of its `kill`,
+    /// `suspend` and `resume` handlers. A `suspend` after one is a
+    /// handler and not a HipHop statement.
+    Async,
 }
 
 /// A bracket we're inside of.
@@ -244,14 +269,68 @@ enum Cond {
 enum Frame {
     Paren(Option<Cond>),
     Bracket,
-    /// A brace that holds a block, a class body or an object literal. We
-    /// only tell the object literals apart.
-    Brace {
-        object: bool,
-    },
+    Brace(Brace),
     /// The `${` of a template literal. The template goes on after the `}`
     /// that closes it.
     Template,
+    /// The `${` in HipHop code, which holds a JavaScript expression that
+    /// makes HipHop code or names a signal.
+    Dollar,
+}
+
+/// A HipHop statement, from the word `hiphop` to its end, which we have
+/// to guess. It ends at a `;` or `,`, at a bracket that closes around
+/// it, or at a `}` that closes one of its blocks, unless a word that
+/// goes on with the statement comes next, such as `par` in
+/// `fork { ... } par { ... }`.
+///
+/// Inside its blocks, and in the statement itself, HipHop's words are
+/// keywords where its statements can have them. In parentheses and in
+/// blocks of JavaScript, such as the one after `pragma`, the code is
+/// JavaScript, and only the signal fields such as `.now` stand out.
+#[derive(Debug, Clone, Copy)]
+struct Statement {
+    /// How many brackets we were inside of at `hiphop`.
+    depth: usize,
+    /// Whether it's a `module` or an `interface`. Those end with their
+    /// body, and a `,` before the body is part of the header, as in
+    /// `implements A, B`.
+    module: bool,
+}
+
+/// What the token before the current one says about the HipHop words
+/// after it. Every token starts out with none of these.
+#[derive(Debug, Default, Clone, Copy)]
+struct Cues {
+    /// A word names a signal, label or module, as after `emit`, `break`
+    /// or `run`, even if HipHop uses it as a keyword elsewhere.
+    name: bool,
+    /// A `{` here opens this kind of JavaScript block, after `pragma`
+    /// or `async`.
+    js: Option<Brace>,
+    /// A delay comes next, where `immediate` and `count` are keywords.
+    delay: bool,
+    /// The token before was the `}` that closed this kind of block.
+    closed: Option<Brace>,
+}
+
+/// The fields that read the status and value of a HipHop signal, as in
+/// `S.now`.
+const SIGNAL_FIELDS: &[&str] = &["now", "pre", "nowval", "preval", "signame"];
+
+/// The words that can go on with a HipHop statement after the `}` of
+/// one of its blocks.
+const GOES_ON: &[&str] = &[
+    "par", "when", "every", "from", "toggle", "kill", "suspend", "resume", "else",
+];
+
+/// The word at the start of `text`, after white space.
+fn next_word(text: &str) -> &str {
+    let text = text.trim_start();
+    let end = text
+        .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+        .unwrap_or(text.len());
+    &text[..end]
 }
 
 /// Words that are always keywords, except as the name of a property.
@@ -313,6 +392,8 @@ enum DecoratorPath {
 struct State<'a, 'o> {
     text: &'a str,
     out: &'o mut Tokens,
+    /// Whether to read HipHop statements.
+    hiphop: bool,
     prev: Prev,
     stack: Vec<Frame>,
     /// The keyword of a condition whose `(` comes next.
@@ -322,6 +403,12 @@ struct State<'a, 'o> {
     /// `=` or `(`, which only come after the part with those words.
     module: bool,
     decorator: Option<DecoratorPath>,
+    /// The HipHop statements we're inside of, innermost last.
+    statements: Vec<Statement>,
+    cues: Cues,
+    /// Whether a `from` came before in a HipHop `suspend`, so that `to`
+    /// is a keyword.
+    from: bool,
 }
 
 impl State<'_, '_> {
@@ -363,7 +450,7 @@ impl State<'_, '_> {
             // expression.
             Prev::Colon => !matches!(
                 self.stack.last(),
-                None | Some(Frame::Brace { object: false })
+                None | Some(Frame::Brace(Brace::Block | Brace::HipHop | Brace::Async))
             ),
         }
     }
@@ -377,7 +464,7 @@ impl State<'_, '_> {
         let i = self.stack.iter().rposition(|f| match f {
             Frame::Paren(_) => close == b')',
             Frame::Bracket => close == b']',
-            Frame::Brace { .. } => close == b'}',
+            Frame::Brace(_) | Frame::Dollar => close == b'}',
             Frame::Template => true,
         })?;
         let frame = self.stack[i];
@@ -385,17 +472,142 @@ impl State<'_, '_> {
             return None;
         }
         self.stack.truncate(i);
+        while self.statements.last().is_some_and(|s| s.depth > i) {
+            self.statements.pop();
+        }
         Some(frame)
     }
 
-    fn word(&mut self, word: &str, next: &str) -> Kind {
+    /// The HipHop statement whose own level we're at, outside of its
+    /// blocks.
+    fn statement(&mut self) -> Option<&mut Statement> {
+        let depth = self.stack.len();
+        self.statements.last_mut().filter(|s| s.depth == depth)
+    }
+
+    /// Whether the code here is HipHop statements rather than
+    /// JavaScript.
+    fn hiphop_code(&mut self) -> bool {
+        self.stack.last() == Some(&Frame::Brace(Brace::HipHop)) || self.statement().is_some()
+    }
+
+    /// Sort out a word in HipHop code. It's `None` for a word that HipHop
+    /// doesn't use there, which JavaScript's rules then color.
+    fn hiphop_word(&mut self, word: &str, prev: Prev, cues: Cues) -> Option<Kind> {
+        let start = matches!(prev, Prev::Statement | Prev::Colon);
+        let after_block = cues.closed == Some(Brace::HipHop);
+        let after_async = cues.closed == Some(Brace::Async);
+        let header = self.statement().is_some_and(|s| s.module);
+        self.prev = match word {
+            "kill" | "suspend" | "resume" if after_async => {
+                self.cues.js = Some(Brace::Async);
+                Prev::Statement
+            }
+            "pragma" | "host" | "hop" if start => {
+                self.cues.js = Some(Brace::Block);
+                Prev::Statement
+            }
+            "async" if start => {
+                self.cues.js = Some(Brace::Async);
+                self.cond = Some(Cond::Async);
+                Prev::Statement
+            }
+            "fork" | "loop" | "halt" | "abort" | "weakabort" | "suspend" if start => {
+                self.cond = Some(Cond::Plain);
+                Prev::Statement
+            }
+            "par" if after_block => Prev::Statement,
+            "when" | "every" | "from" | "toggle" if after_block => self.delay(word),
+            "await" | "every" if start => self.delay(word),
+            "to" if self.from && prev == Prev::Statement => self.delay(word),
+            "immediate" | "count" if cues.delay => self.delay(word),
+            "emit" | "sustain" | "run" | "break" | "signal" | "in" | "out" | "inout" | "module"
+            | "interface"
+                if start =>
+            {
+                if matches!(word, "module" | "interface")
+                    && let Some(s) = self.statement()
+                {
+                    s.module = true;
+                }
+                self.cues.name = true;
+                self.cond = Some(Cond::Plain);
+                Prev::Expression
+            }
+            // `combine` and `transient` come after a signal or its value,
+            // and `as`, `from` and `to` rename signals in `run`.
+            "combine" | "transient" | "as" | "from" | "to" if prev == Prev::Operand => {
+                Prev::Expression
+            }
+            "implements" | "extends" | "mirror" if header => Prev::Expression,
+            _ => return None,
+        };
+        Some(Kind::Keyword)
+    }
+
+    /// Take note of a HipHop word that a delay comes after, such as
+    /// `await`, or one that's part of a delay, such as `count`.
+    fn delay(&mut self, word: &str) -> Prev {
+        match word {
+            "from" => self.from = true,
+            "to" => self.from = false,
+            _ => {}
+        }
+        self.cues.delay = true;
+        self.cond = Some(Cond::Plain);
+        Prev::Expression
+    }
+
+    /// End the HipHop statement at this level after the `}` of one of its
+    /// blocks, unless the text after it goes on with the statement.
+    fn block_closed(&mut self, after: &str) {
+        let Some(s) = self.statement() else {
+            return;
+        };
+        if s.module || !GOES_ON.contains(&next_word(after)) {
+            self.statements.pop();
+        }
+    }
+
+    fn word(&mut self, word: &str, next: &str, cues: Cues) -> Kind {
         let prev = self.prev;
         self.prev = Prev::Operand;
         let cond = self.cond.take();
+        // A signal's fields are never called, unlike `Date.now()`.
+        if prev == Prev::Dot
+            && !self.statements.is_empty()
+            && SIGNAL_FIELDS.contains(&word)
+            && !next.trim_start().starts_with('(')
+        {
+            return Kind::Keyword;
+        }
         let property =
             prev == Prev::Dot || (prev == Prev::Key && next.trim_start().starts_with([':', '(']));
         if property || word.starts_with('#') {
             return Kind::Identifier;
+        }
+        if self.hiphop_code() {
+            if cues.name {
+                // The `(` after `emit S` is like the one after `if`.
+                self.cond = cond;
+                return Kind::Identifier;
+            }
+            if let Some(kind) = self.hiphop_word(word, prev, cues) {
+                return kind;
+            }
+        } else if self.hiphop
+            && word == "hiphop"
+            && !self.module
+            && next
+                .trim_start()
+                .starts_with(|c: char| c.is_alphabetic() || matches!(c, '_' | '$' | '{'))
+        {
+            self.statements.push(Statement {
+                depth: self.stack.len(),
+                module: false,
+            });
+            self.prev = Prev::Statement;
+            return Kind::Keyword;
         }
         if CONSTANTS.contains(&word) {
             return Kind::Constant;
@@ -424,7 +636,8 @@ impl State<'_, '_> {
     }
 }
 
-pub fn lex(text: &str, out: &mut Tokens) {
+/// Lex JavaScript, or HipHop.js if `lang` is `Language::HipHop`.
+pub fn lex(text: &str, lang: Language, out: &mut Tokens) {
     let mut lex = Token::lexer(text);
     // A `#!` line at the very start is a comment, for scripts run as
     // commands.
@@ -436,11 +649,15 @@ pub fn lex(text: &str, out: &mut Tokens) {
     let mut state = State {
         text,
         out,
+        hiphop: lang == Language::HipHop,
         prev: Prev::Statement,
         stack: Vec::new(),
         cond: None,
         module: false,
         decorator: None,
+        statements: Vec::new(),
+        cues: Cues::default(),
+        from: false,
     };
     while let Some(token) = lex.next() {
         let span = lex.span();
@@ -450,6 +667,7 @@ pub fn lex(text: &str, out: &mut Tokens) {
             continue;
         }
         let decorator = state.decorator.take();
+        let cues = std::mem::take(&mut state.cues);
         if token != Ok(Token::Word) && token != Ok(Token::Open) {
             state.cond = None;
         }
@@ -468,7 +686,19 @@ pub fn lex(text: &str, out: &mut Tokens) {
                 state.prev = Prev::Expression;
                 Kind::Attribute
             }
-            Ok(Token::Word) => state.word(slice, &text[span.end..]),
+            // `${` in a HipHop statement. Elsewhere, `$` is a name.
+            Ok(Token::Word)
+                if slice == "$"
+                    && text[span.end..].starts_with('{')
+                    && !state.statements.is_empty() =>
+            {
+                lex.bump(1);
+                state.out.push(span.start..span.end + 1, Kind::Punctuation);
+                state.stack.push(Frame::Dollar);
+                state.prev = Prev::Expression;
+                continue;
+            }
+            Ok(Token::Word) => state.word(slice, &text[span.end..], cues),
             Ok(Token::Str) => {
                 state.string(span.start, span.end);
                 state.prev = Prev::Operand;
@@ -528,14 +758,23 @@ pub fn lex(text: &str, out: &mut Tokens) {
                         Frame::Paren(cond)
                     }
                     "[" => Frame::Bracket,
-                    _ => Frame::Brace {
-                        object: state.object_starts(),
-                    },
+                    _ => {
+                        state.from = false;
+                        Frame::Brace(if let Some(js) = cues.js {
+                            js
+                        } else if state.object_starts() {
+                            Brace::Object
+                        } else if state.hiphop_code() {
+                            Brace::HipHop
+                        } else {
+                            Brace::Block
+                        })
+                    }
                 };
-                state.prev = if frame == (Frame::Brace { object: true }) {
-                    Prev::Key
-                } else {
-                    Prev::Expression
+                state.prev = match frame {
+                    Frame::Brace(Brace::Object) => Prev::Key,
+                    Frame::Brace(Brace::HipHop) => Prev::Statement,
+                    _ => Prev::Expression,
                 };
                 state.stack.push(frame);
                 Kind::Punctuation
@@ -549,9 +788,21 @@ pub fn lex(text: &str, out: &mut Tokens) {
                 }
                 state.prev = match (slice, frame) {
                     (")", Some(Frame::Paren(Some(_)))) => Prev::Statement,
-                    ("}", Some(Frame::Brace { object: false }) | None) => Prev::Statement,
+                    (
+                        "}",
+                        Some(Frame::Brace(Brace::Block | Brace::HipHop | Brace::Async)) | None,
+                    ) => Prev::Statement,
                     _ => Prev::Operand,
                 };
+                match frame {
+                    Some(Frame::Paren(Some(Cond::Async))) => state.cues.js = Some(Brace::Async),
+                    Some(Frame::Brace(b)) if b != Brace::Object => {
+                        state.cues.closed = Some(b);
+                        state.from = false;
+                        state.block_closed(&text[span.end..]);
+                    }
+                    _ => {}
+                }
                 Kind::Punctuation
             }
             Ok(Token::Dot) => {
@@ -559,13 +810,19 @@ pub fn lex(text: &str, out: &mut Tokens) {
                 Kind::Punctuation
             }
             Ok(Token::Punctuation) => {
+                if let Some(s) = state.statement()
+                    && (slice == ";" || (slice == "," && !s.module))
+                {
+                    state.statements.pop();
+                }
                 state.prev = match slice {
                     ";" => {
                         state.module = false;
+                        state.from = false;
                         Prev::Statement
                     }
                     ":" => Prev::Colon,
-                    _ if state.stack.last() == Some(&Frame::Brace { object: true }) => Prev::Key,
+                    _ if state.stack.last() == Some(&Frame::Brace(Brace::Object)) => Prev::Key,
                     _ => Prev::Expression,
                 };
                 Kind::Punctuation
@@ -584,7 +841,7 @@ mod tests {
     /// the same kind with nothing between them come out as one.
     fn tokens(text: &str) -> Vec<(&str, Kind)> {
         let mut out = Tokens::default();
-        lex(text, &mut out);
+        lex(text, Language::JavaScript, &mut out);
         out.colored(text)
     }
 
@@ -598,7 +855,24 @@ mod tests {
 
     fn identifiers(text: &str) -> Vec<&str> {
         let mut out = Tokens::default();
-        lex(text, &mut out);
+        lex(text, Language::JavaScript, &mut out);
+        out.identifiers(text)
+    }
+
+    /// The tokens of `kind` in HipHop.js.
+    fn hiphop(text: &str, kind: Kind) -> Vec<&str> {
+        let mut out = Tokens::default();
+        lex(text, Language::HipHop, &mut out);
+        out.colored(text)
+            .into_iter()
+            .filter(|&(_, k)| k == kind)
+            .map(|(t, _)| t)
+            .collect()
+    }
+
+    fn hiphop_identifiers(text: &str) -> Vec<&str> {
+        let mut out = Tokens::default();
+        lex(text, Language::HipHop, &mut out);
         out.identifiers(text)
     }
 
@@ -906,6 +1180,225 @@ mod tests {
                 "class A extends B { #x = 1; get y() { return this.#x + Math.max(z, w); } }"
             ),
             ["A", "B", "#x", "get", "y", "#x", "Math", "max", "z", "w"]
+        );
+    }
+
+    #[test]
+    fn lexes_a_hiphop_module() {
+        let text = "const prg = hiphop module() {
+            in A; in B; in R; out O = 0;
+            do {
+                fork { await (A.now); } par { await immediate(B.now); }
+                emit O(O.preval + 1);
+            } every (R.now)
+        }";
+        assert_eq!(
+            hiphop(text, Kind::Keyword),
+            [
+                "const",
+                "hiphop",
+                "module",
+                "in",
+                "in",
+                "in",
+                "out",
+                "do",
+                "fork",
+                "await",
+                "now",
+                "par",
+                "await",
+                "immediate",
+                "now",
+                "emit",
+                "preval",
+                "every",
+                "now"
+            ]
+        );
+        assert_eq!(
+            hiphop_identifiers(text),
+            ["prg", "A", "B", "R", "O", "A", "B", "O", "O", "R"]
+        );
+        // Plain JavaScript has none of HipHop's keywords.
+        assert_eq!(
+            kinds_of(text, Kind::Keyword),
+            ["const", "in", "in", "in", "do", "await", "await"]
+        );
+    }
+
+    /// HipHop's words are keywords only in HipHop statements, and only
+    /// where the statements can have them.
+    #[test]
+    fn hiphop_words_in_javascript() {
+        assert_eq!(
+            hiphop(
+                "loop(); emit(x); const m = hiphop module() { loop { yield; } }\nrun(m); fork {}",
+                Kind::Keyword
+            ),
+            ["const", "hiphop", "module", "loop", "yield"]
+        );
+        // `hiphop` starts a statement only before a word or a `{`.
+        assert_eq!(
+            hiphop(
+                "hiphop.x; hiphop(loop); import hiphop from 'h'",
+                Kind::Keyword
+            ),
+            ["import", "from"]
+        );
+        // Words after `emit`, `break` and the like name signals and
+        // labels.
+        assert_eq!(
+            hiphop_identifiers(
+                "hiphop module() { in suspend; out loop; emit loop(); L: fork { break L; } }"
+            ),
+            ["suspend", "loop", "loop", "L", "L"]
+        );
+        // In expressions, words are JavaScript.
+        assert_eq!(
+            hiphop_identifiers("hiphop { await (suspend.now); let count = every; }"),
+            ["suspend", "count", "every"]
+        );
+    }
+
+    #[test]
+    fn hiphop_javascript_blocks() {
+        let text = "hiphop module() {
+            pragma { loop(); }
+            async (S) { emit(1); } kill { fork(); } suspend { par(); } resume { x(); }
+            yield;
+            suspend { emit A(); } when (A.now)
+        }";
+        assert_eq!(
+            hiphop(text, Kind::Keyword),
+            [
+                "hiphop", "module", "pragma", "async", "kill", "suspend", "resume", "yield",
+                "suspend", "emit", "when", "now"
+            ]
+        );
+        assert_eq!(
+            hiphop_identifiers(text),
+            ["loop", "S", "emit", "fork", "par", "x", "A", "A"]
+        );
+    }
+
+    #[test]
+    fn hiphop_signal_fields() {
+        // A signal's fields are keywords anywhere in a HipHop statement,
+        // but a call such as `Date.now()` is JavaScript.
+        assert_eq!(
+            hiphop(
+                "x.now; hiphop { emit O(S.nowval + Date.now()); pragma { f(this[s].pre); } }",
+                Kind::Keyword
+            ),
+            ["hiphop", "emit", "nowval", "pragma", "this", "pre"]
+        );
+    }
+
+    #[test]
+    fn hiphop_delays() {
+        assert_eq!(
+            hiphop(
+                "hiphop { await count(3, I.now); every immediate count(2, I.now) {} \
+                 abort { halt; } when immediate(S.now); \
+                 suspend {} from immediate(S.now) to (T.now) emit U(); count(1); }",
+                Kind::Keyword
+            ),
+            [
+                "hiphop",
+                "await",
+                "count",
+                "now",
+                "every",
+                "immediate",
+                "count",
+                "now",
+                "abort",
+                "halt",
+                "when",
+                "immediate",
+                "now",
+                "suspend",
+                "from",
+                "immediate",
+                "now",
+                "to",
+                "now",
+                "emit"
+            ]
+        );
+    }
+
+    #[test]
+    fn hiphop_declarations() {
+        let text = "hiphop module M(a, b = 1) implements I, mirror J {
+            out O combine (x, y) => x + y, P = 0 transient;
+            run N(a) { a as b, c from d, * };
+        }
+        implements, mirror, combine";
+        assert_eq!(
+            hiphop(text, Kind::Keyword),
+            [
+                "hiphop",
+                "module",
+                "implements",
+                "mirror",
+                "out",
+                "combine",
+                "transient",
+                "run",
+                "as",
+                "from"
+            ]
+        );
+        assert_eq!(
+            hiphop(
+                "hiphop interface I extends J, K { inout S; }",
+                Kind::Keyword
+            ),
+            ["hiphop", "interface", "extends", "inout"]
+        );
+    }
+
+    #[test]
+    fn hiphop_dollar() {
+        use Kind::*;
+        assert_eq!(
+            hiphop(
+                "hiphop { fork ${bs.map(b => hiphop { emit ${b}(); })} emit O(${5}); } x = ${a}",
+                Punctuation
+            ),
+            [
+                "{", "${", ".", "(", "{", "${", "}();", "})}", "(${", "});", "}", "{", "}"
+            ]
+        );
+        assert_eq!(
+            hiphop(
+                "hiphop { fork ${bs.map(b => hiphop { emit ${b}(); })} }",
+                Keyword
+            ),
+            ["hiphop", "fork", "hiphop", "emit"]
+        );
+    }
+
+    /// Where a HipHop statement ends.
+    #[test]
+    fn hiphop_statements_end() {
+        for text in [
+            "x = hiphop emit A(), loop",
+            "hiphop emit A(); loop",
+            "f(hiphop emit A()) loop",
+            "hiphop do {} every (R.now); loop",
+            "const m = hiphop module() {}\nloop",
+            "hiphop fork {} par {}\nloop",
+            "hiphop async () {} kill {}\nloop",
+            "x ? hiphop { emit A(); } : hiphop {}; loop",
+        ] {
+            assert_eq!(hiphop_identifiers(text).last(), Some(&"loop"), "{text}");
+        }
+        assert_eq!(
+            hiphop("hiphop fork {} par {} par { loop {} }", Kind::Keyword),
+            ["hiphop", "fork", "par", "par", "loop"]
         );
     }
 }

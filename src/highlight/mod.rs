@@ -115,6 +115,9 @@ pub enum Language {
     Dockerfile,
     Fish,
     Gitignore,
+    /// HipHop.js, which is JavaScript with synchronous reactive
+    /// statements.
+    HipHop,
     JavaScript,
     Json,
     LlvmIr,
@@ -169,6 +172,9 @@ impl Language {
                 | "APKBUILD"
         ) {
             return Some(Language::Shell);
+        }
+        if name.ends_with(".hh.js") || name.ends_with(".hh.mjs") {
+            return Some(Language::HipHop);
         }
         match name.rsplit_once('.')?.1 {
             "c" => Some(Language::C),
@@ -270,7 +276,7 @@ impl Language {
             Language::Dockerfile => dockerfile::lex(text, &mut out),
             Language::Fish => fish::lex(text, &mut out),
             Language::Gitignore => gitignore::lex(text, &mut out),
-            Language::JavaScript => javascript::lex(text, &mut out),
+            Language::HipHop | Language::JavaScript => javascript::lex(text, self, &mut out),
             Language::Json => json::lex(text, &mut out),
             Language::LlvmIr => llvm::lex(text, &mut out),
             Language::Markdown => markdown::lex(text, &mut out),
@@ -485,6 +491,7 @@ mod tests {
         "a.fish",
         ".gitignore",
         "a.js",
+        "a.hh.js",
         "a.json",
         "a.ll",
         "a.md",
@@ -575,6 +582,25 @@ mod tests {
         pieces.extend([
             "`a${", "}b`", "/a/g", "[/]", "x /", "?.", "=>", "if (", ")", "@x", "#!", "#p",
             "\\u{41}", "of", "import", "from", "'a'",
+        ]);
+        // Pieces of HipHop.js, such as statements, their JavaScript
+        // blocks and `${`.
+        pieces.extend([
+            "hiphop ",
+            "module() ",
+            "fork ",
+            "} par {",
+            "emit S(",
+            "await (",
+            "S.now",
+            "pragma {",
+            "async (S) {",
+            "} kill {",
+            "${",
+            "do {",
+            "} every (",
+            "L: ",
+            "break L",
         ]);
         // Pieces of JSON, such as keys and escapes.
         pieces.extend([
@@ -803,6 +829,10 @@ mod tests {
         assert_eq!(Language::for_path("a/b.yml"), Some(Language::Yaml));
         assert_eq!(Language::for_path("a.js"), Some(Language::JavaScript));
         assert_eq!(Language::for_path("a.mjs"), Some(Language::JavaScript));
+        assert_eq!(Language::for_path("abro.hh.js"), Some(Language::HipHop));
+        assert_eq!(Language::for_path("x/prog.hh.mjs"), Some(Language::HipHop));
+        assert_eq!(Language::for_path("hh.js"), Some(Language::JavaScript));
+        assert_eq!(Language::for_path("a.hh"), Some(Language::Cpp));
         assert_eq!(Language::for_path(".clang-format"), Some(Language::Yaml));
         assert_eq!(Language::for_path("a/b.json"), Some(Language::Json));
         assert_eq!(Language::for_path("tsconfig.jsonc"), Some(Language::Json));
@@ -1130,13 +1160,14 @@ mod tests {
 mod reference {
     use super::Language;
 
-    const LANGUAGES: [Language; 19] = [
+    const LANGUAGES: [Language; 20] = [
         Language::C,
         Language::Cmake,
         Language::Cpp,
         Language::Dockerfile,
         Language::Fish,
         Language::Gitignore,
+        Language::HipHop,
         Language::JavaScript,
         Language::Json,
         Language::LlvmIr,

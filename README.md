@@ -297,13 +297,13 @@ symlink, tergi writes to the file the link points to.
 
 Each theme uses the colors that a popular color scheme publishes, and
 syntax colors that follow the scheme's own. For now, only C, C++,
-CMake, JavaScript, JSON, Python, Rust, shell scripts, fish scripts,
+CMake, JavaScript, HipHop.js, JSON, Python, Rust, shell scripts, fish scripts,
 Dockerfiles, Zig, LLVM IR, Racket, Rhombus, Scribble, TOML, YAML,
 Markdown and `.gitignore` files get syntax colors. To try them out, press Ctrl+P and run "Choose theme…". The
 theme changes as you move through the list. Press Enter to keep one
 and save it to the config file, or Esc to go back.
 
-Names in C, C++, CMake, JavaScript, Python, Rust, shell, fish,
+Names in C, C++, CMake, JavaScript, HipHop.js, Python, Rust, shell, fish,
 Dockerfile, Zig, LLVM IR, Racket, Rhombus and Scribble code get a color picked from
 the name itself, so each use of a variable has the same color. So do the keys in JSON, TOML
 and YAML files. Keywords keep their own color. Each
