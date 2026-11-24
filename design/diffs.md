@@ -972,10 +972,14 @@ every JSON file. Nothing else in JSON can start with a `/`.
 
 Keys are identifiers, as in TOML and YAML, and their quotes are plain.
 In JSON every key is quoted, so coloring keys as strings would color
-most of the file the same. A string is a key when a `:`
-follows it on the same line, with nothing but spaces and tabs between
-them. That works in a hunk from the middle of an object too, where a
-stack of brackets wouldn't know that it's in an object.
+most of the file the same. The lexer keeps a stack of the objects and
+arrays it's inside of. A string is a key when it comes right after a
+`{`, or after a comma in an object, with only whitespace and comments
+before it. Its `:` can come on a later line. A `}` or `]` that doesn't
+close the innermost bracket is an error in the file. It closes
+everything back to the innermost bracket of its own kind, so that the
+keys after it are still keys. When no bracket of its kind is open, it
+changes nothing.
 
 Strings get the string color, and escapes such as `\n` and `\u00e9`
 get the escape color. A backslash before any other character is plain
@@ -1722,9 +1726,10 @@ leave that column blank.
 - `src/highlight/json.rs` has examples for each kind of JSON token,
   such as keys, escapes, comments and words that only start like
   values. Its property test builds random valid documents, with
-  comments between tokens and strings that hold brackets, colons and
-  comment markers. It builds the expected color of each byte along
-  with the text, and checks the lexer against it.
+  comments and line breaks between tokens, including between a key and
+  its `:`, and strings that hold brackets, colons and comment markers.
+  It builds the expected color of each byte along with the text, and
+  checks the lexer against it.
 - `src/highlight/toml.rs` has examples for each kind of TOML token. Its
   property test builds random valid documents from tricky pieces, such
   as keys that look like values, strings that hold brackets, and
