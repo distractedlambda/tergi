@@ -1048,12 +1048,9 @@ followed by two hex digits, such as `\0A`. Quoted names such as
 Numbers include floats written as their bits in hexadecimal, such as
 `0x3FF0000000000000`. A letter after the `0x` gives the type, as in
 `0xK4000C000000000000000`. Integers can be in hexadecimal too, as in
-`u0xFF`, and floats can be `+inf`, `-qnan` or `+nan(0x8)`. LLVM reads
-a NaN's payload up to the `)`, even on another line, and a quoted
-label can go on over lines too. LLVM never prints either one, and the
-colors of their first line would depend on the lines after it. So the
-lexer ends a payload with its line, and reads a quoted label that goes
-on over lines as a string and a colon.
+`u0xFF`, and floats can be `+inf`, `-qnan` or `+nan(0x8)`. Like LLVM,
+the lexer reads a NaN's payload up to the `)`, even on another line. A
+quoted label can go on over lines too.
 
 `=`, `*` and `|` get the operator color. Other symbols get the
 punctuation color.

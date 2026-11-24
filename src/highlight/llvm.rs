@@ -64,9 +64,7 @@ enum Token {
     #[regex(r"[-+]?0x[0-9A-Fa-f]+\.[0-9A-Fa-f]*[pP][-+]?[0-9]*")]
     #[regex(r"[-+](inf|qnan)")]
     // LLVM reads a NaN's payload up to the `)`, even on another line.
-    // We stop at the end of the line, so that a line's colors don't
-    // depend on the lines after it.
-    #[regex(r"[-+]s?nan\(0x[^)\n]*\)")]
+    #[regex(r"[-+]s?nan\(0x[^)]*\)")]
     Number,
 
     #[regex(r"[=*|]")]
@@ -119,12 +117,9 @@ fn lex_range(text: &str, range: Range<usize>, out: &mut Tokens) {
                 out.push_comment(text, span);
                 continue;
             }
-            // A quoted label. The colon is part of the token. LLVM allows
-            // a label that goes on over lines, but it never prints one,
-            // and the color of its first line would depend on the rest.
-            Ok(Token::Str)
-                if text[span.end..end].starts_with(':') && !text[span.clone()].contains('\n') =>
-            {
+            // A quoted label, which can go on over lines. The colon is
+            // part of the token.
+            Ok(Token::Str) if text[span.end..end].starts_with(':') => {
                 let colon = span.end;
                 lex.bump(1);
                 label(text, span.start..colon, parens > 0, out);
@@ -432,9 +427,10 @@ declare void @"\01_f"(ptr %"a b", i32 %1)
                 (")", Kind::Punctuation),
             ]
         );
+        // A quoted label can go on over lines.
         assert_eq!(
-            tokens("\"a\nb\":"),
-            [("\"a\nb\"", Kind::String), (":", Kind::Punctuation)]
+            identifiers("\"a\nb\":\n  br label %\"a\nb\""),
+            ["\"a\nb\"", "\"a\nb\""]
         );
         assert_eq!(
             tokens("memory(argmem: read) denormal_fpenv(float: ieee)"),
@@ -561,10 +557,10 @@ declare void @"\01_f"(ptr %"a b", i32 %1)
                 "f0x3C00"
             ]
         );
-        // A NaN's payload ends with its line.
+        // A NaN's payload goes on to the `)`, even on another line.
         assert_eq!(
-            tokens("-nan(0x\n1)"),
-            [("1", Kind::Number), (")", Kind::Punctuation)]
+            tokens("-nan(0x\n1) 2"),
+            [("-nan(0x\n1)", Kind::Number), ("2", Kind::Number)]
         );
         // These aren't numbers to LLVM. A float needs a `.`, and an
         // exponent needs digits.
