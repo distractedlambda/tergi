@@ -9,10 +9,6 @@
 //! `Parser`. What's inside a word is read the way `unescape_string` and
 //! `expand.rs` read it. The text of a command substitution such as
 //! `(...)` is lexed as commands of its own, as fish's highlighter does.
-//!
-//! The colors of a line never depend on the lines after it. Where fish
-//! looks at the token after a word, the lexer only looks to the end of
-//! the line.
 
 use std::borrow::Cow;
 
@@ -139,16 +135,6 @@ struct Next {
     dash: bool,
     /// Whether it's `-h` or `--help`.
     help: bool,
-}
-
-impl Next {
-    /// What we assume comes after a line continuation, since we don't
-    /// look at the next line.
-    const UNKNOWN: Next = Next {
-        kind: NextKind::Word,
-        dash: false,
-        help: false,
-    };
 }
 
 /// A redirection or a pipe, as `PipeOrRedir` reads it.
@@ -373,21 +359,30 @@ impl<'a> Lexer<'a, '_> {
     }
 
     /// Look at the token at `i` the way the parser does when it looks
-    /// ahead. `at_cmd` is whether a command can start there.
+    /// ahead. `at_cmd` is whether a command can start there. This skips
+    /// what `commands` skips before a token.
     fn peek(&self, i: usize, at_cmd: bool) -> Next {
-        let line_end = self.line_end(i);
         let mut j = i;
+        let mut continued = false;
         loop {
             if self.at(j) == Some(b'\\') && self.at(j + 1) == Some(b'\n') {
-                return Next::UNKNOWN;
+                j += 2;
+                continued = true;
+                continue;
             }
             match self.space_len(j) {
                 0 => break,
                 n => j += n,
             }
         }
-        if self.at(j) == Some(b'#') {
-            j = line_end;
+        while self.at(j) == Some(b'#') {
+            j = self.line_end(j);
+            if continued && self.at(j) == Some(b'\n') {
+                j += 1;
+            }
+            while let n @ 1.. = self.space_len(j) {
+                j += n;
+            }
         }
         let kind = match self.at(j) {
             None | Some(0) => NextKind::Terminate,
@@ -396,7 +391,7 @@ impl<'a> Lexer<'a, '_> {
             Some(b'}' | b'&' | b'|' | b'<' | b'>') => NextKind::Other,
             Some(b'0'..=b'9') if redirection(&self.b[j..]).is_some() => NextKind::Other,
             _ => {
-                let w = read_string(&self.b[..line_end], j);
+                let w = read_string(self.b, j);
                 if w.error {
                     NextKind::Other
                 } else {
@@ -435,12 +430,7 @@ impl<'a> Lexer<'a, '_> {
         let keyword = keyword_text(text);
         p.at_cmd = p.at_cmd
             && (keyword.as_deref().is_some_and(is_subcommand) || assignment_len(text).is_some());
-        // Fish reads the whole word, but a keyword on more than one line
-        // would make the colors of the first line depend on the next.
-        let kw = match &keyword {
-            Some(k) if !text.contains('\n') => k.as_ref(),
-            _ => "",
-        };
+        let kw = keyword.as_deref().unwrap_or("");
         p.newlines = false;
         if let Some(fd) = p.target.take() {
             self.target(end, fd);
@@ -448,11 +438,21 @@ impl<'a> Lexer<'a, '_> {
         }
         let next = if matches!(
             p.expect,
-            Expect::Job | Expect::Condition | Expect::Pipeline | Expect::Assign | Expect::Statement
+            Expect::Job
+                | Expect::Condition
+                | Expect::Else
+                | Expect::Pipeline
+                | Expect::Assign
+                | Expect::Statement
         ) {
             self.peek(end, p.at_cmd)
         } else {
-            Next::UNKNOWN
+            // The parser doesn't look ahead in the other places.
+            Next {
+                kind: NextKind::Other,
+                dash: false,
+                help: false,
+            }
         };
         loop {
             match p.expect {
@@ -749,9 +749,9 @@ impl<'a> Lexer<'a, '_> {
     /// Whether the `{` at `open` starts a brace expansion. Fish only
     /// expands braces that have a `,` or a variable right inside them, so
     /// `{}` and `{a}` stand for themselves. `commas` says whether a `,`
-    /// counts. We only look to the end of the line.
+    /// counts.
     fn expands(&self, open: usize, commas: bool) -> bool {
-        let b = &self.b[..self.line_end(open)];
+        let b = self.b;
         let mut depth = 0;
         let mut j = open + 1;
         while j < b.len() {
@@ -944,13 +944,13 @@ impl<'a> Lexer<'a, '_> {
     }
 
     /// If a slice such as `[1..-1]` comes here, read it, and say whether
-    /// it did. We only read one that ends on its line.
+    /// it did.
     fn slice(&mut self, quoted: bool) -> bool {
         let open = self.i;
         if self.at(open) != Some(b'[') {
             return false;
         }
-        let Some(close) = slice_end(&self.b[..self.line_end(open)], open) else {
+        let Some(close) = slice_end(self.b, open) else {
             return false;
         };
         self.take(1, Some(Kind::Punctuation));
@@ -1551,6 +1551,18 @@ end
             identifiers("command if; exec\nexec fish"),
             ["if", "exec", "fish"]
         );
+        // The parser looks at the token after a word even when it comes
+        // after a line continuation, or on the line after a comment that
+        // follows one.
+        assert_eq!(
+            identifiers("exec \\\n  -c x; and \\\n # a\n --help"),
+            ["exec", "and"]
+        );
+        // A keyword can go on over a line continuation.
+        assert_eq!(tokens("i\\\nf a; end"), {
+            use Kind::*;
+            [("i\\\nf", Keyword), (";", Punctuation), ("end", Keyword)]
+        });
     }
 
     #[test]
@@ -1653,8 +1665,9 @@ end
             identifiers(r#"a $x[1] $$y "$z" $é"#),
             ["a", "x", "y", "z", "é"]
         );
-        // A slice must end on its line.
-        assert_eq!(kinds_of("a $x[1\n]", Kind::Number), [] as [&str; 0]);
+        // A slice can go on over several lines, but it has to end.
+        assert_eq!(kinds_of("a $x[1\n2]", Kind::Number), ["1", "2"]);
+        assert_eq!(kinds_of("a $x[1\n", Kind::Number), [] as [&str; 0]);
         // A variable in a slice.
         assert_eq!(identifiers("a $x[$i]"), ["a", "x", "i"]);
         // Fish removes line continuations before it expands variables, so
@@ -1746,6 +1759,12 @@ end
             ]
         );
         assert_eq!(identifiers("{echo, b}"), ["echo,"]);
+        // Fish decides whether braces expand from the whole word, which
+        // can go on over several lines.
+        assert_eq!(
+            tokens("echo {a\n,b}"),
+            [("{", Punctuation), (",", Punctuation), ("}", Punctuation)]
+        );
         // In braces, fish skips a comment after a blank when it looks for
         // command substitutions, but the comment's variables still
         // expand. A `}` there without its `{` keeps the braces after it

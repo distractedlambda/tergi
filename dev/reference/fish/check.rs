@@ -34,7 +34,6 @@ use fish::operation_context::OperationContext;
 use fish::parse_constants::{ParseErrorList, ParseKeyword, ParseTokenType, ParseTreeFlags};
 use fish::parse_util::locate_cmdsubst_range;
 use fish::prelude::*;
-use fish::tokenizer::{TokFlags, Tokenizer};
 
 /// How many disagreements to show, so that one bug doesn't bury the
 /// others.
@@ -273,7 +272,7 @@ fn from_roles(src: &wstr, roles: &[HighlightSpec], exp: &mut Expected) {
                 // only those of command substitutions mean something. The
                 // parse tree marks those.
                 '(' | ')' => Want::NONE.or(Some(Kind::Punctuation)),
-                // tergi only reads a slice that ends on its line.
+                // tergi only reads a slice that ends.
                 '[' => {
                     // The `$` can come before line continuations.
                     let mut j = i;
@@ -281,7 +280,7 @@ fn from_roles(src: &wstr, roles: &[HighlightSpec], exp: &mut Expected) {
                         j -= 2;
                     }
                     let nameless = j > 0 && chars[j - 1] == '$' && roles[j - 1].foreground == HighlightRole::Error;
-                    let loose = nameless || !slice_ends_on_line(chars, roles, i);
+                    let loose = nameless || !slice_ends(chars, roles, i);
                     slices.push(loose);
                     if loose { Want::NONE.or(Some(Kind::Punctuation)).or(Some(Kind::String)) } else { Want::is(Kind::Punctuation) }
                 }
@@ -325,12 +324,11 @@ fn from_roles(src: &wstr, roles: &[HighlightSpec], exp: &mut Expected) {
     }
 }
 
-/// Whether the slice that opens at `open` closes on the same line.
-fn slice_ends_on_line(chars: &[char], roles: &[HighlightSpec], open: usize) -> bool {
+/// Whether the slice that opens at `open` closes.
+fn slice_ends(chars: &[char], roles: &[HighlightSpec], open: usize) -> bool {
     let mut depth = 0;
     for (c, r) in chars[open..].iter().zip(&roles[open..]) {
         match (c, r.foreground) {
-            ('\n', _) => return false,
             ('[', HighlightRole::Operat) => depth += 1,
             (']', HighlightRole::Operat) => {
                 depth -= 1;
@@ -359,38 +357,6 @@ fn substitutions(word: &wstr) -> Vec<(Range<usize>, Range<usize>)> {
         out.push((cmdsub.command_range(), start..cmdsub.end()));
     }
     out
-}
-
-/// Whether the token after the word that ends at `end` goes on past the
-/// end of its line, or starts on a later line, as after a line
-/// continuation. When tergi decides what a word is from the token after
-/// it, it only looks at that token's first line, so that the colors of a
-/// line don't depend on the next.
-fn next_token_crosses_line(src: &wstr, end: usize) -> bool {
-    let rest = &src[end..];
-    let line_end = rest.as_char_slice().iter().position(|&c| c == '\n').unwrap_or(rest.len());
-    let flags = TokFlags {
-        accept_unfinished: true,
-        continue_after_error: true,
-        ..Default::default()
-    };
-    match Tokenizer::new(rest, flags).next() {
-        Some(tok) => tok.offset() > line_end || (tok.offset() < line_end && tok.end() > line_end),
-        // The text ends after a line continuation.
-        None => line_end < rest.len(),
-    }
-}
-
-/// The words that fish reads differently depending on the token after
-/// them.
-const LOOKING_AHEAD: &[&str] = &[
-    "and", "or", "time", "if", "while", "begin", "function", "switch", "for", "not", "!", "end",
-    "command", "builtin", "exec",
-];
-
-/// Stop comparing at `start`.
-fn stop(exp: &mut Expected, start: usize) {
-    exp.first_error = Some(exp.first_error.map_or(start, |f| f.min(start)));
 }
 
 /// How deeply tergi reads command substitutions.
@@ -442,20 +408,6 @@ fn from_tree(src: &wstr, base: usize, depth: usize, exp: &mut Expected) -> bool 
     };
     let mut traversal = Traversal::new(tree.top());
     while let Some(node) = traversal.next() {
-        // A word that fish reads by looking at the next token, where tergi
-        // can't see all of it.
-        let word = match node.kind() {
-            NodeKind::DecoratedStatement(stmt) => stmt.command.try_source_range(),
-            NodeKind::Keyword(_) | NodeKind::VariableAssignment(_) => node.try_source_range(),
-            _ => None,
-        };
-        if let Some(w) = word.map(|w| w.as_usize())
-            && (LOOKING_AHEAD.contains(&text(w.clone()).as_str())
-                || matches!(node.kind(), NodeKind::VariableAssignment(_)))
-            && next_token_crosses_line(src, w.end)
-        {
-            stop(exp, base + w.start);
-        }
         // A node that the parser didn't finish has no range, but its
         // parts can still have theirs.
         let r = node.try_source_range().map_or(0..0, |r| r.as_usize());
@@ -472,13 +424,6 @@ fn from_tree(src: &wstr, base: usize, depth: usize, exp: &mut Expected) -> bool 
                 // of variables.
                 let (s, e) = (base + r.start, base + r.end);
                 exp.identifiers.retain(|i| i.end <= s || i.start >= e);
-                // tergi doesn't read a keyword that goes on over a line
-                // continuation, so that the colors of its first line
-                // don't depend on the next. That changes how the rest
-                // reads, so we stop comparing there.
-                if text(r.clone()).contains('\n') {
-                    stop(exp, s);
-                }
                 let w = if k.keyword() == ParseKeyword::Exclam {
                     Want::is(Kind::Operator)
                 } else {
