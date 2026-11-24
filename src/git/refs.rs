@@ -31,8 +31,8 @@ impl Branch {
 
     /// Whether the branch shows in the history. The checked out branch
     /// always does, because HEAD brings its commits in anyway.
-    pub fn shown(&self, hidden: &HashSet<BString>) -> bool {
-        self.is_head || hidden.is_empty() || !hidden.contains(&self.refname())
+    pub fn shown(&self, hidden: &Hidden) -> bool {
+        self.is_head || !hidden.has_ref(&self.refname())
     }
 }
 
@@ -58,8 +58,8 @@ impl RemoteBranch {
             .into()
     }
 
-    pub fn shown(&self, hidden: &HashSet<BString>) -> bool {
-        hidden.is_empty() || !hidden.contains(&self.refname())
+    pub fn shown(&self, hidden: &Hidden) -> bool {
+        !hidden.has_ref(&self.refname())
     }
 }
 
@@ -80,6 +80,31 @@ pub struct Stash {
 impl Stash {
     pub fn refname(&self) -> String {
         format!("stash@{{{}}}", self.index)
+    }
+
+    pub fn shown(&self, hidden: &Hidden) -> bool {
+        !hidden.stashes.contains(&self.id)
+    }
+}
+
+/// What the user has hidden from the history.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Hidden {
+    /// The full names of hidden branches, such as `refs/heads/main` or
+    /// `refs/remotes/origin/main`.
+    pub refs: HashSet<BString>,
+    /// The commit ids of hidden stashes. Their names, such as `stash@{0}`,
+    /// move to another stash whenever one is pushed or dropped.
+    pub stashes: HashSet<ObjectId>,
+}
+
+impl Hidden {
+    pub fn is_empty(&self) -> bool {
+        self.refs.is_empty() && self.stashes.is_empty()
+    }
+
+    fn has_ref(&self, refname: &BString) -> bool {
+        self.refs.contains(refname)
     }
 }
 
@@ -190,9 +215,9 @@ impl Refs {
         Ok(refs)
     }
 
-    /// Labels to draw next to each commit in the history. Branches whose
-    /// full names are in `hidden` get none.
-    pub fn labels(&self, hidden: &HashSet<BString>) -> HashMap<ObjectId, Vec<Label>> {
+    /// Labels to draw next to each commit in the history. Hidden branches
+    /// and stashes get none.
+    pub fn labels(&self, hidden: &Hidden) -> HashMap<ObjectId, Vec<Label>> {
         let mut map: HashMap<ObjectId, Vec<Label>> = HashMap::new();
         if let (Some(head), None) = (self.head, &self.head_branch) {
             map.entry(head).or_default().push(Label {
@@ -222,7 +247,7 @@ impl Refs {
                 name: t.name.clone(),
             });
         }
-        for s in &self.stashes {
+        for s in self.stashes.iter().filter(|s| s.shown(hidden)) {
             map.entry(s.id).or_default().push(Label {
                 kind: LabelKind::Stash,
                 name: s.refname().into(),
@@ -231,9 +256,9 @@ impl Refs {
         map
     }
 
-    /// Commits the history walk starts from. Branches whose full names are
-    /// in `hidden` are left out, but HEAD never is.
-    pub fn tips(&self, hidden: &HashSet<BString>) -> Vec<ObjectId> {
+    /// Commits the history walk starts from. Hidden branches are left out,
+    /// but HEAD never is.
+    pub fn tips(&self, hidden: &Hidden) -> Vec<ObjectId> {
         let mut v: Vec<ObjectId> = Vec::new();
         v.extend(self.head);
         v.extend(
@@ -256,8 +281,13 @@ impl Refs {
 
     /// The stash commits, which the walk starts from too, but without
     /// the commits that hold a stash's staged changes and untracked files.
-    pub fn stash_tips(&self) -> Vec<ObjectId> {
-        self.stashes.iter().map(|s| s.id).collect()
+    /// Hidden stashes are left out.
+    pub fn stash_tips(&self, hidden: &Hidden) -> Vec<ObjectId> {
+        self.stashes
+            .iter()
+            .filter(|s| s.shown(hidden))
+            .map(|s| s.id)
+            .collect()
     }
 
     /// The stash with this commit id, if there is one.
@@ -349,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn hidden_branches_give_no_tips_or_labels() {
+    fn hidden_branches_and_stashes_give_no_tips_or_labels() {
         let id = |n: u8| ObjectId::from_bytes_or_panic(&[n; 20]);
         let branch = |name: &str, n: u8, is_head: bool| Branch {
             name: name.into(),
@@ -374,16 +404,27 @@ mod tests {
                 name: "v1".into(),
                 target: id(2),
             }],
-            stashes: Vec::new(),
+            stashes: [4, 5]
+                .into_iter()
+                .enumerate()
+                .map(|(index, n)| Stash {
+                    index,
+                    id: id(n),
+                    message: String::new(),
+                })
+                .collect(),
         };
-        let hidden: HashSet<BString> = [
-            "refs/heads/main",
-            "refs/heads/side",
-            "refs/remotes/origin/side",
-        ]
-        .into_iter()
-        .map(BString::from)
-        .collect();
+        let hidden = Hidden {
+            refs: [
+                "refs/heads/main",
+                "refs/heads/side",
+                "refs/remotes/origin/side",
+            ]
+            .into_iter()
+            .map(BString::from)
+            .collect(),
+            stashes: [id(4)].into_iter().collect(),
+        };
         // The checked out branch shows anyway, and so does the tag on the
         // hidden branch.
         assert_eq!(refs.tips(&hidden), [id(1), id(2)]);
@@ -396,8 +437,13 @@ mod tests {
         };
         assert_eq!(names(1), ["main"]);
         assert_eq!(names(2), ["v1"]);
+        assert_eq!(names(5), ["stash@{1}"]);
         assert!(!labels.contains_key(&id(3)));
-        assert_eq!(refs.tips(&HashSet::new()), [id(1), id(2), id(3)]);
+        assert!(!labels.contains_key(&id(4)));
+        assert_eq!(refs.stash_tips(&hidden), [id(5)]);
+        let none = Hidden::default();
+        assert_eq!(refs.tips(&none), [id(1), id(2), id(3)]);
+        assert_eq!(refs.stash_tips(&none), [id(4), id(5)]);
     }
 
     #[test]

@@ -8,8 +8,8 @@ reload.
 The refs are read in `src/git/refs.rs`. The walk is in `src/git/log.rs`
 and the graph layout in `src/git/graph.rs`. The app's side is
 `start_history_walk` and `on_history` in `src/app/mod.rs`, and
-`draw_history` in `src/ui/draw.rs`. Hidden branches are saved by
-`src/state.rs`.
+`draw_history` in `src/ui/draw.rs`. Hidden branches and stashes are
+saved by `src/state.rs`.
 
 ## Refs
 
@@ -70,21 +70,30 @@ Names stay in the set after their branch is gone. A remote branch that
 `fetch --prune` removes and a later fetch brings back should still be
 hidden.
 
+Stashes can be hidden too. A stash's name, such as `stash@{1}`, belongs
+to a different stash after every push or drop, so the app keeps hidden
+stashes by commit id instead. `App::hidden` is a `Hidden` with both
+sets. `Refs::stash_tips` and `Refs::labels` skip the hidden stashes,
+which leaves the commits that hold their staged changes and untracked
+files out of the walk as well. Like branch names, the ids stay after
+their stash is dropped. `git stash store` can bring a dropped stash
+back with the same id, and then it should still be hidden.
+
 ### Saving them
 
-The set is saved per repository in a redb database, in
-`state.redb` under the user's data folder (`src/state.rs`). The
-repository is known by the canonical path of its common git folder, so
-linked worktrees share one set.
+The sets are saved per repository in a redb database, in
+`state.redb` under the user's data folder (`src/state.rs`). Branches and
+stashes have a table each. The repository is known by the canonical
+path of its common git folder, so linked worktrees share the sets.
 
 redb lets only one process open a database file at a time, and the user
 may run several copies of tergi. So we open the file for each read or
 write and close it right after. If another process has it open, we try
 again for up to two seconds.
 
-The app reads the set once, in `App::start`, before the first refs load.
-The first walk then leaves the hidden branches out from the start, and
-the history doesn't fill in and then shrink.
+The app reads the sets once, in `App::start`, before the first refs load.
+The first walk then leaves the hidden branches and stashes out from the
+start, and the history doesn't fill in and then shrink.
 
 Changes go to a background task over a channel, in order, and the task
 writes each batch in one transaction. It writes only the change, a
@@ -302,12 +311,16 @@ how many whole entries fit in the pane, which is how far paging moves.
   from git and from `Refs::load` against a model.
 - `tests/ui.rs` has `selection_follows_its_commit_through_a_reload`,
   `first_load_starts_at_the_top` and `stashes_show_in_the_history`.
-- `hidden_branches_give_no_tips_or_labels` in `src/git/refs.rs` checks
-  the filtering, and the tests in `src/state.rs` check saving and
-  reading the database, and waiting while another handle holds it.
+- `hidden_branches_and_stashes_give_no_tips_or_labels` in
+  `src/git/refs.rs` checks the filtering, and the tests in
+  `src/state.rs` check saving and reading the database, and waiting
+  while another handle holds it.
   `hidden_branches_leave_the_history_and_stay_hidden` in `tests/ui.rs`
   hides a branch and its remote branch from the sidebar, then opens the
   app again to see that they stay hidden.
+  `hidden_stashes_leave_the_history_and_stay_hidden` does the same for
+  stashes, from the sidebar and the history, and pushes another stash
+  in between so that their names change.
 
 ## Known gaps
 
@@ -316,7 +329,8 @@ how many whole entries fit in the pane, which is how far paging moves.
   missing rather than squeezed.
 - A commit outside the loaded part of the history can be shown, but not
   selected in the list, until the walk reaches it.
-- Tags and whole remotes can't be hidden, only single branches.
+- Tags and whole remotes can't be hidden, only single branches and
+  stashes.
 - Renaming a hidden branch shows it again, because the set keeps the old
   name. Moving the repository to another folder loses its hidden
   branches.

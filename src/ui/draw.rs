@@ -562,7 +562,7 @@ fn hover_clickable(app: &App, r: Rect) -> bool {
     hovered(app, r) && app.drag.is_none() && app.edit.is_none()
 }
 
-/// Drawn in front of a branch that is hidden from the history.
+/// Drawn in front of a branch or stash that is hidden from the history.
 const HIDDEN_MARK: &str = "⊘";
 
 fn draw_sidebar(app: &App, buf: &mut Buffer, hits: &mut Hits) {
@@ -707,14 +707,19 @@ fn draw_sidebar(app: &App, buf: &mut Buffer, hits: &mut Hits) {
             }
             SideRow::Stash(i) => {
                 let s = &refs.stashes[*i];
-                put(buf, a.x + 2, y, "≡", 1, st.fg(t.dim));
+                let (mark, mark_style, style) = if s.shown(&app.hidden) {
+                    ("≡", st.fg(t.dim), st)
+                } else {
+                    (HIDDEN_MARK, st.fg(t.faint), st.fg(t.faint))
+                };
+                put(buf, a.x + 2, y, mark, 1, mark_style);
                 put(
                     buf,
                     a.x + 4,
                     y,
                     &truncate(&s.message, usize::from(w.saturating_sub(4))),
                     w.saturating_sub(4),
-                    st,
+                    style,
                 );
             }
             SideRow::Empty(msg) => {

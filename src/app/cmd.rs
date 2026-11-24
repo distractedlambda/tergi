@@ -203,7 +203,9 @@ pub enum Cmd {
     /// Hide a branch from the history, or show it again. This holds its
     /// full name, such as `refs/heads/main`.
     SetHidden(BString, bool),
-    ShowAllBranches,
+    /// Hide a stash from the history, or show it again.
+    SetStashHidden(ObjectId, bool),
+    ShowAllHidden,
 
     ContinueOp,
     AbortOp,
@@ -617,9 +619,13 @@ impl App {
                 Cmd::ToggleRainbowIdentifiers,
             )
             .direct(),
-            act(None, "Show all hidden branches", Cmd::ShowAllBranches)
-                .enabled(!self.hidden.is_empty())
-                .direct(),
+            act(
+                None,
+                "Show all hidden branches and stashes",
+                Cmd::ShowAllHidden,
+            )
+            .enabled(!self.hidden.is_empty())
+            .direct(),
             act(Some(Key::ch('@')), "Command log", Cmd::CommandLog).direct(),
             act(Some(Key::ctrl('b')), "Toggle sidebar", Cmd::ToggleSidebar).direct(),
             act(Some(Key::code(KeyCode::Tab)), "Next pane", Cmd::FocusNext).direct(),
@@ -832,6 +838,7 @@ impl App {
                 .hint(),
                 act(Some(Key::ch('g')), "Pop stash", Cmd::StashApply(id, true)).hint(),
                 act(Some(Key::ch('d')), "Drop stash", Cmd::StashDrop(id)).hint(),
+                self.hide_stash_action(id),
                 act(Some(Key::ch('v')), "Select commits", Cmd::SelectCommits).direct(),
                 act(Some(Key::ch('y')), "Copy commit hash", Cmd::CopyHash(id)),
             ];
@@ -1187,7 +1194,7 @@ impl App {
                     // hidden. If it was hidden before it was checked out,
                     // it can still be shown again.
                     self.hide_action(b.refname())
-                        .enabled(!is_current || self.hidden.contains(&b.refname())),
+                        .enabled(!is_current || self.hidden.refs.contains(&b.refname())),
                 ];
                 if let Some(cur) = &current
                     && !is_current
@@ -1265,6 +1272,7 @@ impl App {
                     act(Some(Key::ch(' ')), "Apply", Cmd::StashApply(id, false)).hint(),
                     act(Some(Key::ch('g')), "Pop", Cmd::StashApply(id, true)).hint(),
                     act(Some(Key::ch('d')), "Drop", Cmd::StashDrop(id)).hint(),
+                    self.hide_stash_action(id),
                 ]
             }
             SideRow::Empty(_) => Vec::new(),
@@ -1274,7 +1282,7 @@ impl App {
     /// Hide the branch with this full name from the history, or show it
     /// again if it is hidden.
     fn hide_action(&self, refname: BString) -> ActionDef {
-        if self.hidden.contains(&refname) {
+        if self.hidden.refs.contains(&refname) {
             act(
                 Some(Key::ch('H')),
                 "Show in history",
@@ -1287,6 +1295,18 @@ impl App {
                 Cmd::SetHidden(refname, true),
             )
         }
+    }
+
+    /// Hide the stash with this commit id from the history, or show it
+    /// again if it is hidden.
+    fn hide_stash_action(&self, id: ObjectId) -> ActionDef {
+        let hide = !self.hidden.stashes.contains(&id);
+        let label = if hide {
+            "Hide from history"
+        } else {
+            "Show in history"
+        };
+        act(Some(Key::ch('H')), label, Cmd::SetStashHidden(id, hide))
     }
 
     /// Actions for the focused pane, then the global ones, then the git
@@ -1754,7 +1774,8 @@ impl App {
             }
             Cmd::AmendInto(id) => self.rebase_op("Amend into commit", move |r| async move { rebase::fixup_staged_into(&r.git, id).await }),
             Cmd::SetHidden(name, hide) => self.set_hidden(name, hide),
-            Cmd::ShowAllBranches => self.show_all_branches(),
+            Cmd::SetStashHidden(id, hide) => self.set_stash_hidden(id, hide),
+            Cmd::ShowAllHidden => self.show_all_hidden(),
             Cmd::JumpTo(id) => {
                 if !self.jump_to(id) {
                     self.set_status("That commit isn't loaded in the history yet", Level::Info);

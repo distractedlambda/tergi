@@ -1,6 +1,6 @@
 //! What tergi remembers about each repository between runs: the branches
-//! the user hid from the history, and the files they folded in the detail
-//! pane.
+//! and stashes the user hid from the history, and the files they folded
+//! in the detail pane.
 //!
 //! This lives in a redb database under the user's data folder, not in the
 //! repository, so tergi never adds files to the user's work. Each
@@ -24,9 +24,17 @@ use redb::{
     ReadableMultimapTable as _, ReadableTable as _, TableDefinition, TableError,
 };
 
+use crate::git::ObjectId;
+
 /// For each repository, the full names of the refs hidden from the history,
 /// such as `refs/heads/main` or `refs/remotes/origin/main`.
 const HIDDEN: MultimapTableDefinition<&[u8], &[u8]> = MultimapTableDefinition::new("hidden_refs");
+
+/// For each repository, the commit ids of the stashes hidden from the
+/// history. A name like `stash@{0}` moves to another stash whenever one is
+/// pushed or dropped, but the commit id stays with its stash.
+const HIDDEN_STASHES: MultimapTableDefinition<&[u8], &[u8]> =
+    MultimapTableDefinition::new("hidden_stashes");
 
 /// For each repository and section of the working directory, the paths of
 /// the folded files. The section is a name such as `staged`.
@@ -52,6 +60,9 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 pub enum Change {
     Hide(BString),
     Show(BString),
+    HideStash(ObjectId),
+    ShowStash(ObjectId),
+    /// Show all hidden branches and stashes.
     ShowAll,
     /// Fold a file in the section of the working directory with this name.
     Fold(&'static str, BString),
@@ -95,6 +106,19 @@ impl Store {
             if let Some(table) = exists(tx.open_multimap_table(HIDDEN))? {
                 for name in table.get(self.repo.as_slice())? {
                     set.insert(BString::from(name?.value()));
+                }
+            }
+            Ok(set)
+        })
+    }
+
+    /// The stashes hidden from the history, by commit id.
+    pub fn hidden_stashes(&self) -> Result<HashSet<ObjectId>> {
+        self.read(|tx| {
+            let mut set = HashSet::new();
+            if let Some(table) = exists(tx.open_multimap_table(HIDDEN_STASHES))? {
+                for id in table.get(self.repo.as_slice())? {
+                    set.extend(ObjectId::from_bytes(id?.value()));
                 }
             }
             Ok(set)
@@ -151,6 +175,7 @@ impl Store {
         let tx = db.begin_write()?;
         {
             let mut hidden = tx.open_multimap_table(HIDDEN)?;
+            let mut stashes = tx.open_multimap_table(HIDDEN_STASHES)?;
             let mut workdir = tx.open_multimap_table(WORKDIR_FOLDS)?;
             let mut commits = tx.open_table(COMMIT_FOLDS)?;
             let repo = self.repo.as_slice();
@@ -162,8 +187,15 @@ impl Store {
                     Change::Show(name) => {
                         hidden.remove(repo, name.as_slice())?;
                     }
+                    Change::HideStash(id) => {
+                        stashes.insert(repo, id.as_bytes())?;
+                    }
+                    Change::ShowStash(id) => {
+                        stashes.remove(repo, id.as_bytes())?;
+                    }
                     Change::ShowAll => {
                         hidden.remove_all(repo)?;
+                        stashes.remove_all(repo)?;
                     }
                     Change::Fold(sec, path) => {
                         workdir.insert((repo, *sec), path.as_slice())?;
@@ -256,6 +288,41 @@ mod tests {
         sa.apply(&[Change::ShowAll]).expect("write");
         assert_eq!(sa.hidden().expect("read"), names(&[]));
         assert_eq!(sb.hidden().expect("read"), names(&["refs/heads/z"]));
+    }
+
+    #[test]
+    fn hidden_stashes_are_kept_for_each_repository() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.redb");
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::create_dir(&a).expect("mkdir");
+        std::fs::create_dir(&b).expect("mkdir");
+        let sa = Store::new(path.clone(), &a);
+        let sb = Store::new(path, &b);
+        let id = |n: u8, len: usize| ObjectId::from_bytes_or_panic(&vec![n; len]);
+        let ids = |v: &[ObjectId]| v.iter().copied().collect::<HashSet<_>>();
+        assert_eq!(sa.hidden_stashes().expect("read"), ids(&[]));
+
+        sa.apply(&[
+            Change::HideStash(id(1, 20)),
+            Change::HideStash(id(2, 32)),
+            Change::HideStash(id(3, 20)),
+            Change::ShowStash(id(3, 20)),
+            Change::Hide("refs/heads/x".into()),
+        ])
+        .expect("write");
+        sb.apply(&[Change::HideStash(id(4, 20))]).expect("write");
+        assert_eq!(
+            sa.hidden_stashes().expect("read"),
+            ids(&[id(1, 20), id(2, 32)])
+        );
+        assert_eq!(sb.hidden_stashes().expect("read"), ids(&[id(4, 20)]));
+
+        // Showing everything shows the stashes too.
+        sa.apply(&[Change::ShowAll]).expect("write");
+        assert_eq!(sa.hidden_stashes().expect("read"), ids(&[]));
+        assert_eq!(sa.hidden().expect("read"), names(&[]));
+        assert_eq!(sb.hidden_stashes().expect("read"), ids(&[id(4, 20)]));
     }
 
     #[test]

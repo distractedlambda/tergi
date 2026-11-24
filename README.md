@@ -181,7 +181,8 @@ pane, where the commit's message is normally shown. Ctrl+Enter saves it
 and Esc cancels.
 
 On a stash, in the history or the sidebar, `.` Space applies it, `.g`
-pops it and `.d` drops it.
+pops it and `.d` drops it. `.H` hides it from the history, or shows it
+again.
 
 In the sidebar, Space folds a section, and `.` Space checks out the
 selected branch. `.H` hides the selected branch or remote branch from the
@@ -210,13 +211,17 @@ It compares the two snapshots, as `git diff A B` does. So the changes
 that the bottom commit made itself aren't part of it. Click the `From`
 or `To` line to copy that commit's hash.
 
-## Hiding branches
+## Hiding branches and stashes
 
 Hide a branch with `.H` in the sidebar when its commits get in the way.
 Its commits leave the history, unless another ref you can see leads to
 them, and its label goes away. The sidebar still lists it, with a `⊘` in
 front. Press `.H` on it again to bring it back, or run "Show all hidden
-branches" from the command palette.
+branches and stashes" from the command palette.
+
+Stashes work the same way. Press `.H` on one in the sidebar or the
+history to hide it. tergi remembers which stash it was even when pushing
+or dropping other stashes changes its `stash@{n}` name.
 
 The checked out branch can't be hidden, since HEAD shows its commits
 anyway. tergi remembers hidden branches for each repository, even when

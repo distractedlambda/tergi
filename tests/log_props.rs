@@ -510,7 +510,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
     rt.block_on(log::walk(
         &s.git,
         &refs.tips(&Default::default()),
-        &refs.stash_tips(),
+        &refs.stash_tips(&Default::default()),
         generation,
         &walks,
         |b| batches.push(b),

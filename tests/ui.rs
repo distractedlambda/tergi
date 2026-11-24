@@ -1433,6 +1433,93 @@ fn stashes_show_in_the_history() {
     ui.wait_loaded(2);
 }
 
+#[test]
+fn hidden_stashes_leave_the_history_and_stay_hidden() {
+    let s = repo_with_change();
+    s.sh(&["stash", "-q"]);
+    s.write("notes.txt", "one\ntwo\nthree\nfive\n");
+    s.sh(&["stash", "-q"]);
+    let id = |rev: &str| {
+        let hex = s.sh(&["rev-parse", rev]);
+        tergi::git::ObjectId::from_hex(hex.trim().as_bytes()).expect("id")
+    };
+    let (older, newer) = (id("stash@{1}"), id("stash@{0}"));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = dir.path().join("tergi").join("state.redb");
+    let mut ui = Ui::open_with_store(&s, &store);
+    ui.wait_loaded(4);
+
+    // Hide the older stash from the sidebar.
+    let row = ui
+        .app
+        .sidebar
+        .rows
+        .iter()
+        .position(|r| matches!(r, SideRow::Stash(i) if ui.app.refs.stashes[*i].id == older))
+        .expect("the stash in the sidebar");
+    ui.app.focus = Focus::Sidebar;
+    ui.app.sidebar_select(row);
+    ui.dot('H');
+    ui.wait("the walk without the older stash", |u| {
+        !u.app.history.loading && u.app.history.commits.len() == 3
+    });
+    assert!(!ui.app.history.index.contains_key(&older));
+    assert!(!ui.app.labels.contains_key(&older));
+    assert!(ui.screen().contains("⊘"), "{}", ui.screen());
+
+    // Hide the newer one from the history, where it is selected.
+    ui.app.focus = Focus::History;
+    let i = ui.app.history.index[&newer];
+    ui.app.select_history(i + 1);
+    ui.dot('H');
+    ui.wait("the walk without stashes", |u| {
+        !u.app.history.loading && u.app.history.commits.len() == 2
+    });
+    assert!(!ui.screen().contains("stash@{"), "{}", ui.screen());
+
+    // A new stash moves the others to new names, but they stay hidden,
+    // also on the next run.
+    ui.finish_saving();
+    drop(ui);
+    s.write("notes.txt", "six\n");
+    s.sh(&["stash", "-q"]);
+    let newest = id("stash@{0}");
+    let mut ui = Ui::open_with_store(&s, &store);
+    ui.wait_loaded(3);
+    assert!(ui.app.history.index.contains_key(&newest));
+    assert_eq!(ui.app.hidden.stashes, HashSet::from([older, newer]));
+
+    // Showing one brings it back with its new name.
+    let row = ui
+        .app
+        .sidebar
+        .rows
+        .iter()
+        .position(|r| matches!(r, SideRow::Stash(i) if ui.app.refs.stashes[*i].id == older))
+        .expect("the stash in the sidebar");
+    ui.app.focus = Focus::Sidebar;
+    ui.app.sidebar_select(row);
+    ui.dot('H');
+    ui.wait("the walk with the older stash", |u| {
+        !u.app.history.loading && u.app.history.commits.len() == 4
+    });
+    let labels: Vec<_> = ui.app.labels[&older]
+        .iter()
+        .map(|l| l.name.clone())
+        .collect();
+    assert_eq!(labels, ["stash@{2}"]);
+
+    ui.palette("show all hidden");
+    ui.wait("the walk with every stash", |u| {
+        !u.app.history.loading && u.app.history.commits.len() == 5
+    });
+    assert!(ui.app.hidden.is_empty());
+    ui.finish_saving();
+    drop(ui);
+    let ui = Ui::open_with_store(&s, &store);
+    assert!(ui.app.hidden.is_empty());
+}
+
 /// Put the cursor on a row in the detail pane and press `.d`, which asks
 /// before discarding.
 fn ask_to_discard(ui: &mut Ui, row: impl Fn(&Ui, &Row) -> bool) {
@@ -1847,7 +1934,7 @@ fn hidden_branches_leave_the_history_and_stay_hidden() {
         .into_iter()
         .map(BString::from)
         .collect();
-    assert_eq!(ui.app.hidden, want);
+    assert_eq!(ui.app.hidden.refs, want);
 
     // Showing one brings the commit back.
     hide(&mut ui, &side_row);

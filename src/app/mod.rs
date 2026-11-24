@@ -28,7 +28,7 @@ use crate::git::diff::{DEFAULT_LINE_LIMIT, FileDiff};
 use crate::git::graph::GraphRow;
 use crate::git::log::{self, CommitInfo};
 use crate::git::rebase::{self, RepoState};
-use crate::git::refs::{Label, Refs};
+use crate::git::refs::{Hidden, Label, Refs};
 use crate::git::workdir::Workdir;
 use crate::highlight::{self, FileHighlight, Highlighter};
 use crate::state::{self, Store};
@@ -143,7 +143,8 @@ pub enum AppEvent {
     /// A read started by `App::spawn_read` finished. This applies its
     /// result.
     ReadDone(Box<dyn FnOnce(&mut App) + Send>),
-    /// Saving a change to the hidden branches or the folds failed.
+    /// Saving a change to the hidden branches and stashes or the folds
+    /// failed.
     SaveFailed(String),
     Tick,
 }
@@ -375,15 +376,15 @@ pub struct App {
     pub refs: Refs,
     pub labels: HashMap<ObjectId, Vec<Label>>,
     refs_load: Reload,
-    /// The full names of the branches hidden from the history. These stay
-    /// here when the branch is gone, so that it stays hidden if it comes
-    /// back, for example after a fetch.
-    pub hidden: HashSet<BString>,
-    /// Where the hidden branches and the folds are saved. Without it, they
-    /// aren't.
+    /// The branches and stashes hidden from the history. These stay here
+    /// when the branch or stash is gone, so that it stays hidden if it
+    /// comes back, for example after a fetch.
+    pub hidden: Hidden,
+    /// Where the hidden branches and stashes and the folds are saved.
+    /// Without it, they aren't.
     pub store: Option<Store>,
-    /// Sends changes to the hidden branches and the folds to the task that
-    /// saves them.
+    /// Sends changes to the hidden branches and stashes and the folds to
+    /// the task that saves them.
     save_tx: Option<UnboundedSender<state::Change>>,
     /// Closes once that task has saved everything it was sent.
     saved: Option<tokio::sync::oneshot::Receiver<()>>,
@@ -552,7 +553,7 @@ impl App {
             refs: Refs::default(),
             labels: HashMap::new(),
             refs_load: Reload::default(),
-            hidden: HashSet::new(),
+            hidden: Hidden::default(),
             store: None,
             save_tx: None,
             saved: None,
@@ -679,9 +680,9 @@ impl App {
         }
     }
 
-    /// Read the hidden branches and the folds in the working directory,
-    /// and start the task that saves changes to them. The first history
-    /// walk needs to know which branches to leave out, so this reads them
+    /// Read the hidden branches and stashes and the folds in the working
+    /// directory, and start the task that saves changes to them. The first
+    /// history walk needs to know what to leave out, so this reads them
     /// right away rather than in the background. The database is small and
     /// the read is quick.
     fn open_store(&mut self) {
@@ -689,9 +690,16 @@ impl App {
             return;
         };
         match store.hidden() {
-            Ok(h) => self.hidden = h,
+            Ok(h) => self.hidden.refs = h,
             Err(e) => self.set_status(
                 format!("Couldn't read the hidden branches: {e:#}"),
+                Level::Warn,
+            ),
+        }
+        match store.hidden_stashes() {
+            Ok(h) => self.hidden.stashes = h,
+            Err(e) => self.set_status(
+                format!("Couldn't read the hidden stashes: {e:#}"),
                 Level::Warn,
             ),
         }
@@ -734,7 +742,7 @@ impl App {
         self.saved = Some(done_rx);
     }
 
-    /// Wait until the hidden branches and folds are saved, but not for
+    /// Wait until the hidden branches and stashes and the folds are saved, but not for
     /// long. The event loop calls this before it exits, since a change made
     /// just before quitting could still be on its way.
     pub async fn finish_saving(&mut self) {
@@ -748,9 +756,9 @@ impl App {
     /// name, such as `refs/heads/main`.
     pub fn set_hidden(&mut self, name: BString, hide: bool) {
         let changed = if hide {
-            self.hidden.insert(name.clone())
+            self.hidden.refs.insert(name.clone())
         } else {
-            self.hidden.remove(&name)
+            self.hidden.refs.remove(&name)
         };
         if !changed {
             return;
@@ -763,11 +771,30 @@ impl App {
         self.update_tips();
     }
 
-    pub fn show_all_branches(&mut self) {
+    /// Hide the stash with this commit id from the history, or show it
+    /// again.
+    pub fn set_stash_hidden(&mut self, id: ObjectId, hide: bool) {
+        let changed = if hide {
+            self.hidden.stashes.insert(id)
+        } else {
+            self.hidden.stashes.remove(&id)
+        };
+        if !changed {
+            return;
+        }
+        self.save(if hide {
+            state::Change::HideStash(id)
+        } else {
+            state::Change::ShowStash(id)
+        });
+        self.update_tips();
+    }
+
+    pub fn show_all_hidden(&mut self) {
         if self.hidden.is_empty() {
             return;
         }
-        self.hidden.clear();
+        self.hidden = Hidden::default();
         self.save(state::Change::ShowAll);
         self.update_tips();
     }
@@ -1012,7 +1039,7 @@ impl App {
             AppEvent::ReadDone(apply) => apply(self),
             AppEvent::SaveFailed(e) => {
                 self.set_status(
-                    format!("Couldn't save the hidden branches or folds: {e}"),
+                    format!("Couldn't save the hidden branches and stashes or folds: {e}"),
                     Level::Error,
                 );
             }
@@ -1150,10 +1177,11 @@ impl App {
     }
 
     /// Work out the labels and the tips of the history from the refs and
-    /// the hidden branches. Walk the history again if the tips changed.
+    /// the hidden branches and stashes. Walk the history again if the tips
+    /// changed.
     fn update_tips(&mut self) {
         let tips = self.refs.tips(&self.hidden);
-        let stashes = self.refs.stash_tips();
+        let stashes = self.refs.stash_tips(&self.hidden);
         let labels = self.refs.labels(&self.hidden);
         let changed_labels = labels != self.labels;
         self.labels = labels;

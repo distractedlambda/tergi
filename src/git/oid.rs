@@ -37,6 +37,11 @@ impl ObjectId {
         })
     }
 
+    /// Make an id from its 20 or 32 bytes, if it has that many.
+    pub fn from_bytes(bytes: &[u8]) -> Option<ObjectId> {
+        (bytes.len() == 20 || bytes.len() == 32).then(|| ObjectId::from_bytes_or_panic(bytes))
+    }
+
     /// Make an id from its 20 or 32 bytes.
     ///
     /// # Panics
