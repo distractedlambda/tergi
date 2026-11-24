@@ -22,13 +22,14 @@ enum Token {
     #[regex(r"#[^\n]*", allow_greedy = true)]
     Comment,
 
+    // Whether the string has its closing quotes.
     #[token("\"", basic_string)]
     #[token("\"\"\"", |lex| multiline_string(lex, b'"'))]
-    Basic,
+    Basic(bool),
 
     #[token("'", literal_string)]
     #[token("'''", |lex| multiline_string(lex, b'\''))]
-    Literal,
+    Literal(bool),
 
     #[regex(r"[+-]?[0-9][0-9_]*(\.[0-9][0-9_]*)?([eE][+-]?[0-9][0-9_]*)?")]
     #[regex(r"0x[0-9a-fA-F][0-9a-fA-F_]*|0o[0-7][0-7_]*|0b[01][01_]*")]
@@ -67,37 +68,44 @@ enum Token {
 
 /// Skip to the closing quote. A basic string can't go on to the next line,
 /// so one without a closing quote ends at the end of the line.
-fn basic_string(lex: &mut Lexer<Token>) {
+fn basic_string(lex: &mut Lexer<Token>) -> bool {
     let rest = lex.remainder().as_bytes();
     let mut i = 0;
     while i < rest.len() {
         match rest[i] {
             b'\\' if rest.get(i + 1).is_some_and(|&b| b != b'\n') => i += 2,
             b'"' => {
-                i += 1;
-                break;
+                lex.bump(i + 1);
+                return true;
             }
             b'\n' => break,
             _ => i += 1,
         }
     }
     lex.bump(i);
+    false
 }
 
 /// Skip to the closing quote, or to the end of the line.
-fn literal_string(lex: &mut Lexer<Token>) {
+fn literal_string(lex: &mut Lexer<Token>) -> bool {
     let rest = lex.remainder();
-    lex.bump(
-        rest.find(['\'', '\n'])
-            .map_or(rest.len(), |i| i + usize::from(rest.as_bytes()[i] == b'\'')),
-    );
+    match rest.find(['\'', '\n']) {
+        Some(i) if rest.as_bytes()[i] == b'\'' => {
+            lex.bump(i + 1);
+            true
+        }
+        end => {
+            lex.bump(end.unwrap_or(rest.len()));
+            false
+        }
+    }
 }
 
 /// Skip to the end of a multi-line string, which three quotes close. Up to
 /// two more quotes can come before them, and those belong to the string.
 /// So a run of four or five quotes ends the string too. Only basic strings
 /// have escapes.
-fn multiline_string(lex: &mut Lexer<Token>, quote: u8) {
+fn multiline_string(lex: &mut Lexer<Token>, quote: u8) -> bool {
     let rest = lex.remainder().as_bytes();
     let mut i = 0;
     while i < rest.len() {
@@ -107,7 +115,8 @@ fn multiline_string(lex: &mut Lexer<Token>, quote: u8) {
                 let run = rest[i..].iter().take_while(|&&b| b == quote).count();
                 i += run.min(5);
                 if run >= 3 {
-                    break;
+                    lex.bump(i);
+                    return true;
                 }
             }
             _ => i += 1,
@@ -115,13 +124,7 @@ fn multiline_string(lex: &mut Lexer<Token>, quote: u8) {
     }
     // A backslash at the very end steps one past it.
     lex.bump(i.min(rest.len()));
-}
-
-/// Whether the rest of the line after a word in key position makes the
-/// word part of a key. Words in a hunk from the middle of a multi-line
-/// array are in key position too, but they are values.
-fn key_follows(rest: &str) -> bool {
-    rest.trim_start_matches([' ', '\t']).starts_with(['.', '='])
+    false
 }
 
 /// The pieces of a basic string. Anything else in one, such as a backslash
@@ -195,23 +198,18 @@ pub fn lex(text: &str, out: &mut Tokens) {
                 continue;
             }
             Token::Comment => Kind::Comment,
-            Token::Basic | Token::Literal
+            // A multi-line string can't be a key.
+            Token::Basic(closed) | Token::Literal(closed)
                 if expect == Expect::Key
                     && !lex.slice().starts_with(r#"""""#)
-                    && !lex.slice().starts_with("'''")
-                    && key_follows(lex.remainder()) =>
+                    && !lex.slice().starts_with("'''") =>
             {
-                // A quoted key ends with its quote, since one that doesn't
-                // would go on to the end of its line. The quotes are plain.
-                out.push(span.start + 1..span.end - 1, Kind::Identifier);
+                // The quotes are plain.
+                let end = span.end - usize::from(closed);
+                out.push(span.start + 1..end, Kind::Identifier);
                 continue;
             }
-            Token::Number | Token::Bool | Token::Word
-                if expect == Expect::Key
-                    && (lex.slice().starts_with('.')
-                        || lex.slice().ends_with('.')
-                        || key_follows(lex.remainder())) =>
-            {
+            Token::Number | Token::Bool | Token::Word if expect == Expect::Key => {
                 // A key, maybe dotted, as in `a.b.c`. A word that starts
                 // or ends with a dot is part of a longer key, as in `a .b`
                 // or `a."b"`.
@@ -225,7 +223,7 @@ pub fn lex(text: &str, out: &mut Tokens) {
                 out.push(start..span.end, Kind::Identifier);
                 continue;
             }
-            Token::Basic => {
+            Token::Basic(_) => {
                 for (part, r) in Part::lexer(lex.slice()).spanned() {
                     let kind = match part {
                         Ok(Part::Escape) => Kind::Escape,
@@ -235,7 +233,7 @@ pub fn lex(text: &str, out: &mut Tokens) {
                 }
                 continue;
             }
-            Token::Literal => Kind::String,
+            Token::Literal(_) => Kind::String,
             Token::Number => Kind::Number,
             Token::Bool => Kind::Constant,
             Token::Word => continue,
@@ -264,8 +262,9 @@ pub fn lex(text: &str, out: &mut Tokens) {
                 } else {
                     Open::Table
                 };
-                // A closing bracket without its opening one, as in a hunk
-                // from the middle of an array, closes nothing.
+                // A closing bracket without its opening one is an error in
+                // the file. It closes nothing, so the brackets that are
+                // open stay open.
                 if stack.last() == Some(&open) {
                     stack.pop();
                     expect = Expect::Value;
@@ -393,11 +392,17 @@ dependencies.logos = { version = \"0.16\", features = [] }
         );
         // Keys in inline tables are identifiers too.
         assert_eq!(identifiers("a = { b = 1, 'c' = [d] }"), ["a", "b", "c"]);
-        // A hunk from the middle of an array has values where a key would
-        // go. Without a `.` or `=` after them, they aren't keys.
+        // Where a word or string is decides whether it's a key. Values at
+        // the start of a line in an array aren't keys. Anything at the
+        // start of a line outside of brackets is, even without an `=`,
+        // and so is a quoted key without its closing quote.
+        let text = "a = [\n  \"x\", 'y',\n  1, true, z\n]\nb\n\"c\n'd'";
+        assert_eq!(identifiers(text), ["a", "b", "c", "d"]);
         assert_eq!(
-            tokens("  \"x\", 'y',\n  1, true, z\n]"),
+            tokens(text),
             [
+                ("=", Kind::Operator),
+                ("[", Kind::Punctuation),
                 ("\"x\"", Kind::String),
                 (",", Kind::Punctuation),
                 ("'y'", Kind::String),
@@ -408,10 +413,6 @@ dependencies.logos = { version = \"0.16\", features = [] }
                 (",", Kind::Punctuation),
                 ("]", Kind::Punctuation),
             ]
-        );
-        assert_eq!(
-            identifiers("  \"x\", 'y',\n  1, true, z\n]"),
-            [] as [&str; 0]
         );
     }
 
@@ -460,9 +461,9 @@ dependencies.logos = { version = \"0.16\", features = [] }
                 ("1", Kind::Number),
             ]
         );
-        // A hunk from the middle of an array closes brackets that it
-        // didn't open, and then finds the next header.
-        assert_eq!(kinds_of("  1,\n]\n[a]\n", Kind::Attribute), ["[a]"]);
+        // A closing bracket that closes nothing is an error. It doesn't
+        // change how the next header reads.
+        assert_eq!(kinds_of("a = 1,\n]\n[a]\n", Kind::Attribute), ["[a]"]);
     }
 
     #[test]

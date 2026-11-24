@@ -714,18 +714,18 @@ identifiers"). The quotes of a quoted part are plain and aren't part
 of its name, so `"name"` and `name` get the same color. The dots
 between parts get the punctuation color.
 
-A hunk from the middle of a multi-line array has values at the start
-of its lines, where the lexer expects a key. So a word or a quoted
-string is only a key when a `.` or `=` comes after it on its line, or
-when it starts or ends with a dot, as `.b` and `a.` do in `a .b = 1`
-and `a."b" = 1`. Otherwise it gets the color of the value it would be.
+Since the lexer always sees the whole file, where a word is decides
+whether it's a key, as TOML's grammar does. A value at the start of a
+line in a multi-line array is a value, because the lexer knows that
+the array is open. A word or quoted string where a key goes is a key
+even without an `=` after it, which only happens in a broken file.
 
 A `[` where a key would start, outside of brackets, starts a table
 header. The whole header, such as `[server]` or `[[bin]]`, gets the
-attribute color, so that the sections of a file stand out. A `]` that
-closes nothing is punctuation and changes nothing. That's what a hunk
-from the middle of a multi-line array has, and the header after it
-still reads as a header.
+attribute color, so that the sections of a file stand out. A `]` or
+`}` that closes nothing is an error in the file. It's punctuation and
+changes nothing, so the brackets that are open stay open, and a
+header after it still reads as a header.
 
 Basic and literal strings can't go on to the next line, so one without
 its closing quote ends with its line. Multi-line strings end at three
@@ -1727,7 +1727,9 @@ leave that column blank.
   with the text, and checks the lexer against it.
 - `src/highlight/toml.rs` has examples for each kind of TOML token. Its
   property test builds random valid documents from tricky pieces, such
-  as keys that look like values and strings that hold brackets. It
+  as keys that look like values, strings that hold brackets, and
+  arrays and inline tables that go on over several lines, so that
+  values and keys both start lines. It
   parses them with `toml_edit`, which already reads the config file,
   and checks that each value has the color of its type and that each
   key is an identifier, apart from its quotes.
