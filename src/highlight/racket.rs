@@ -836,21 +836,16 @@ impl Lex<'_> {
                 break;
             }
         }
-        // A comment that the text doesn't finish runs to its end, like an
-        // unfinished block comment. Then a hunk lexed on its own gets the
-        // same colors as it does in the whole file, where the comment goes
-        // on.
+        // A comment that the text doesn't finish is an error, but it runs
+        // to the end, like an unfinished block comment.
         if let Some(start) = self.stack.iter().find_map(Frame::comment) {
             self.comment(start..self.text.len());
         }
     }
 
-    /// Color a `#;` or `@;{` comment, but not the whitespace at the end of
-    /// each of its lines. Whether a comment covers the whitespace at the
-    /// end of a line can depend on what comes on the next line, as in
-    /// `#;` followed by a `)` that ends it, and colors shouldn't.
+    /// Color a `#;` or `@;{` comment.
     fn comment(&mut self, r: std::ops::Range<usize>) {
-        self.out.push_comment(self.text, r);
+        self.out.push(r, Kind::Comment);
     }
 
     /// Read the next Racket token. Returns false at the end of the text.
@@ -1378,11 +1373,7 @@ mod tests {
         // Prefixes and comments don't count as data.
         assert_eq!(
             tokens("#; ' ; x\n #| y |# #&z 1"),
-            [
-                ("#; ' ; x", Comment),
-                (" #| y |# #&z", Comment),
-                ("1", Number)
-            ]
+            [("#; ' ; x\n #| y |# #&z", Comment), ("1", Number)]
         );
         assert_eq!(
             tokens("'#;a 1"),
@@ -1399,11 +1390,11 @@ mod tests {
                 (")", Punctuation)
             ]
         );
-        assert_eq!(tokens("#;(a\n(b \n"), [("#;(a", Comment), ("(b", Comment)]);
-        // Whether a comment covers the whitespace at the end of a line
-        // would depend on the next line, so it never does.
-        assert_eq!(tokens("#;\r\n)"), [("#;", Comment), (")", Punctuation)]);
-        assert_eq!(tokens("#;\r\n"), [("#;", Comment)]);
+        assert_eq!(tokens("#;(a\n(b \n"), [("#;(a\n(b \n", Comment)]);
+        // A comment covers the whitespace at the end of a line when its
+        // datum comes on a later line.
+        assert_eq!(tokens("#; \r\n)"), [("#;", Comment), (")", Punctuation)]);
+        assert_eq!(tokens("#; \r\na"), [("#; \r\na", Comment)]);
     }
 
     #[test]

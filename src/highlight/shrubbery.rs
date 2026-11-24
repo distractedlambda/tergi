@@ -300,8 +300,7 @@ impl<'a> Lex<'a> {
             }
             BlockComment => {
                 // An unfinished comment is an error, but it gets the color
-                // of a comment, so that a hunk that cuts it off gets the
-                // same colors as the whole file.
+                // of a comment, like an unfinished `#|` in Racket.
                 let name = if self.block_comment() {
                     Name::Comment
                 } else {
@@ -1515,7 +1514,7 @@ impl Emit<'_> {
 
     fn flush(&mut self) {
         if let Some((start, end)) = self.run.take() {
-            self.out.push_comment(self.text, start..end);
+            self.out.push(start..end, Kind::Comment);
         }
     }
 }
@@ -1713,9 +1712,7 @@ mod tests {
         assert_eq!(
             tokens("#// fun f():\n  body  \n  more\ng()"),
             [
-                ("#// fun f():", Comment),
-                ("  body", Comment),
-                ("  more", Comment),
+                ("#// fun f():\n  body  \n  more", Comment),
                 ("()", Punctuation)
             ]
         );
@@ -1723,8 +1720,7 @@ mod tests {
         assert_eq!(
             tokens("#//\nf(1)\ng(2)"),
             [
-                ("#//", Comment),
-                ("f(1)", Comment),
+                ("#//\nf(1)", Comment),
                 ("(", Punctuation),
                 ("2", Number),
                 (")", Punctuation)

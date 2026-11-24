@@ -526,12 +526,9 @@ surprises that the lexer copies:
 - Outside of text, `@|{x}|` is text in other delimiters. Inside text,
   it's an escape holding the list `{x}`.
 
-A `#;` or `@;{` comment can cover several lines. Its color leaves out
-the whitespace at the end of each line. Whether the comment covers that
-whitespace can depend on the next line, as with a `#;` at the end of a
-line and a `)` on the next one, which ends the comment early. Colors
-must not depend on what comes after a line, or a hunk lexed on its own
-would get different colors.
+A `#;` or `@;{` comment can cover several lines. One that the text
+doesn't finish is an error, and it goes on to the end of the file, like
+an unfinished `#|` comment.
 
 ### Rhombus
 
@@ -579,8 +576,6 @@ guesses from the indentation and the brackets, in `lex-comment.rkt`.
 `Groups` does the same. That code keeps its own count of lines and
 columns, and it doesn't count lines inside `#{...}` or a tab inside a
 token. We copy that, so that the colors are the same as DrRacket's.
-The guess only depends on what came before a token, so a line's colors
-never depend on the lines after it.
 
 DrRacket's full shrubbery lexer adds `lex-open-close.rkt` on top. That
 layer reports the invisible parentheses that indentation makes, and it
