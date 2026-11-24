@@ -17,10 +17,8 @@ use super::{Kind, Tokens};
 #[logos(subpattern name = r"[-a-zA-Z$._][-a-zA-Z$._0-9]*")]
 enum Token {
     #[regex(r";[^\n\r]*", allow_greedy = true)]
-    Comment,
-
     #[token("/*", block_comment)]
-    BlockComment,
+    Comment,
 
     // A string reads up to the next quote, even on another line. A
     // backslash doesn't stop a quote from ending it.
@@ -113,10 +111,6 @@ fn lex_range(text: &str, range: Range<usize>, out: &mut Tokens) {
         let span = base + lex.span().start..base + lex.span().end;
         let kind = match token {
             Ok(Token::Comment) => Kind::Comment,
-            Ok(Token::BlockComment) => {
-                out.push_comment(text, span);
-                continue;
-            }
             // A quoted label, which can go on over lines. The colon is
             // part of the token.
             Ok(Token::Str) if text[span.end..end].starts_with(':') => {
@@ -356,8 +350,7 @@ declare void @"\01_f"(ptr %"a b", i32 %1)
             [
                 ("x", Kind::Keyword),
                 ("; a \"b", Kind::Comment),
-                ("/* c", Kind::Comment),
-                ("d */", Kind::Comment),
+                ("/* c\nd */", Kind::Comment),
                 ("e", Kind::Keyword),
                 ("/* f", Kind::Comment),
             ]

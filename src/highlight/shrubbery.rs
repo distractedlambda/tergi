@@ -1499,9 +1499,6 @@ impl Emit<'_> {
         let r = tok.start..tok.end;
         match tok.color {
             Color::Plain => {}
-            // An `@//` line comment ends with the line break and the
-            // spaces after it.
-            Color::Kind(Kind::Comment) => self.out.push_comment(self.text, r),
             Color::Kind(kind) => self.out.push(r, kind),
             Color::Str => lex_string(&self.text[r], tok.start, self.out),
         }
@@ -1701,7 +1698,7 @@ mod tests {
             tokens("/* a /* b */ c */ d"),
             [("/* a /* b */ c */", Comment)]
         );
-        assert_eq!(tokens("/* a\nb"), [("/* a", Comment), ("b", Comment)]);
+        assert_eq!(tokens("/* a\nb"), [("/* a\nb", Comment)]);
         assert_eq!(tokens("#! /bin/rhombus\nx"), [("#! /bin/rhombus", Comment)]);
     }
 
@@ -1810,11 +1807,11 @@ mod tests {
         use Kind::*;
         assert_eq!(
             tokens("@//{a @b{c}} d @// e\n f"),
-            [("@//{a @b{c}}", Comment), ("@// e", Comment)]
+            [("@//{a @b{c}}", Comment), ("@// e\n ", Comment)]
         );
         assert_eq!(
             text("a @//{b} c @// d\ne"),
-            [("@//{b}", Comment), ("@// d", Comment)]
+            [("@//{b}", Comment), ("@// d\n", Comment)]
         );
     }
 

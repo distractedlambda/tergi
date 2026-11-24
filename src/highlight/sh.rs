@@ -643,7 +643,7 @@ impl<'a> Lexer<'a, '_> {
             .iter()
             .position(|&c| c == b'\n')
             .map_or(b.len(), |n| start + n);
-        self.out.push_comment(self.raw, start..end);
+        self.out.push(start..end, Kind::Comment);
         if end > 0 && j.removed(end - 1) {
             self.i = j.pos(end + 1);
             true
@@ -1983,7 +1983,7 @@ done
                 ("${", Punctuation),
                 ("#", Operator),
                 ("};", Punctuation),
-                ("# d", Comment),
+                ("# d  ", Comment),
             ]
         );
         assert_eq!(identifiers("echo $# ${#x}"), ["echo", "#", "x"]);

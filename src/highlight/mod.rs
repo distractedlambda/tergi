@@ -84,9 +84,9 @@ impl Tokens {
     }
 
     /// Color the range `r` of `text` as a comment, but not the whitespace
-    /// at the end of each of its lines. Whether a comment that covers
-    /// several lines covers the whitespace at the end of one can depend
-    /// on what comes on the next line, and colors shouldn't.
+    /// at the end of each of its lines. Whitespace shows no color, so
+    /// nothing depends on this. Only the JSON lexer still uses it, and it
+    /// could push its comments with `push` as the other lexers do.
     fn push_comment(&mut self, text: &str, r: Range<usize>) {
         let mut start = r.start;
         for line in text[r].split_inclusive('\n') {

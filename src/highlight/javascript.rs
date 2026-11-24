@@ -445,7 +445,7 @@ pub fn lex(text: &str, out: &mut Tokens) {
         let span = lex.span();
         let slice = lex.slice();
         if token == Ok(Token::Comment) {
-            state.out.push_comment(text, span);
+            state.out.push(span, Kind::Comment);
             continue;
         }
         let decorator = state.decorator.take();

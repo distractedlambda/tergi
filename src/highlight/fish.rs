@@ -330,7 +330,7 @@ impl<'a> Lexer<'a, '_> {
     fn comment(&mut self) {
         let i = self.i;
         let end = self.line_end(i);
-        self.out.push_comment(self.text, i..end);
+        self.out.push(i..end, Kind::Comment);
         self.i = end;
     }
 
@@ -1605,7 +1605,7 @@ end
             [
                 ("#c", Comment),
                 ("(", Punctuation),
-                ("# d", Comment),
+                ("# d  ", Comment),
                 (")", Punctuation),
             ]
         );

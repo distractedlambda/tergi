@@ -32,11 +32,7 @@ pub fn lex(text: &str, out: &mut Tokens) {
     let mut toks = p.out;
     toks.sort_by_key(|(r, _)| r.start);
     for (r, kind) in toks {
-        if kind == Kind::Comment {
-            out.push_comment(text, r);
-        } else {
-            out.push(r, kind);
-        }
+        out.push(r, kind);
     }
 }
 

@@ -113,7 +113,7 @@ pub fn lex(text: &str, out: &mut Tokens) {
                         .position(|&c| c == b'\n')
                         .map_or(b.len(), |n| i + n),
                 };
-                out.push_comment(text, i..end);
+                out.push(i..end, Kind::Comment);
                 i = end;
             }
             b'(' => {
@@ -632,8 +632,7 @@ endif()
                 ("[=[a]]b]==]c]=]", String),
                 (")", Punctuation),
                 ("# d", Comment),
-                ("#[==[e", Comment),
-                ("]=]f]==]", Comment),
+                ("#[==[e\n]=]f]==]", Comment),
             ]
         );
         // `#` starts a comment even in the middle of an argument, but not

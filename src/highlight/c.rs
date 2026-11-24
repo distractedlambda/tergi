@@ -233,7 +233,7 @@ impl State<'_> {
             }
             Ok(Token::Comment) => {
                 if self.skip.is_none() {
-                    self.out.push_comment(self.text, span);
+                    self.out.push(span, Kind::Comment);
                 }
                 return;
             }
@@ -322,8 +322,7 @@ impl State<'_> {
             if !ends {
                 return;
             }
-            self.out
-                .push_comment(self.text, skip.start..self.hash.start);
+            self.out.push(skip.start..self.hash.start, Kind::Comment);
             self.out.push(self.hash.clone(), Kind::Keyword);
             self.skip = None;
         }
@@ -352,8 +351,7 @@ impl State<'_> {
 
     fn finish(&mut self) {
         if let Some(skip) = &self.skip {
-            self.out
-                .push_comment(self.text, skip.start..self.text.len());
+            self.out.push(skip.start..self.text.len(), Kind::Comment);
         }
     }
 }
@@ -514,14 +512,12 @@ mod tests {
         assert_eq!(
             tokens("// a \\\nb\n// c \\  \r\nd\n// e\\x\nf"),
             [
-                ("// a \\", Kind::Comment),
-                ("b", Kind::Comment),
-                ("// c \\", Kind::Comment),
-                ("d", Kind::Comment),
+                ("// a \\\nb", Kind::Comment),
+                ("// c \\  \r\nd", Kind::Comment),
                 ("// e\\x", Kind::Comment),
             ]
         );
-        assert_eq!(tokens("/* open\n"), [("/* open", Kind::Comment)]);
+        assert_eq!(tokens("/* open\n"), [("/* open\n", Kind::Comment)]);
     }
 
     #[test]
@@ -794,11 +790,10 @@ mod tests {
                 ("#if", Keyword),
                 ("0", Number),
                 ("// off", Comment),
-                ("int x; /* a */ \"s", Comment),
-                ("#ifdef A", Comment),
-                ("#else", Comment),
-                ("#endif", Comment),
-                ("/* b */", Comment),
+                (
+                    "int x; /* a */ \"s\n#ifdef A\n#else\n#endif\n/* b */ ",
+                    Comment
+                ),
                 ("#else", Keyword),
                 ("int", Keyword),
                 (";", Punctuation),
@@ -812,7 +807,7 @@ mod tests {
                 ("1", Number),
                 ("#elif", Keyword),
                 ("0", Number),
-                ("x", Comment),
+                ("x\n", Comment),
                 ("#endif", Keyword),
                 ("#if", Keyword),
                 ("0", Number),
@@ -826,9 +821,7 @@ mod tests {
             [
                 ("#if", Keyword),
                 ("0", Number),
-                ("/*", Comment),
-                ("#endif */", Comment),
-                ("int", Comment),
+                ("/*\n#endif */\nint  \n", Comment),
             ]
         );
     }

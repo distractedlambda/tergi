@@ -41,11 +41,6 @@ struct Tok {
   size_t start, end;
 };
 
-static bool isWs(char c) {
-  return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' ||
-         c == '\f';
-}
-
 static void fill(std::string &out, size_t s, size_t e, char c) {
   for (size_t i = s; i < e; i++)
     out[i] = c;
@@ -58,8 +53,7 @@ static void ident(std::string &out, size_t s, size_t e) {
   fill(out, s + 1, e, 'i');
 }
 
-// Comments in a gap between tokens. Block comments don't color the
-// whitespace at the end of their lines.
+// Comments in a gap between tokens.
 static void gap(const std::string &full, size_t s, size_t e,
                 std::string &out) {
   size_t i = s;
@@ -74,17 +68,7 @@ static void gap(const std::string &full, size_t s, size_t e,
     } else if (c == '/' && i + 1 < e && full[i + 1] == '*') {
       size_t j = full.find("*/", i + 2);
       j = (j == std::string::npos || j + 2 > e) ? e : j + 2;
-      size_t ls = i;
-      while (ls < j) {
-        size_t le = full.find('\n', ls);
-        if (le == std::string::npos || le > j)
-          le = j;
-        size_t te = le;
-        while (te > ls && isWs(full[te - 1]))
-          te--;
-        fill(out, ls, te, 'c');
-        ls = le + 1;
-      }
+      fill(out, i, j, 'c');
       i = j;
     } else {
       i++;
