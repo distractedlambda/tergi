@@ -34,7 +34,7 @@ use fish::operation_context::OperationContext;
 use fish::parse_constants::{ParseErrorList, ParseKeyword, ParseTokenType, ParseTreeFlags};
 use fish::parse_util::locate_cmdsubst_range;
 use fish::prelude::*;
-use fish::tokenizer::{TokFlags, Tokenizer};
+use fish::tokenizer::{TokFlags, TokenType, Tokenizer};
 
 /// How many disagreements to show, so that one bug doesn't bury the
 /// others.
@@ -405,6 +405,26 @@ fn from_tree(src: &wstr, base: usize, depth: usize, exp: &mut Expected) -> bool 
     let tree = ast::parse(src, flags(), Some(&mut errors));
     if let Some(e) = errors.iter().map(|e| base + e.source_start).min() {
         exp.first_error = Some(exp.first_error.map_or(e, |f| f.min(e)));
+    }
+    // Fish drops a word with an error in it. tergi still colors the lines
+    // of the word before the error's line, so that their colors don't
+    // depend on a later line, and we stop comparing at the word. Some
+    // error tokens start at the error rather than at the word, so we look
+    // from the end of the token before.
+    let tok_flags = TokFlags {
+        accept_unfinished: true,
+        continue_after_error: true,
+        ..Default::default()
+    };
+    let mut prev_end = 0;
+    for tok in Tokenizer::new(src, tok_flags) {
+        if tok.type_ == TokenType::Error {
+            let error = tok.offset() + tok.error_offset_within_token();
+            if src[prev_end..error].as_char_slice().contains(&'\n') {
+                stop(exp, base + prev_end);
+            }
+        }
+        prev_end = tok.end();
     }
     let text = |r: Range<usize>| src[r].to_string();
     let fill = |exp: &mut Expected, r: Range<usize>, w: Want| {
