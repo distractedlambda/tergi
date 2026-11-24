@@ -67,12 +67,13 @@ run "localhost/tergi-reference-$name" "$here/$name/prepare" "$work"
 
 # The named volumes keep the crates and the build between runs. The target
 # directory is a volume rather than the project's, which is mounted read
-# only here.
+# only here. Runs from different checkouts at the same time need their own
+# target volumes, which TERGI_TARGET_VOLUME names.
 echo "== Lexing them with tergi"
 "$podman" run --rm \
     -v "$root:$root:ro" -v "$work:$work" -w "$root" \
     -v tergi-cargo-registry:/usr/local/cargo/registry \
-    -v tergi-cargo-target:"$root/target" \
+    -v "${TERGI_TARGET_VOLUME:-tergi-cargo-target}":"$root/target" \
     -e LEX_FILES="$work/files.txt" -e LEX_OUT="$work/tokens" \
     localhost/tergi-dev \
     cargo test --release --locked --lib highlight::reference::dump_tokens \
