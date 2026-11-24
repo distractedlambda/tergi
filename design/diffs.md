@@ -768,22 +768,27 @@ isn't empty sets how far, unless the header gives a number, as in `|2`.
 At the top level, saphyr-parser and libyaml count that number from
 column 0, and so do we. The spec counts it from column -1.
 
-A plain scalar or a quoted one is a key when a `:` follows it on the
-same line. The scanner finds keys the same way. It remembers where a
-key could start, and when a `:` comes, it marks what came after that
-place as a key. A `:` is only a value indicator when a space or the
-end of the line follows it, except inside a flow collection, where a
-flow indicator can follow it too. There, a `:` can also come right
-after a quoted scalar or a closing bracket, as in `{"a":1}`. The first
-node of each entry in a flow mapping is a key even without a `:`, and
-so is the node after a `?`.
+A plain scalar or a quoted one is a key when a `:` follows it. Outside
+of flow collections, the `:` has to be on the same line, within 1024
+characters. Inside one, it can come any number of lines later. The
+scanner finds keys the same way. It remembers where a key could start,
+and when a `:` comes, it marks what came after that place as a key. A
+`:` is only a value indicator when a space or the end of the line
+follows it, except inside a flow collection, where a flow indicator
+can follow it too. There, a `:` can also come right after a quoted
+scalar or a closing bracket, as in `{"a":1}`. The first node of each
+entry in a flow mapping is a key even without a `:`, and so is the node
+after a `?`.
 
 Keys are identifiers, as in TOML, and the quotes of a quoted key are
-plain. A quoted key that goes on over several lines gets the string
-color instead, since its name would be split over several tokens.
-Values get the color of their type in YAML 1.2's core schema. So
-`1.5`, `0x1F` and `.inf` get the number color, `true`, `null` and `~`
-get the constant color, and other plain scalars get the string color.
+plain. A plain key that goes on over several lines is an identifier on
+each line. A quoted one gets the string color instead, since its name
+would be split over several tokens. Values get the color of their type
+in YAML 1.2's core schema. So `1.5`, `0x1F` and `.inf` get the number
+color, `true`, `null` and `~` get the constant color, and other plain
+scalars get the string color. A plain scalar that goes on over several
+lines is always a string, since its value joins the lines with spaces.
+So in `a: 1` followed by an indented `b`, the `1` is a string.
 Quoted scalars and the lines of block scalars get the string color,
 and escapes such as `\n` in double quotes and `''` in single quotes get
 the escape color. Indicators such as `-`, `:`, brackets, block scalar
@@ -792,14 +797,8 @@ color. Anchors and aliases get the attribute color, tags get the type
 color, and the names of directives such as `%YAML` get the keyword
 color.
 
-The colors of a line never depend on the lines after it. A key has to
-end on the line it starts on, so that rule mostly holds by itself. The
-exception is a plain scalar that goes on over several lines. Its value
-joins the lines with spaces, so it's always a string, but we can't
-know that on its first line. So the first line gets the color of its
-own text, and the other lines get the string color. A quoted scalar
-that never closes goes on to the end of the file, or to the next
-document marker.
+A quoted scalar that never closes goes on to the end of the file, or
+to the next document marker.
 
 ### Markdown
 
@@ -1717,11 +1716,8 @@ leave that column blank.
   agreed on a million streams while we wrote the lexer. We also ran
   the same check on the inputs of the YAML test suite and on the YAML
   files of Ansible, the Kubernetes examples and the OpenAPI
-  specification, and they agreed on all of them. On those files,
-  cutting the text after a line never changed the colors of the lines
-  before it. `dev/reference/yaml` runs that check on the 2,985 of
-  those files that saphyr-parser reads, but not the one that cuts the
-  text.
+  specification, and they agreed on all of them. `dev/reference/yaml`
+  runs that check on the 2,985 of those files that saphyr-parser reads.
 - `src/highlight/markdown.rs` has examples for each kind of Markdown
   block and inline construct. Its property test builds random documents
   from nested block quotes, lists, tables, code blocks, HTML and text
@@ -1785,9 +1781,6 @@ leave that column blank.
   color, but numbers, `true` and `false` are plain. A
   nested array that starts a line there, as in `[1, 2],`, gets the
   color of a table header.
-- A YAML plain scalar that goes on over several lines gets the color of
-  its first line's text there. So in `a: 1` followed by an indented
-  `b`, the `1` is a number, although the value is the string `1 b`.
 - YAML 1.1 readers, such as PyYAML and older versions of go-yaml, read
   `yes`, `no`, `on` and `off` as booleans. YAML 1.2 doesn't, and we
   follow it, so they get the string color.
