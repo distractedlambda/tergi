@@ -142,7 +142,6 @@ fn check_scalar(
         r.end = r.end.min(j + 1);
     }
     covered[r.clone()].fill(true);
-    let first_end = text[i..r.end].find('\n').map_or(r.end, |n| i + n);
     for j in i..r.end {
         if is_space(b[j]) {
             continue;
@@ -160,12 +159,10 @@ fn check_scalar(
                     kinds[j] == Some(Kind::Identifier)
                 }
             }
-            ScalarStyle::Plain if j < first_end => {
-                kinds[j] == Some(resolve(text[i..first_end].trim_end()))
-            }
-            ScalarStyle::Plain | ScalarStyle::Literal | ScalarStyle::Folded => {
-                kinds[j] == Some(Kind::String)
-            }
+            // A plain scalar over several lines is a string, since its
+            // lines are joined with spaces.
+            ScalarStyle::Plain => kinds[j] == Some(resolve(value)),
+            ScalarStyle::Literal | ScalarStyle::Folded => kinds[j] == Some(Kind::String),
             ScalarStyle::SingleQuoted | ScalarStyle::DoubleQuoted => {
                 matches!(kinds[j], Some(Kind::String | Kind::Escape))
             }

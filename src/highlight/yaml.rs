@@ -13,9 +13,8 @@
 //! type that YAML's core schema gives them, so `1.5` is a number, `true`
 //! and `null` are constants, and other plain scalars are strings.
 //!
-//! Lines that come after a line never change its colors. So a plain
-//! scalar that goes on over several lines gets the color of its first
-//! line's text on that line, and the string color on the others.
+//! A plain scalar that goes on over several lines is always a string,
+//! since its lines are joined with spaces.
 
 use std::cell::Cell;
 use std::ops::Range;
@@ -444,14 +443,12 @@ impl Lexer<'_> {
     /// A `:` that ends a key.
     fn value(&mut self, column: usize) {
         let level = self.level();
-        // A key has to end on the line it starts on, and within 1024
-        // characters. Keys in flow mappings can go on over several lines,
-        // but we keep to one so that a `:` never changes the colors of the
-        // lines before it. The first node of an entry in a flow mapping is
-        // plain anyway.
+        // Outside of flow collections, a key has to end on the line it
+        // starts on, and within 1024 characters. Inside one, the scanner
+        // has no limit.
         let key = self.keys[level]
             .take()
-            .filter(|k| k.line == self.line && self.pos <= k.pos + 1024);
+            .filter(|k| level > 0 || k.line == self.line && self.pos <= k.pos + 1024);
         if let Some(key) = key {
             self.mark_key(key.tok, level);
             self.roll(key.column);
@@ -466,7 +463,9 @@ impl Lexer<'_> {
 
     /// Make the scalar at flow level `level` among the tokens from `from`
     /// on a key, which is an identifier. A quoted key's quotes are plain.
-    /// The key has to be on one line, so that the name is one token.
+    /// A plain key over several lines is an identifier on each line. A
+    /// quoted one stays a string, since its name would be split over
+    /// several tokens.
     fn mark_key(&mut self, from: usize, level: usize) {
         let Some(i) = (from..self.out.len()).find(|&i| self.out[i].scalar == Some(level)) else {
             return;
@@ -479,18 +478,27 @@ impl Lexer<'_> {
         // The key is the one scalar that starts there. Later scalars at
         // the same level, as after a nested flow collection, aren't part
         // of it.
-        let mut end = 0;
-        for t in self.out[i..]
-            .iter_mut()
+        let n = self.out[i..]
+            .iter()
             .take_while(|t| t.scalar == Some(level))
-        {
-            end = t.r.end;
+            .count();
+        let mut r = self.out[i].r.start..self.out[i + n - 1].r.end;
+        let quote = self.s[r.start];
+        let quoted = quote == b'"' || quote == b'\'';
+        if self.s[r.clone()].iter().any(|&b| is_break(b)) {
+            if !quoted {
+                for t in &mut self.out[i..i + n] {
+                    t.kind = Some(Kind::Identifier);
+                }
+            }
+            return;
+        }
+        for t in &mut self.out[i..i + n] {
             t.kind = None;
         }
-        let mut r = self.out[i].r.start..end;
-        if let q @ (b'"' | b'\'') = self.s[r.start] {
+        if quoted {
             r.start += 1;
-            if r.end > r.start && self.s[r.end - 1] == q {
+            if r.end > r.start && self.s[r.end - 1] == quote {
                 r.end -= 1;
             }
         }
@@ -653,7 +661,8 @@ impl Lexer<'_> {
         // Lines after the first have to be indented more than the block
         // collection the scalar is in.
         let min = self.indent() + 1;
-        let mut lines = 0;
+        // The text of the scalar on each line before the one we're on.
+        let mut lines = Vec::new();
         // The text of the scalar on the line we're on.
         let mut seg: Option<Range<usize>> = None;
         loop {
@@ -683,39 +692,31 @@ impl Lexer<'_> {
                 }
             }
             if broke {
-                if let Some(r) = seg.take() {
-                    self.plain_line(r, key, lines == 0);
-                    lines += 1;
-                }
+                lines.extend(seg.take());
                 self.allowed = true;
                 if !flow && (self.column() as isize) < min {
                     break;
                 }
             }
         }
-        if let Some(r) = seg {
-            self.plain_line(r, key, lines == 0);
-        }
-    }
-
-    fn plain_line(&mut self, r: Range<usize>, key: bool, first: bool) {
-        let kind = if key {
-            Some(Kind::Identifier)
-        } else if !first {
-            // Lines are joined with spaces, and no value in the schema
-            // holds one.
-            Some(Kind::String)
-        } else {
+        lines.extend(seg);
+        let kind = match &lines[..] {
+            _ if key => Kind::Identifier,
             // The bytes are on character boundaries, since the scalar only
             // stops at ASCII.
-            let text = std::str::from_utf8(&self.s[r.clone()]).unwrap_or("");
-            Some(resolve(text))
+            [r] => resolve(std::str::from_utf8(&self.s[r.clone()]).unwrap_or("")),
+            // Lines are joined with spaces, and no value in the schema
+            // holds one.
+            _ => Kind::String,
         };
-        self.out.push(Tok {
-            r,
-            kind,
-            scalar: Some(self.level()),
-        });
+        let level = self.level();
+        for r in lines {
+            self.out.push(Tok {
+                r,
+                kind: Some(kind),
+                scalar: Some(level),
+            });
+        }
     }
 
     /// Whether the byte at `pos` can go on a plain scalar. A `:` followed
@@ -903,9 +904,18 @@ jobs:
         // its name would be split over several tokens.
         assert_eq!(kinds_of("{\"a\n b\": 1}", Kind::String), ["\"a\n b\""]);
         // A `:` needs a space after it outside of flow collections, and a
-        // key has to end on its own line.
+        // key there has to end on its own line, within 1024 characters.
         assert_eq!(kinds_of("a:b\nc\n: d", Kind::String), ["a:b", "c", "d"]);
         assert_eq!(identifiers("a:b\nc\n: d"), [] as [&str; 0]);
+        let long = "k".repeat(1030);
+        assert_eq!(identifiers(&format!("{long}: v")), [] as [&str; 0]);
+        // Inside a flow collection, a key can be longer, and it can go on
+        // over several lines, each of which is an identifier. The scanner
+        // reads one over several lines in a flow sequence too, although
+        // the parser then rejects it.
+        assert_eq!(identifiers(&format!("[{long}: v]")), [&*long]);
+        assert_eq!(identifiers("{a\n b\n : c}"), ["a", "b"]);
+        assert_eq!(identifiers("[a\n b: c]"), ["a", "b"]);
         // Inside a flow collection used as a key, words are values.
         assert_eq!(kinds_of("[a, b]: c", Kind::String), ["a", "b", "c"]);
         assert_eq!(identifiers("[a, b]: c"), [] as [&str; 0]);
@@ -913,13 +923,14 @@ jobs:
 
     #[test]
     fn plain_scalars_go_on_over_lines() {
-        // Lines after the first are strings, and the scalar ends at a
-        // line that isn't indented enough, at a comment, and at `: `.
+        // The lines are joined with spaces, so the scalar is a string
+        // even when its first line looks like a number. It ends at a line
+        // that isn't indented enough, at a comment, and at `: `.
         assert_eq!(
-            tokens("a: 1\n  2 # c\nb: x\n y\nz\n- p\n  q: r"),
+            tokens("a: 1\n  2 # c\nb: x\n y\nz\n- p\n  q: r\ns: 3\n\nt: 4"),
             [
                 (":", Kind::Punctuation),
-                ("1", Kind::Number),
+                ("1", Kind::String),
                 ("2", Kind::String),
                 ("# c", Kind::Comment),
                 (":", Kind::Punctuation),
@@ -931,8 +942,15 @@ jobs:
                 ("q", Kind::String),
                 (":", Kind::Punctuation),
                 ("r", Kind::String),
+                (":", Kind::Punctuation),
+                ("3", Kind::Number),
+                (":", Kind::Punctuation),
+                ("4", Kind::Number),
             ]
         );
+        // The same goes for a scalar in a flow collection.
+        assert_eq!(kinds_of("[true\n , 1\n 2]", Kind::Constant), ["true"]);
+        assert_eq!(kinds_of("[true\n , 1\n 2]", Kind::String), ["1", "2"]);
         // A `#` without a space before it is part of the scalar.
         assert_eq!(tokens("a#b"), [("a#b", Kind::String)]);
     }
@@ -1368,7 +1386,6 @@ d: |
             r.end = r.end.min(j + 1);
         }
         covered[r.clone()].fill(true);
-        let first_end = text[i..r.end].find('\n').map_or(r.end, |n| i + n);
         for j in i..r.end {
             if is_space(b[j]) {
                 continue;
@@ -1386,12 +1403,10 @@ d: |
                         kinds[j] == Some(Kind::Identifier)
                     }
                 }
-                ScalarStyle::Plain if j < first_end => {
-                    kinds[j] == Some(resolve(text[i..first_end].trim_end()))
-                }
-                ScalarStyle::Plain | ScalarStyle::Literal | ScalarStyle::Folded => {
-                    kinds[j] == Some(Kind::String)
-                }
+                // A plain scalar over several lines is a string, since its
+                // lines are joined with spaces.
+                ScalarStyle::Plain => kinds[j] == Some(resolve(value)),
+                ScalarStyle::Literal | ScalarStyle::Folded => kinds[j] == Some(Kind::String),
                 ScalarStyle::SingleQuoted | ScalarStyle::DoubleQuoted => {
                     matches!(kinds[j], Some(Kind::String | Kind::Escape))
                 }
