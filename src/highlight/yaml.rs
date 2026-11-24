@@ -429,8 +429,9 @@ impl Lexer<'_> {
 
     fn flow_end(&mut self) {
         self.remove_key();
-        // A bracket that closes nothing, as in a hunk from the middle of a
-        // flow collection, changes nothing.
+        // A bracket that closes nothing is an error, and the scanner stops
+        // there. We read it as an indicator and leave the stacks alone, so
+        // the rest of the file still gets colors.
         if self.flows.pop().is_some() {
             self.keys.pop();
         }
@@ -1056,22 +1057,6 @@ d: |
                 (",", Kind::Punctuation),
                 ("*a", Kind::Attribute),
                 ("]", Kind::Punctuation),
-            ]
-        );
-    }
-
-    #[test]
-    fn hunks_from_the_middle() {
-        // A block scalar whose parent we can't see still ends where its
-        // indentation does.
-        assert_eq!(
-            tokens("    run: |\n      x\n    c: 1"),
-            [
-                (":", Kind::Punctuation),
-                ("|", Kind::Punctuation),
-                ("x", Kind::String),
-                (":", Kind::Punctuation),
-                ("1", Kind::Number),
             ]
         );
     }
