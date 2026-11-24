@@ -85,7 +85,6 @@ enum Names {
 }
 
 /// The tokenizer's and the parser's state between tokens.
-#[derive(Clone)]
 struct Parser {
     expect: Expect,
     names: Names,
@@ -422,18 +421,6 @@ impl<'a> Lexer<'a, '_> {
         let start = self.i;
         let w = read_string(self.b, start);
         if w.error {
-            // An error on a later line can't change the colors of the
-            // lines before it. They get the colors that they get when the
-            // text ends before the error's line.
-            let line = self.b[..w.end]
-                .iter()
-                .rposition(|&c| c == b'\n')
-                .map_or(0, |n| n + 1);
-            if line > start {
-                let saved = p.clone();
-                self.within(line, |l| l.word(p));
-                *p = saved;
-            }
             // Fish drops what it read of the word and returns the
             // character as an error.
             self.i = w.end + 1;
@@ -1719,6 +1706,10 @@ end
         assert_eq!(tokens(r#"a "(b)""#), [(r#""(b)""#, String)]);
         // A `)` that closes nothing is an error, and fish drops the word.
         assert_eq!(identifiers("echo a)b c"), ["echo", "b"]);
+        // That goes for a word over several lines too, and the word after
+        // the error is read as usual.
+        assert_eq!(tokens("echo $(a\nb } c"), [] as [(&str, Kind); 0]);
+        assert_eq!(identifiers("echo $(a\nb } c"), ["echo", "c"]);
         // Inside parentheses, blanks and line feeds don't end the word.
         assert_eq!(identifiers("echo (a\nb) c"), ["echo", "a", "b"]);
     }
@@ -1769,20 +1760,6 @@ end
             ]
         );
         assert_eq!(identifiers("a {b, #$c $(d) } } {e,f}"), ["a", "c"]);
-    }
-
-    #[test]
-    fn errors_on_later_lines() {
-        use Kind::*;
-        // Fish drops a word with an error in it, but the lines before the
-        // error's line keep the colors they get without it. The word after
-        // the error is read as usual.
-        assert_eq!(tokens("echo $(a\nb } c"), [("$(", Punctuation)]);
-        assert_eq!(identifiers("echo $(a\nb } c"), ["echo", "a", "c"]);
-        assert_eq!(
-            tokens("> a[$(b)\n}"),
-            [(">", Operator), ("$(", Punctuation), (")", Punctuation)]
-        );
     }
 
     #[test]
