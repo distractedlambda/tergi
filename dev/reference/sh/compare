@@ -23,9 +23,8 @@ here-document, when it runs them. So tergi's keywords and comments there
 have nothing to compare with. Two more differences are known:
 
 - Bash's positions slip when it reads past a line continuation to see
-  where a token ends, so tokens next to one aren't checked. tergi ends a
-  plain word or an operator at a continuation, so files where bash joins
-  one to the next line aren't checked at all.
+  where a token ends, so tokens next to one aren't checked. That
+  includes a word or an operator that bash joins over one.
 - tergi colors all of a here-document's delimiter, even a command
   substitution in it, so bash's tokens inside one aren't checked.
 
@@ -79,25 +78,13 @@ def tokens(path):
     return [(int(s), int(e), k) for s, e, k in (l.split() for l in path.read_text().splitlines())]
 
 
-def joins(text):
-    """Whether a line continuation joins two parts of a word or an
-    operator."""
-    i = text.find(CONTINUATION)
-    while i >= 0:
-        if i > 0 and text[i - 1:i] not in b" \t\n" and text[i + 2:i + 3] not in b" \t\n":
-            return True
-        i = text.find(CONTINUATION, i + 2)
-    return False
-
-
 def check(n):
     """The disagreements in file n, as (kind, line, message), or None if
     the file can't be checked."""
     text = paths[n].read_bytes()
     tok = work / "tokens" / f"{n}.tok"
-    # The file isn't UTF-8, or a word or an operator goes on over a line
-    # continuation.
-    if not tok.exists() or joins(text):
+    # The file isn't UTF-8.
+    if not tok.exists():
         return None
     kinds = [None] * (len(text) + 1)
     for s, e, k in tokens(tok):
@@ -160,10 +147,11 @@ def check(n):
         j = i
         while j < len(text) and kinds[j] == k:
             j += 1
-        # Bash's position for a keyword right before a continuation
-        # slipped, so it wasn't marked above.
+        # Bash's position for a keyword next to a continuation slipped,
+        # so it wasn't marked above. That includes the parts of a keyword
+        # that goes on over one.
         if not skip[i] and k == "Keyword" and not all(reserved[i:j]) \
-                and text[j:j + 2] != CONTINUATION:
+                and text[j:j + 2] != CONTINUATION and text[max(i - 2, 0):i] != CONTINUATION:
             found.append(("extra keyword", i, f"{text[i:j]!r}"))
         if not skip[i] and k == "Comment" and not all(comment[i:j]):
             found.append(("extra comment", i, f"{text[i:j][:40]!r}"))

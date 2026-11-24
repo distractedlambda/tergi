@@ -9,10 +9,14 @@
 //! `subst.c` reads them later, and the text of an expansion such as
 //! `$(...)` is lexed as commands of its own.
 //!
-//! The colors of a line never depend on the lines after it. Where bash
-//! looks further ahead, as for `((` and `a[i]=`, the lexer only looks to
-//! the end of the line.
+//! Bash removes each line continuation, a `\` before a line break, as it
+//! reads the text, so a word or an operator can go on on the next line.
+//! It doesn't remove them in single quotes, in comments or in the body of
+//! a here-document whose delimiter is quoted. So the lexer reads a copy of
+//! the text without them, in `Joined`, and reads those three from the
+//! text itself.
 
+use std::borrow::Cow;
 use std::ops::Range;
 
 use super::{Kind, Tokens};
@@ -22,15 +26,111 @@ use super::{Kind, Tokens};
 const MAX_DEPTH: usize = 64;
 
 pub fn lex(text: &str, out: &mut Tokens) {
+    let joined = Joined::new(text);
     let mut lexer = Lexer {
-        text,
-        b: text.as_bytes(),
+        raw: text,
+        joined: &joined,
+        b: joined.text.as_bytes(),
         i: 0,
         out,
         heredocs: Vec::new(),
         depth: 0,
     };
     lexer.commands(End::Eof);
+    if joined.src.is_empty() {
+        return;
+    }
+    // The line continuations that bash removed get the escape color,
+    // unless they're part of a token that bash read them in.
+    let mut last = 0;
+    let mut src = joined.src.iter().peekable();
+    for (r, kind) in std::mem::take(&mut out.0) {
+        while let Some(&&c) = src.peek()
+            && c < r.end
+        {
+            if c >= last && c + 2 <= r.start {
+                out.push(c..c + 2, Kind::Escape);
+            }
+            src.next();
+        }
+        last = r.end;
+        out.push(r, kind);
+    }
+    for &c in src {
+        if c >= last {
+            out.push(c..c + 2, Kind::Escape);
+        }
+    }
+}
+
+/// The text as bash reads it, without the line continuations that it
+/// removes, and where those were.
+struct Joined<'a> {
+    text: Cow<'a, str>,
+    /// For each line continuation, where the character after it is in
+    /// `text`.
+    at: Vec<usize>,
+    /// For each line continuation, where it is in the source.
+    src: Vec<usize>,
+}
+
+impl<'a> Joined<'a> {
+    fn new(source: &'a str) -> Joined<'a> {
+        let mut joined = Joined {
+            text: Cow::Borrowed(source),
+            at: Vec::new(),
+            src: Vec::new(),
+        };
+        if !source.contains("\\\n") {
+            return joined;
+        }
+        let b = source.as_bytes();
+        let mut text = String::with_capacity(source.len());
+        let mut copied = 0;
+        // The number of backslashes right before `i`. A backslash after
+        // an odd number of them is escaped, so it doesn't start a line
+        // continuation.
+        let mut backslashes = 0;
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'\\' && b.get(i + 1) == Some(&b'\n') && backslashes % 2 == 0 {
+                text.push_str(&source[copied..i]);
+                joined.at.push(text.len());
+                joined.src.push(i);
+                i += 2;
+                copied = i;
+                backslashes = 0;
+                continue;
+            }
+            backslashes = if b[i] == b'\\' { backslashes + 1 } else { 0 };
+            i += 1;
+        }
+        text.push_str(&source[copied..]);
+        joined.text = Cow::Owned(text);
+        joined
+    }
+
+    /// Where the character at `i` in `text` is in the source.
+    fn src(&self, i: usize) -> usize {
+        i + 2 * self.at.partition_point(|&a| a <= i)
+    }
+
+    /// Where the text up to `i` ends in the source.
+    fn src_end(&self, i: usize) -> usize {
+        i + 2 * self.at.partition_point(|&a| a < i)
+    }
+
+    /// Where the character at `p` in the source is in `text`. A line
+    /// continuation at `p` stands for the character after it.
+    fn pos(&self, p: usize) -> usize {
+        p - 2 * self.src.partition_point(|&s| s < p)
+    }
+
+    /// Whether `p` in the source is the start of a line continuation that
+    /// bash removes.
+    fn removed(&self, p: usize) -> bool {
+        self.src.binary_search(&p).is_ok()
+    }
 }
 
 /// The tokens that the parser tells apart, as far as recognizing words
@@ -379,10 +479,11 @@ struct Mark {
 }
 
 struct Lexer<'a, 'o> {
-    text: &'a str,
-    /// The part of the text that can be read now. It's shorter than
-    /// `text` inside backquotes and here-documents, and while reading
-    /// ahead to the end of a line.
+    /// The source, which has the line continuations.
+    raw: &'a str,
+    joined: &'a Joined<'a>,
+    /// The part of the joined text that can be read now. It's shorter
+    /// than the whole inside backquotes and here-documents.
     b: &'a [u8],
     i: usize,
     out: &'o mut Tokens,
@@ -397,8 +498,33 @@ impl<'a> Lexer<'a, '_> {
         self.b.get(i).copied()
     }
 
+    /// Color the range `r` of the joined text. The line continuations
+    /// inside it keep their own color.
     fn push(&mut self, r: Range<usize>, kind: Kind) {
-        self.out.push(r, kind);
+        let j = self.joined;
+        let mut s = r.start;
+        let first = j.at.partition_point(|&a| a <= s);
+        for &a in &j.at[first..] {
+            if a >= r.end {
+                break;
+            }
+            if a > s {
+                self.out.push(j.src(s)..j.src_end(a), kind);
+                s = a;
+            }
+        }
+        self.out.push(j.src(s)..j.src_end(r.end), kind);
+    }
+
+    /// Where the part of the text that can be read now ends in the
+    /// source.
+    fn src_limit(&self) -> usize {
+        self.joined.src(self.b.len())
+    }
+
+    /// The part of the source that can be read now.
+    fn raw_bytes(&self) -> &'a [u8] {
+        &self.raw.as_bytes()[..self.src_limit()]
     }
 
     /// Color `n` bytes from the current position with `kind`, if any, and
@@ -413,22 +539,7 @@ impl<'a> Lexer<'a, '_> {
 
     /// The length of the character at `i`, from its first byte.
     fn char_len(&self, i: usize) -> usize {
-        let n = match self.b[i] {
-            0xf0.. => 4,
-            0xe0.. => 3,
-            0xc0.. => 2,
-            _ => 1,
-        };
-        n.min(self.b.len() - i)
-    }
-
-    /// The position of the line break that ends the line at `i`, or the
-    /// end of the text.
-    fn line_end(&self, i: usize) -> usize {
-        self.b[i..]
-            .iter()
-            .position(|&c| c == b'\n')
-            .map_or(self.b.len(), |n| i + n)
+        char_len(self.b, i)
     }
 
     fn mark(&self) -> Mark {
@@ -470,7 +581,12 @@ impl<'a> Lexer<'a, '_> {
             let i = self.i;
             let Some(c) = self.at(i) else { break };
             match c {
-                b'#' => self.comment(),
+                b'#' => {
+                    if self.comment() {
+                        st.push(Tok::Newline);
+                        self.here_documents(end);
+                    }
+                }
                 b'\n' => {
                     self.i += 1;
                     st.push(Tok::Newline);
@@ -509,22 +625,32 @@ impl<'a> Lexer<'a, '_> {
         }
     }
 
-    /// Skip spaces, tabs and line continuations.
+    /// Skip spaces and tabs.
     fn blanks(&mut self) {
-        loop {
-            match (self.at(self.i), self.at(self.i + 1)) {
-                (Some(b' ' | b'\t'), _) => self.i += 1,
-                (Some(b'\\'), Some(b'\n')) => self.take(2, Some(Kind::Escape)),
-                _ => return,
-            }
+        while matches!(self.at(self.i), Some(b' ' | b'\t')) {
+            self.i += 1;
         }
     }
 
-    fn comment(&mut self) {
-        let i = self.i;
-        let end = self.line_end(i);
-        self.out.push_comment(self.text, i..end);
-        self.i = end;
+    /// Read a comment. Bash doesn't remove a line continuation in one, so
+    /// a comment can end at one. Return whether it did, which means that
+    /// the line break after it has been read too.
+    fn comment(&mut self) -> bool {
+        let j = self.joined;
+        let b = self.raw_bytes();
+        let start = j.src(self.i);
+        let end = b[start..]
+            .iter()
+            .position(|&c| c == b'\n')
+            .map_or(b.len(), |n| start + n);
+        self.out.push_comment(self.raw, start..end);
+        if end > 0 && j.removed(end - 1) {
+            self.i = j.pos(end + 1);
+            true
+        } else {
+            self.i = j.pos(end);
+            false
+        }
     }
 
     fn operator(&mut self, st: &mut State) {
@@ -568,29 +694,22 @@ impl<'a> Lexer<'a, '_> {
 
     /// If the `((` here starts an arithmetic command, read it. Bash reads
     /// it as a subshell inside a subshell if the `)` that matches the
-    /// second `(` doesn't have another `)` right after it. We only look
-    /// for that `)` on this line, and guess arithmetic when it isn't
-    /// there.
+    /// second `(` doesn't have another `)` right after it. Bash reads
+    /// that one without removing a line continuation before it. When
+    /// there's no `)` at all, which is an error, we guess arithmetic.
     fn arith_command(&mut self) -> bool {
-        let start = self.i;
-        let line_end = self.line_end(start);
         let m = self.mark();
         self.take(2, Some(Kind::Punctuation));
-        let closed = self.within(line_end, |l| l.arith(ArithEnd::Parens(1)));
-        if closed {
-            if self.at(self.i) == Some(b')') {
-                self.take(1, Some(Kind::Punctuation));
-                return true;
-            }
-            self.reset(m);
-            return false;
+        if !self.arith(ArithEnd::Parens(1)) {
+            return true;
+        }
+        let after = self.joined.src_end(self.i);
+        if self.at(self.i) == Some(b')') && self.raw.as_bytes().get(after) == Some(&b')') {
+            self.take(1, Some(Kind::Punctuation));
+            return true;
         }
         self.reset(m);
-        self.take(2, Some(Kind::Punctuation));
-        if self.arith(ArithEnd::Parens(1)) && self.at(self.i) == Some(b')') {
-            self.take(1, Some(Kind::Punctuation));
-        }
-        true
+        false
     }
 
     /// If all of the word at `i` stands for itself, without quotes,
@@ -603,11 +722,6 @@ impl<'a> Lexer<'a, '_> {
             .unwrap_or(rest.len());
         match rest.get(n) {
             None => {}
-            // Bash removes a line continuation before it reads a word, so
-            // the word can go on on the next line. We can't look there, so
-            // a continuation ends a plain word. People write one after a
-            // blank, or before a line that starts with one, anyway.
-            Some(b'\\') if rest.get(n + 1) == Some(&b'\n') => {}
             Some(&c) if !is_break(c) => return None,
             // An extended pattern such as `@(a|b)`, or a process
             // substitution.
@@ -783,12 +897,9 @@ impl<'a> Lexer<'a, '_> {
             _ => 0,
         };
         if self.at(self.i) == Some(b'[') {
-            // The `]` can be on a later line, but we only color the
-            // subscript when it's on this one.
             let open = self.i;
-            let line_end = self.line_end(open);
             self.take(1, Some(Kind::Punctuation));
-            if !self.within(line_end, |l| l.arith(ArithEnd::Subscript)) || op(self) == 0 {
+            if !self.arith(ArithEnd::Subscript) || op(self) == 0 {
                 self.reset(m);
                 if !command {
                     return Assignment::No;
@@ -821,7 +932,9 @@ impl<'a> Lexer<'a, '_> {
             let Some(c) = self.at(i) else { return };
             match c {
                 b'\n' => self.i += 1,
-                b'#' => self.comment(),
+                b'#' => {
+                    self.comment();
+                }
                 b')' => {
                     self.take(1, Some(Kind::Punctuation));
                     return;
@@ -852,8 +965,13 @@ impl<'a> Lexer<'a, '_> {
         self.parts(false);
         let end = self.i;
         self.reset(m);
-        self.take(end - start, Some(Kind::Attribute));
-        let (delimiter, quoted) = quote_removal(&self.b[start..end]);
+        self.i = end;
+        // Bash keeps the line continuations in single quotes, so quote
+        // removal needs the source.
+        let j = self.joined;
+        let src = j.src(start)..j.src_end(end);
+        self.out.push(src.clone(), Kind::Attribute);
+        let (delimiter, quoted) = quote_removal(&self.raw.as_bytes()[src]);
         self.heredocs.push(Heredoc {
             delimiter,
             strip_tabs,
@@ -873,54 +991,33 @@ impl<'a> Lexer<'a, '_> {
             End::Brace => Some(b'}'),
         };
         for (n, doc) in pending.iter().enumerate() {
-            let body = self.i;
-            let mut line = body;
-            // Where the line that ends the body starts, where its
-            // delimiter starts and ends, and where to go on reading. That's
-            // the next line, or the rest of the delimiter's line when a
-            // `)` on it ends the command substitution.
-            let mut stop = None;
-            let mut rest_of_line = false;
-            while line < self.b.len() {
-                let (raw_end, text) = self.heredoc_line(line, doc.quoted);
-                let next = (raw_end + 1).min(self.b.len());
-                let d = doc.delimiter.as_slice();
-                // Bash compares the line before it strips the tabs too.
-                if doc.strip_tabs && text == d {
-                    stop = Some((line, line, raw_end, next));
-                    break;
-                }
-                let tabs = if doc.strip_tabs {
-                    text.iter().take_while(|&&c| c == b'\t').count()
-                } else {
-                    0
-                };
-                let t = &text[tabs..];
-                if t == d {
-                    stop = Some((line, line + tabs, raw_end, next));
-                    break;
-                }
-                if let Some(c) = close
-                    && t.starts_with(d)
-                    && t[d.len()..].contains(&c)
-                    && raw_end - line == text.len()
-                {
-                    let s = line + tabs;
-                    stop = Some((line, s, s + d.len(), s + d.len()));
-                    rest_of_line = true;
-                    break;
-                }
-                line = next;
-            }
-            let Some((body_end, s, e, next)) = stop else {
-                self.heredoc_body(doc, body, self.b.len());
-                self.i = self.b.len();
-                continue;
+            // Bash reads the lines of the body as they are when the
+            // delimiter is quoted, and removes line continuations
+            // otherwise, as in the joined text.
+            let j = self.joined;
+            let (b, body) = if doc.quoted {
+                (self.raw_bytes(), j.src(self.i))
+            } else {
+                (self.b, self.i)
             };
-            self.heredoc_body(doc, body, body_end);
-            self.push(s..e, Kind::Attribute);
-            self.i = next;
-            if rest_of_line {
+            let found = heredoc_end(b, body, doc, close);
+            let (body_end, next) = found
+                .as_ref()
+                .map_or((b.len(), b.len()), |f| (f.body_end, f.next));
+            if doc.quoted {
+                self.out.push(body..body_end, Kind::String);
+                if let Some(f) = &found {
+                    self.out.push(f.delimiter.clone(), Kind::Attribute);
+                }
+                self.i = j.pos(next);
+            } else {
+                self.heredoc_body(body, body_end);
+                if let Some(f) = &found {
+                    self.push(f.delimiter.clone(), Kind::Attribute);
+                }
+                self.i = next;
+            }
+            if found.is_some_and(|f| f.rest_of_line) {
                 // The other here-documents start after the next newline.
                 self.heredocs.extend_from_slice(&pending[n + 1..]);
                 return;
@@ -928,35 +1025,9 @@ impl<'a> Lexer<'a, '_> {
         }
     }
 
-    /// The line of a here-document that starts at `i`, without its line
-    /// break, and where its line break is. With an unquoted delimiter, a
-    /// backslash before a line break joins the next line to it.
-    fn heredoc_line(&self, i: usize, quoted: bool) -> (usize, Vec<u8>) {
-        let mut text = Vec::new();
-        let mut j = i;
-        while j < self.b.len() {
-            match self.b[j] {
-                b'\n' => break,
-                b'\\' if !quoted && self.at(j + 1) == Some(b'\n') => j += 2,
-                b'\\' if !quoted => {
-                    text.extend_from_slice(&self.b[j..(j + 2).min(self.b.len())]);
-                    j += 2;
-                }
-                c => {
-                    text.push(c);
-                    j += 1;
-                }
-            }
-        }
-        (j.min(self.b.len()), text)
-    }
-
-    /// Color the body of a here-document, from `start` to `end`.
-    fn heredoc_body(&mut self, doc: &Heredoc, start: usize, end: usize) {
-        if doc.quoted {
-            self.push(start..end, Kind::String);
-            return;
-        }
+    /// Color the body of a here-document with an unquoted delimiter, from
+    /// `start` to `end`.
+    fn heredoc_body(&mut self, start: usize, end: usize) {
         self.i = start;
         self.within(end, |l| {
             while let Some(c) = l.at(l.i) {
@@ -1070,13 +1141,17 @@ impl<'a> Lexer<'a, '_> {
         self.take(n, kind);
     }
 
+    /// Read a string in single quotes, from the source, because bash
+    /// doesn't remove line continuations in it.
     fn single_quote(&mut self) {
-        let i = self.i;
-        let end = self.b[i + 1..]
+        let b = self.raw_bytes();
+        let start = self.joined.src(self.i);
+        let end = b[start + 1..]
             .iter()
             .position(|&c| c == b'\'')
-            .map_or(self.b.len(), |n| i + n + 2);
-        self.take(end - i, Some(Kind::String));
+            .map_or(b.len(), |n| start + n + 2);
+        self.out.push(start..end, Kind::String);
+        self.i = self.joined.pos(end);
     }
 
     fn double_quote(&mut self) {
@@ -1096,57 +1171,63 @@ impl<'a> Lexer<'a, '_> {
     }
 
     /// Read a string such as `$'a\n'`, whose escapes are read the way
-    /// `ansicstr` in `lib/sh/strtrans.c` reads them.
+    /// `ansicstr` in `lib/sh/strtrans.c` reads them. Bash doesn't remove
+    /// line continuations inside the quotes, so we read it from the
+    /// source.
     fn ansi_c_string(&mut self) {
-        let start = self.i;
+        let b = self.raw_bytes();
+        let open = self.joined.src(self.i + 1);
+        self.take(2, Some(Kind::String));
         // A backslash quotes the character after it, so `\'` doesn't end
         // the string.
-        let mut j = start + 2;
-        while j < self.b.len() && self.b[j] != b'\'' {
-            j += if self.b[j] == b'\\' { 2 } else { 1 };
+        let mut j = open + 1;
+        while j < b.len() && b[j] != b'\'' {
+            j += if b[j] == b'\\' { 2 } else { 1 };
         }
-        let close = j.min(self.b.len());
-        self.take(2, Some(Kind::String));
-        let body = &self.b[..close];
-        while self.i < close {
-            let i = self.i;
-            if self.b[i] != b'\\' {
+        let close = j.min(b.len());
+        let body = &b[..close];
+        let mut i = open + 1;
+        while i < close {
+            if b[i] != b'\\' {
                 let n = body[i..]
                     .iter()
                     .position(|&c| c == b'\\')
                     .unwrap_or(close - i);
-                self.take(n, Some(Kind::String));
+                self.out.push(i..i + n, Kind::String);
+                i += n;
                 continue;
             }
             match ansi_escape(&body[i..]) {
                 0 => {
                     let n = if i + 1 < close {
-                        1 + self.char_len(i + 1)
+                        1 + char_len(body, i + 1)
                     } else {
                         1
                     };
-                    self.take(n.min(close - i), Some(Kind::String));
+                    self.out.push(i..i + n, Kind::String);
+                    i += n;
                 }
                 n => {
                     // `\c` takes only the first byte of the character after
                     // it.
                     let end = i + n;
-                    let end = end + self.continuation(end).min(close - end);
-                    self.take(end - i, Some(Kind::Escape));
+                    let end = end
+                        + body[end..]
+                            .iter()
+                            .take_while(|&&c| (0x80..0xc0).contains(&c))
+                            .count();
+                    self.out.push(i..end, Kind::Escape);
+                    i = end;
                 }
             }
         }
-        if self.at(close) == Some(b'\'') {
-            self.take(1, Some(Kind::String));
-        }
-    }
-
-    /// The number of continuation bytes of a character at `i`.
-    fn continuation(&self, i: usize) -> usize {
-        self.b[i..]
-            .iter()
-            .take_while(|&&c| (0x80..0xc0).contains(&c))
-            .count()
+        let end = if b.get(close) == Some(&b'\'') {
+            self.out.push(close..close + 1, Kind::String);
+            close + 1
+        } else {
+            close
+        };
+        self.i = self.joined.pos(end);
     }
 
     /// Read what a `$` starts.
@@ -1449,7 +1530,11 @@ impl<'a> Lexer<'a, '_> {
                     self.i += 1;
                     self.here_documents(end);
                 }
-                b'#' => self.comment(),
+                b'#' => {
+                    if self.comment() {
+                        self.here_documents(end);
+                    }
+                }
                 // Bash reads a regular expression as a word before it
                 // looks for operators, and `(` and `|` don't end it.
                 _ if expect == (Expect::Right { regex: true })
@@ -1515,6 +1600,78 @@ impl<'a> Lexer<'a, '_> {
             }
         }
     }
+}
+
+/// The length of the character at `i` in `b`, from its first byte.
+fn char_len(b: &[u8], i: usize) -> usize {
+    let n = match b[i] {
+        0xf0.. => 4,
+        0xe0.. => 3,
+        0xc0.. => 2,
+        _ => 1,
+    };
+    n.min(b.len() - i)
+}
+
+/// Where a here-document's body ends, as `heredoc_end` finds it.
+struct BodyEnd {
+    /// Where the line that ends the body starts.
+    body_end: usize,
+    /// Where the delimiter is on that line.
+    delimiter: Range<usize>,
+    /// Where to go on reading. That's the next line, or the rest of the
+    /// delimiter's line when a `)` on it ends the command substitution.
+    next: usize,
+    rest_of_line: bool,
+}
+
+/// Find the line that ends the body of a here-document, which starts at
+/// `body` in `b`. In a command substitution, `close` is the character
+/// that ends it.
+fn heredoc_end(b: &[u8], body: usize, doc: &Heredoc, close: Option<u8>) -> Option<BodyEnd> {
+    let d = doc.delimiter.as_slice();
+    let mut line = body;
+    while line < b.len() {
+        let end = b[line..]
+            .iter()
+            .position(|&c| c == b'\n')
+            .map_or(b.len(), |n| line + n);
+        let next = (end + 1).min(b.len());
+        let text = &b[line..end];
+        let found = |delimiter: Range<usize>| BodyEnd {
+            body_end: line,
+            delimiter,
+            next,
+            rest_of_line: false,
+        };
+        // Bash compares the line before it strips the tabs too.
+        if doc.strip_tabs && text == d {
+            return Some(found(line..end));
+        }
+        let tabs = if doc.strip_tabs {
+            text.iter().take_while(|&&c| c == b'\t').count()
+        } else {
+            0
+        };
+        let t = &text[tabs..];
+        if t == d {
+            return Some(found(line + tabs..end));
+        }
+        if let Some(c) = close
+            && t.starts_with(d)
+            && t[d.len()..].contains(&c)
+        {
+            let s = line + tabs;
+            return Some(BodyEnd {
+                body_end: line,
+                delimiter: s..s + d.len(),
+                next: s + d.len(),
+                rest_of_line: true,
+            });
+        }
+        line = next;
+    }
+    None
 }
 
 /// `shell_break_chars` in `syntax.h`: the characters that end a word.
@@ -1765,10 +1922,12 @@ done
             kinds_of("if a; then echo if then; fi", Kind::Keyword),
             ["if", "then", "fi"]
         );
-        // A line continuation ends a plain word.
+        // Bash removes a line continuation before it reads words, so a
+        // reserved word can go on over one, and one that goes on into
+        // another word isn't one any more.
         assert_eq!(
-            kinds_of("if\\\n a; then\\\n b; fi", Kind::Keyword),
-            ["if", "then", "fi"]
+            kinds_of("i\\\nf a; then\\\nx; fi", Kind::Keyword),
+            ["i", "f", "fi"]
         );
         // Not after an assignment, and not when any of it is quoted.
         assert_eq!(
@@ -1860,6 +2019,48 @@ done
         );
         // Quotes that don't close go on to the end.
         assert_eq!(tokens("a 'b\nc"), [("'b\nc", String)]);
+    }
+
+    #[test]
+    fn line_continuations() {
+        use Kind::*;
+        // Bash removes them before it reads operators, so `>` and `&` on
+        // the next line are `>&`, and the word goes on after one. An
+        // escaped backslash doesn't start one.
+        assert_eq!(
+            tokens("a >\\\n&2 b\\\n#c \\\\\n#d"),
+            [
+                (">", Operator),
+                ("\\\n", Escape),
+                ("&", Operator),
+                ("2", Number),
+                ("\\\n", Escape),
+                ("\\\\", Escape),
+                ("#d", Comment),
+            ]
+        );
+        assert_eq!(identifiers("x\\\n=1 a$\\\nb"), ["x", "b"]);
+        // But not in a comment, which ends at the line break.
+        assert_eq!(
+            tokens("# a \\\nif b; then :; fi"),
+            [
+                ("# a \\", Comment),
+                ("if", Keyword),
+                (";", Punctuation),
+                ("then", Keyword),
+                (";", Punctuation),
+                ("fi", Keyword),
+            ]
+        );
+        // And not in `$'...'`.
+        assert_eq!(
+            tokens("a $\\\n'b\\\nc' d"),
+            [("$", String), ("\\\n", Escape), ("'b\\\nc'", String),]
+        );
+        // Bash reads the second `)` of `((` without removing one, so this
+        // is a subshell in a subshell, where `b` is an argument.
+        assert_eq!(identifiers("((a b)\\\n)"), ["a"]);
+        assert_eq!(identifiers("((a\nb))"), ["a", "b"]);
     }
 
     #[test]
@@ -2122,6 +2323,29 @@ done
                 ("E", Attribute),
             ]
         );
+        // A line continuation joins the lines of a body before bash
+        // compares them with the delimiter, so `E\` is the end of the body
+        // when the next line is empty, but not when it's `x`.
+        assert_eq!(
+            tokens("a <<E\nE\\\n\nb <<E\nE\\\nx\n"),
+            [
+                ("<<", Operator),
+                ("E", Attribute),
+                ("E", Attribute),
+                ("\\\n", Escape),
+                ("<<", Operator),
+                ("E", Attribute),
+                ("E", String),
+                ("\\\n", Escape),
+                ("x\n", String),
+            ]
+        );
+        // In single quotes, the delimiter keeps its line break, so no line
+        // can end the body.
+        assert_eq!(
+            tokens("a <<'E\\\nF'\nEF\n"),
+            [("<<", Operator), ("'E\\\nF'", Attribute), ("EF\n", String),]
+        );
         // A here-document that never ends goes on to the end.
         assert_eq!(
             tokens("a <<E\nb"),
@@ -2136,6 +2360,18 @@ done
                 ("E", Attribute),
                 ("c\n", String),
                 ("E", Attribute),
+                (")", Punctuation),
+            ]
+        );
+        // The line can go on over a line continuation.
+        assert_eq!(
+            tokens("a $(b <<E\nE\\\n)"),
+            [
+                ("$(", Punctuation),
+                ("<<", Operator),
+                ("E", Attribute),
+                ("E", Attribute),
+                ("\\\n", Escape),
                 (")", Punctuation),
             ]
         );
@@ -2192,10 +2428,9 @@ done
         );
         // Where a command starts, brackets after a name belong to the word
         // even without an `=`, so `a[1 2]` is the command name. They can
-        // go on to the next line, but only a subscript that ends on its
-        // line gets colors.
+        // go on to the next line.
         assert_eq!(identifiers("a[1 2] b; c"), ["c"]);
-        assert_eq!(identifiers("a[1\n]=2 b; c"), ["c"]);
+        assert_eq!(identifiers("a[1\n]=2 b; c"), ["a", "b", "c"]);
         assert_eq!(identifiers("coproc a b=1"), ["a", "b"]);
     }
 

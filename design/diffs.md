@@ -1199,12 +1199,12 @@ Bash has some surprises that the lexer copies:
 
 - `((` starts an arithmetic command, unless the `)` that matches the
   second `(` has no `)` right after it. Then it's a subshell inside a
-  subshell. We only look for that `)` on the same line, and read
-  `((` as arithmetic when it isn't there.
+  subshell. Bash reads that second `)` without removing a line
+  continuation before it. When there's no `)` at all, which bash
+  rejects, we read `((` as arithmetic.
 - Where a command starts, brackets after a name belong to the word
   even when no `=` follows, so `a[1 2]` is one word. The brackets can
-  go on to later lines. We only color a subscript that ends on its
-  line.
+  go on to later lines.
 - The first `}` ends `${...}` unless it's quoted or in another
   expansion, so `${x:-{a}}` is `${x:-{a}` followed by a `}`. Inside
   `${...}`, `$'...'` is read even in double quotes.
@@ -1222,8 +1222,22 @@ Bash has some surprises that the lexer copies:
   error, so we always read them. The exception is `!(` where a command
   starts, which without `extglob` is a `!` before a subshell.
 
-The colors of a line never depend on the lines after it. The lexer
-only looks ahead on the current line, for `((` and for subscripts.
+Bash removes each line continuation, a `\` before a line break, as it
+reads the text. So a word or an operator can go on on the next line.
+`the\` followed by a line that starts with `n` is the reserved word
+`then`, and `>\` followed by `&2` is `>&2`. Bash doesn't remove a
+continuation after another `\`, in single quotes or `$'...'`, in a
+comment, or in the body of a here-document whose delimiter is quoted.
+`Joined` in `sh.rs` makes a copy of the text without the continuations
+that bash removes. The lexer reads that copy, and reads quotes, comments
+and those bodies from the text itself. A continuation gets the escape
+color, and a token that goes on over one gets its color on both sides.
+A comment can end at a continuation, and then the line ends there too.
+In the body of a here-document with an unquoted delimiter, a
+continuation joins two lines before bash compares them with the
+delimiter. So whether a line such as `EOF\` ends the body depends on
+the line after it.
+
 Expansions and quotes can nest, and each level takes some stack, so
 beyond 64 levels the lexer reads them as plain text.
 
@@ -1646,10 +1660,13 @@ leave that column blank.
   here-documents get their colors, and that nothing else gets the
   keyword or comment color. Bash only parses what's inside backquotes
   and a here-document's body when it runs them, so the check skips
-  those. It also skips files where a line continuation joins two
-  parts of a word, because bash's positions slip there and the lexer
-  ends a plain word at a continuation. When we wrote the lexer, it
-  agreed on all 2,310 scripts and on about 73,000 random texts.
+  those. Bash's positions slip next to a line continuation, so it also
+  skips the tokens there. When we wrote the lexer, it agreed on all
+  2,310 scripts and on about 73,000 random texts. Back then it ended a
+  word at a line continuation, and the check skipped files where bash
+  joins a word or an operator over one. Now the lexer joins them as
+  bash does, and it agreed on all the scripts and on about 46,000
+  random texts without skipping those files.
 - `src/highlight/dockerfile.rs` has examples for each instruction,
   directives, line continuations with comment lines inside them, the
   shell and JSON forms of commands, `SHELL`, variables, stages and
@@ -1810,13 +1827,6 @@ leave that column blank.
   as a shell command.
 - Bash expands aliases while it reads, and an alias can change how
   the rest of a line reads. The shell lexer doesn't know them.
-- Bash removes a line continuation before it reads words, so a word
-  can go on on the next line. The shell lexer ends a plain word at a
-  continuation, as in `then\`, so that its color doesn't depend on the
-  next line. When that line starts with something other than a blank,
-  bash reads one longer word. In the same way, the lexer reads `>` at
-  the end of a line and `&` at the start of the next as two operators,
-  where bash reads `>&`.
 - A shell script that turns on `extglob` can run a command whose name
   is a pattern such as `!(a)`. The lexer reads `!` and a subshell
   there.
