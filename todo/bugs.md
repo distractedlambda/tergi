@@ -115,3 +115,24 @@ file. The cause is in `here_documents` and `heredoc_line` in
 property test for Dockerfiles in `src/highlight/dockerfile.rs` found it,
 and leaves out pieces that end in `\` on heredoc delimiter lines until
 it's fixed.
+
+## A quote in a fish comment inside braces hides a later `$(`
+
+Inside braces or brackets, a fish word can have a comment in it, and
+the comment ends at the end of its line. Fish finds the command
+substitutions of a word first, and it skips the comment when it looks
+for them. So in `echo {a, #'` on one line and `$(x)}` on the next,
+`$(x)` is a command substitution. The fish lexer reads the `'` in the
+comment as the start of a string, which goes on to the end of the
+word, so `$(x)` gets the string color and `x` isn't an identifier. The
+cause is in `parts` in `src/highlight/fish.rs`, which reads quotes in
+the comment before it gets to the `$(`.
+
+The fish reference check found this with `CASES=200000 SEED=11`. That
+run also disagreed on two other random texts, which end in an unclosed
+`(` that tergi lexes as commands and fish's highlighter doesn't. They
+are `#not`, a line feed, `$()#(é]case ,-x`, a line feed, and
+`!  in \t$(`, and the one line
+`()#b[<time -command [\x0breturnfor &&-x\cA{{a,b}(|'--\cA' in `
+(where `\x0b` is a vertical tab). Smaller texts with an unclosed `(`
+don't show it, so the cause isn't known yet.
