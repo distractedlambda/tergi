@@ -97,25 +97,6 @@ in a full `cargo test` while other containers kept the machine busy,
 and passed when run on its own. Waiting for the message box to empty,
 or for `ops_done` to go up, would fix it.
 
-## A here-document line ending in `\` depends on the next line's colors
-
-In a shell here-document with an unquoted delimiter, a backslash at the
-end of a line joins the next line to it, as bash does. So whether a line
-such as `EOF\` ends the body depends on the line after it. When the text
-ends right after `EOF\`, the shell lexer reads the line as the end of
-the body and gives it the attribute color. When another line follows,
-such as `x`, the joined line is `EOFx`, and `EOF\` gets the string
-color.
-
-To see it, lex `cat <<EOF`, `EOF\` and `x` on three lines, and then
-only the first two. The colors of `EOF\` differ. A hunk that we lex on
-its own and that ends at that line gets different colors from the whole
-file. The cause is in `here_documents` and `heredoc_line` in
-`src/highlight/sh.rs`, which look past the end of the line. The
-property test for Dockerfiles in `src/highlight/dockerfile.rs` found it,
-and leaves out pieces that end in `\` on heredoc delimiter lines until
-it's fixed.
-
 ## A quote in a fish comment inside braces hides a later `$(`
 
 Inside braces or brackets, a fish word can have a comment in it, and

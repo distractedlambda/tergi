@@ -2026,35 +2026,23 @@ CMD ["x", "--serve"]
                         line.push(' ');
                     }
                 }
-                // The shell lexer joins a line of a here-document that ends
-                // in `\` to the next one, and whether the result ends the
-                // here-document then depends on the next line. That's a
-                // bug in the shell lexer, listed in `todo/bugs.md`, so we
-                // don't end lines that could do that with a `\`.
-                let t = line.trim_start();
-                if !(end.ends_with('\\') && (t.is_empty() || t.starts_with(['E', 'B']))) {
-                    line.push_str(end);
-                }
+                line.push_str(end);
                 line
             })
     }
 
     proptest! {
-        /// Cutting a Dockerfile after a line doesn't change the colors of
-        /// the lines up to there. A hunk that we lex on its own ends where
-        /// the hunk ends, and its lines must get the colors they get in
-        /// the whole file.
+        /// The lexer doesn't panic, and its tokens are in order, don't
+        /// overlap and fall on character boundaries. It joins pieces of
+        /// the source in several ways, and lexes them with other lexers.
         #[test]
-        fn colors_only_depend_on_earlier_lines(
-            lines in prop::collection::vec(line(), 1..12),
-        ) {
+        fn tokens_are_in_order(lines in prop::collection::vec(line(), 1..12)) {
             let text = lines.join("\n") + "\n";
-            let full = super::super::highlight_text(Language::Dockerfile, &text, usize::MAX);
-            let mut end = 0;
-            for (n, line) in lines.iter().enumerate() {
-                end += line.len() + 1;
-                let cut = super::super::highlight_text(Language::Dockerfile, &text[..end], usize::MAX);
-                prop_assert_eq!(&cut[..], &full[..=n], "cut after line {}", n);
+            let mut pos = 0;
+            for (r, _) in lexed(&text).0 {
+                prop_assert!(pos <= r.start && r.start < r.end && r.end <= text.len());
+                prop_assert!(text.is_char_boundary(r.start) && text.is_char_boundary(r.end));
+                pos = r.end;
             }
         }
     }

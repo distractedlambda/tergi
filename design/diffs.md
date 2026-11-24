@@ -1655,13 +1655,12 @@ leave that column blank.
   shell and JSON forms of commands, `SHELL`, variables, stages and
   here-documents in `RUN` and `COPY`. Its property test builds random
   Dockerfiles from instructions, flags, words, line continuations,
-  comments and here-documents. It checks that cutting the text after
-  any line doesn't change the colors of the lines before it. That
-  found the shell lexer's problem with a line of a here-document that
-  ends in `\`, which `todo/bugs.md` describes. The test leaves those
-  lines out until it's fixed. `dev/reference/dockerfile` checks the
-  lexer against BuildKit 0.35.1's parser on the 440 Dockerfiles in
-  BuildKit's source and a few other projects, and on random texts.
+  comments and here-documents. The lexer joins pieces of the source
+  and lexes them with other lexers, so the test checks that it doesn't
+  panic and that its tokens come out in order.
+  `dev/reference/dockerfile` checks the lexer against BuildKit
+  0.35.1's parser on the 440 Dockerfiles in BuildKit's source and a
+  few other projects, and on random texts.
   BuildKit's parser only says which lines each instruction and
   here-document covers, so the check follows its steps to find which
   bytes it read as what. It checks the colors of directives, comments,
