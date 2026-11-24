@@ -2,28 +2,19 @@
 //!
 //! It follows CommonMark 0.31.2, along with the tables and task lists of
 //! GitHub Flavored Markdown. Blocks are read a line at a time, the way the
-//! CommonMark reference parser reads them. Then the text of paragraphs is
-//! read for code spans, links, raw HTML, escapes and entities. Emphasis is
-//! plain, because colors can't show it. Code blocks that name a language
-//! we have a lexer for are lexed in that language.
-//!
-//! A line's colors only depend on the lines before it. Most of Markdown
-//! works that way, but a code span or a link can go on over several lines.
-//! Whether a backtick starts a code span depends on whether a closing one
-//! comes later. So we lex each line of a paragraph as if the paragraph
-//! ended there. A code span that covers several lines only gets its color
-//! on the line where it ends.
+//! CommonMark reference parser reads them. When a paragraph ends, its text
+//! is read for code spans, links, raw HTML, escapes and entities. These can
+//! go on over several lines of the paragraph, and they get their colors on
+//! each line they cover. Emphasis is plain, because colors can't show it.
+//! Code blocks that name a language we have a lexer for are lexed in that
+//! language.
 
+use std::collections::HashSet;
 use std::ops::Range;
 
 use logos::Logos;
 
 use super::{Kind, Language, Tokens};
-
-/// How many lines of a paragraph we lex again for each line, at most.
-/// Paragraphs are almost always shorter. A longer one could otherwise take
-/// time that grows with the square of its length.
-const WINDOW: usize = 64;
 
 /// The colored pieces of a text, in no particular order.
 type Out = Vec<(Range<usize>, Kind)>;
@@ -185,10 +176,7 @@ enum State {
 struct Paragraph {
     /// The text of each line, without the markers of its containers.
     lines: Vec<Range<usize>>,
-    /// The first line that the next line has to be lexed with. Everything
-    /// in the lines before it has been decided.
-    restart: usize,
-    /// Whether link reference definitions can start at `restart`.
+    /// Whether it can start with link reference definitions.
     defs: bool,
 }
 
@@ -406,9 +394,8 @@ impl<'a> Parser<'a> {
                     break;
                 }
             }
-            if in_paragraph && setext_underline(rest) && !self.all_definitions() {
+            if in_paragraph && setext_underline(rest) && self.setext_heading() {
                 self.push(next..self.trimmed_end(), Kind::Keyword);
-                self.leaf = None;
                 return;
             }
             if thematic_break(rest) {
@@ -429,6 +416,12 @@ impl<'a> Parser<'a> {
                 && let Some(n) = delimiter_row(rest)
                 && n == cells(&self.text[header.clone()])
             {
+                if let Some(Leaf::Paragraph(mut p)) = self.leaf.take()
+                    && let Some(header) = p.lines.pop()
+                {
+                    self.lex_paragraph(&p.lines, p.defs);
+                    self.table_row(header);
+                }
                 self.push(next..self.trimmed_end(), Kind::Punctuation);
                 self.leaf = Some(Leaf::Table);
                 return;
@@ -448,7 +441,7 @@ impl<'a> Parser<'a> {
         let at = self.base + self.c.offset;
         match self.state() {
             Some(State::Paragraph) => self.paragraph_line(),
-            Some(State::Table) => self.table_row(),
+            Some(State::Table) => self.table_row(at..self.base + self.body.len()),
             Some(State::Fenced { .. }) => {
                 if let Some(Leaf::Fenced(f)) = &mut self.leaf
                     && f.lang.is_some()
@@ -485,7 +478,6 @@ impl<'a> Parser<'a> {
                 }
                 self.open_leaf(Leaf::Paragraph(Paragraph {
                     lines: Vec::new(),
-                    restart: 0,
                     defs: !task,
                 }));
                 self.paragraph_line();
@@ -604,6 +596,7 @@ impl<'a> Parser<'a> {
     /// Lex the lines of a block that we only lex once it ends.
     fn close_leaf(&mut self) {
         match self.leaf.take() {
+            Some(Leaf::Paragraph(p)) => self.lex_paragraph(&p.lines, p.defs),
             Some(Leaf::Fenced(Fenced {
                 lang: Some(lang),
                 lines,
@@ -634,56 +627,57 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Whether the paragraph is all link reference definitions, so that
-    /// an underline after it doesn't make it a heading.
-    fn all_definitions(&self) -> bool {
+    /// Make the paragraph the text of a setext heading, whose underline is
+    /// on this line. Link reference definitions at its start stay
+    /// definitions. If there's nothing else, there's no heading.
+    fn setext_heading(&mut self) -> bool {
         let Some(Leaf::Paragraph(p)) = &self.leaf else {
             return false;
         };
         let joined = Joined::new(self.text, &p.lines, false);
-        let mut pos = 0;
-        while pos < joined.text.len() {
-            match definition(&joined.text, pos, &mut Vec::new()) {
-                Def::Yes { end, .. } => pos = end,
-                Def::No { .. } => return false,
+        let mut toks = Vec::new();
+        let end = if p.defs {
+            definitions(&joined.text, &mut toks)
+        } else {
+            0
+        };
+        if end == joined.text.len() {
+            return false;
+        }
+        for (r, kind) in toks {
+            joined.map(r, kind, &mut self.out);
+        }
+        for (at, src) in &joined.lines {
+            let e = src.start + self.text[src.clone()].trim_end_matches([' ', '\t']).len();
+            if *at >= end && src.start < e {
+                self.out.push((src.start..e, Kind::Keyword));
             }
         }
+        self.leaf = None;
         true
     }
 
-    /// Add a line to the paragraph and color it. We lex the paragraph from
-    /// the start, or from the last line where nothing was left undecided,
-    /// up to the end of this line.
+    /// Add a line to the paragraph. We lex the paragraph once it ends.
     fn paragraph_line(&mut self) {
         let line = self.base + self.c.offset..self.base + self.body.len();
-        let Some(Leaf::Paragraph(p)) = &mut self.leaf else {
-            return;
-        };
-        p.lines.push(line);
-        let k = p.lines.len() - 1;
-        if k + 1 - p.restart > WINDOW {
-            p.restart = k + 1 - WINDOW;
-            p.defs = false;
+        if let Some(Leaf::Paragraph(p)) = &mut self.leaf {
+            p.lines.push(line);
         }
-        let joined = Joined::new(self.text, &p.lines[p.restart..], false);
+    }
+
+    fn lex_paragraph(&mut self, lines: &[Range<usize>], defs: bool) {
+        let joined = Joined::new(self.text, lines, false);
         let mut toks = Vec::new();
-        let scan = paragraph(&joined.text, p.defs, &mut toks);
-        let start = joined.last_start();
+        paragraph(&joined.text, defs, &mut toks);
         for (r, kind) in toks {
-            if r.end > start {
-                joined.map(r.start.max(start)..r.end, kind, &mut self.out);
-            }
-        }
-        if scan.clean {
-            p.restart = k + 1;
-            p.defs = scan.defs;
+            joined.map(r, kind, &mut self.out);
         }
     }
 
     /// Color a row of a table. Each cell is lexed on its own.
-    fn table_row(&mut self) {
-        let start = self.base + self.c.offset;
-        let row = &self.text[start..self.base + self.body.len()];
+    fn table_row(&mut self, row: Range<usize>) {
+        let start = row.start;
+        let row = &self.text[row];
         let b = row.as_bytes();
         let mut cell = 0;
         let mut i = 0;
@@ -732,10 +726,6 @@ impl Joined {
             text.push('\n');
         }
         Joined { text, lines: out }
-    }
-
-    fn last_start(&self) -> usize {
-        self.lines.last().map_or(0, |(at, _)| *at)
     }
 
     /// Color the source for a range of the joined text, one piece per line.
@@ -960,7 +950,7 @@ fn html_start(rest: &str) -> Option<u8> {
         .count()];
     if (b.first().is_some_and(u8::is_ascii_alphabetic) || after.starts_with('/'))
         && !RAW_TAGS.iter().any(|t| t.eq_ignore_ascii_case(name))
-        && let Found::Yes(e) = inline_html(rest, 0)
+        && let Some(e) = inline_html(rest, 0, &mut Missing::default())
         && rest[e..].trim_matches([' ', '\t']).is_empty()
     {
         return Some(7);
@@ -983,108 +973,63 @@ fn html_end(kind: u8, line: &str) -> bool {
     }
 }
 
-/// The result of reading a construct that may go on to later lines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Found {
-    /// It's there, and it ends here.
-    Yes(usize),
-    No,
-    /// The text ended before we could tell. Another line could finish it.
-    Eof,
+/// Color the text of a paragraph. If `defs` is true, it can start with link
+/// reference definitions.
+fn paragraph(s: &str, defs: bool, out: &mut Out) {
+    let pos = if defs { definitions(s, out) } else { 0 };
+    inline(s, pos, out);
 }
 
-/// What lexing a paragraph up to some line found out.
-struct Scan {
-    /// Whether everything is decided, so that more lines can't change the
-    /// colors of the text so far.
-    clean: bool,
-    /// Whether the text was all link reference definitions, so that another
-    /// can follow.
-    defs: bool,
-}
-
-fn paragraph(s: &str, mut defs: bool, out: &mut Out) -> Scan {
+/// Color the link reference definitions at the start of `s`, and give
+/// where they end.
+fn definitions(s: &str, out: &mut Out) -> usize {
     let mut pos = 0;
-    let mut clean = true;
-    while defs && pos < s.len() {
-        match definition(s, pos, out) {
-            Def::Yes { end, open } => {
-                pos = end;
-                clean &= !open;
-            }
-            Def::No { open } => {
-                clean &= !open;
-                defs = false;
-            }
-        }
+    while pos < s.len()
+        && let Some(end) = definition(s, pos, out)
+    {
+        pos = end;
     }
-    clean &= inline(s, pos, out);
-    Scan { clean, defs }
+    pos
 }
 
-enum Def {
-    Yes { end: usize, open: bool },
-    No { open: bool },
-}
-
-/// A link reference definition at `p`, as in `[label]: /url "title"`. It
-/// ends after its line feed. It's `open` if more text could change it, as
-/// when a title could follow on the next line.
-fn definition(s: &str, p: usize, out: &mut Out) -> Def {
+/// A link reference definition at `p`, as in `[label]: /url "title"`. Its
+/// title can be on the next line. It ends after its line feed.
+fn definition(s: &str, p: usize, out: &mut Out) -> Option<usize> {
     let b = s.as_bytes();
     let len = b.len();
-    let close = match label(s, p) {
-        Found::Yes(e) => e,
-        Found::No => return Def::No { open: false },
-        Found::Eof => return Def::No { open: true },
-    };
+    let close = label(s, p)?;
     if b.get(close + 1) != Some(&b':') {
-        return Def::No { open: false };
+        return None;
     }
     let start = ws(s, close + 2);
-    if start == len {
-        return Def::No { open: true };
-    }
-    let end = match destination(s, start) {
-        Found::Yes(e) => e,
-        Found::No => return Def::No { open: false },
-        Found::Eof => return Def::No { open: true },
-    };
+    let end = destination(s, start)?;
     let after = spaces(s, end);
     let line_ends = after == len || b[after] == b'\n';
-    let line_end = (after + 1).min(len);
     let mut toks = vec![
         (p..p + 1, Kind::Punctuation),
         (close..close + 2, Kind::Punctuation),
         (start..end, Kind::Attribute),
     ];
     let t = ws(s, end);
-    let mut open = after == len;
-    if t > end && t < len && matches!(b[t], b'"' | b'\'' | b'(') {
-        match title(s, t) {
-            Found::Yes(te) => {
-                let e = spaces(s, te);
-                if e == len || b[e] == b'\n' {
-                    toks.push((t..te, Kind::String));
-                    out.extend(toks);
-                    return Def::Yes {
-                        end: (e + 1).min(len),
-                        open: false,
-                    };
-                }
-            }
-            Found::Eof => open = true,
-            Found::No => {}
+    if t > end
+        && t < len
+        && matches!(b[t], b'"' | b'\'' | b'(')
+        && let Some(te) = title(s, t)
+    {
+        let e = spaces(s, te);
+        if e == len || b[e] == b'\n' {
+            toks.push((t..te, Kind::String));
+            out.extend(toks);
+            return Some((e + 1).min(len));
         }
     }
+    // Without a title that ends its line, the definition ends with the
+    // line of its destination.
     if !line_ends {
-        return Def::No { open };
+        return None;
     }
     out.extend(toks);
-    Def::Yes {
-        end: line_end,
-        open,
-    }
+    Some((after + 1).min(len))
 }
 
 /// Skip spaces and tabs.
@@ -1112,42 +1057,40 @@ fn is_punct(c: u8) -> bool {
 
 /// A link label in brackets at `p`. Gives the position of the closing
 /// bracket.
-fn label(s: &str, p: usize) -> Found {
+fn label(s: &str, p: usize) -> Option<usize> {
     let b = s.as_bytes();
     if b.get(p) != Some(&b'[') {
-        return Found::No;
+        return None;
     }
     let mut q = p + 1;
     loop {
-        match b.get(q) {
-            None => return Found::Eof,
-            Some(b'\\') => q += 2,
-            Some(b'[') => return Found::No,
-            Some(b']') => break,
-            Some(_) => q += 1,
+        match b.get(q)? {
+            b'\\' => q += 2,
+            b'[' => return None,
+            b']' => break,
+            _ => q += 1,
         }
         if q - p > 1000 {
-            return Found::No;
+            return None;
         }
     }
     if s[p + 1..q].trim().is_empty() {
-        return Found::No;
+        return None;
     }
-    Found::Yes(q)
+    Some(q)
 }
 
 /// A link destination at `p`, as in `/url` or `<url>`.
-fn destination(s: &str, p: usize) -> Found {
+fn destination(s: &str, p: usize) -> Option<usize> {
     let b = s.as_bytes();
     if b.get(p) == Some(&b'<') {
         let mut q = p + 1;
         loop {
-            match b.get(q) {
-                None => return Found::Eof,
-                Some(b'\n' | b'<') => return Found::No,
-                Some(b'\\') => q += 2,
-                Some(b'>') => return Found::Yes(q + 1),
-                Some(_) => q += 1,
+            match b.get(q)? {
+                b'\n' | b'<' => return None,
+                b'\\' => q += 2,
+                b'>' => return Some(q + 1),
+                _ => q += 1,
             }
         }
     }
@@ -1160,7 +1103,7 @@ fn destination(s: &str, p: usize) -> Found {
             b'(' => {
                 depth += 1;
                 if depth > 32 {
-                    return Found::No;
+                    return None;
                 }
             }
             b')' if depth == 0 => break,
@@ -1169,28 +1112,24 @@ fn destination(s: &str, p: usize) -> Found {
         }
         q += 1;
     }
-    if q == p || depth != 0 {
-        return Found::No;
-    }
-    Found::Yes(q)
+    (q > p && depth == 0).then_some(q)
 }
 
 /// A link title at `p`, in quotes or parentheses.
-fn title(s: &str, p: usize) -> Found {
+fn title(s: &str, p: usize) -> Option<usize> {
     let b = s.as_bytes();
     let close = match b.get(p) {
         Some(b'(') => b')',
         Some(&c @ (b'"' | b'\'')) => c,
-        _ => return Found::No,
+        _ => return None,
     };
     let mut q = p + 1;
     loop {
-        match b.get(q) {
-            None => return Found::Eof,
-            Some(b'\\') => q += 2,
-            Some(&c) if c == close => return Found::Yes(q + 1),
-            Some(b'(') if close == b')' => return Found::No,
-            Some(_) => q += 1,
+        match *b.get(q)? {
+            b'\\' => q += 2,
+            c if c == close => return Some(q + 1),
+            b'(' if close == b')' => return None,
+            _ => q += 1,
         }
     }
 }
@@ -1217,16 +1156,27 @@ enum Inline {
     Text,
 }
 
+/// Closing text that we looked for after some point and didn't find. We
+/// read on from there, so we won't find it later either. Without this, a
+/// paragraph full of backticks or `<!--` that never close would take time
+/// that grows with the square of its length.
+#[derive(Default)]
+struct Missing {
+    /// The lengths of runs of backticks.
+    backticks: HashSet<usize>,
+    /// The ends of comments, declarations and such in raw HTML.
+    html: Vec<&'static str>,
+}
+
 /// Color code spans, links, raw HTML, escapes and entities in `s`, from
-/// `from` on, following the CommonMark rules for inline content. Returns
-/// whether everything is decided, so that more text can't change it.
-fn inline(s: &str, from: usize, out: &mut Out) -> bool {
+/// `from` on, following the CommonMark rules for inline content.
+fn inline(s: &str, from: usize, out: &mut Out) {
     struct Opener {
         at: usize,
         image: bool,
         active: bool,
     }
-    let mut clean = true;
+    let mut missing = Missing::default();
     let mut openers: Vec<Opener> = Vec::new();
     let mut lex = Inline::lexer(s);
     lex.bump(from);
@@ -1234,28 +1184,30 @@ fn inline(s: &str, from: usize, out: &mut Out) -> bool {
         let r = lex.span();
         match tok {
             Ok(Inline::Escape) => out.push((r, Kind::Escape)),
-            Ok(Inline::Backticks) => match closing_backticks(lex.remainder(), r.len()) {
-                Some(i) => {
-                    lex.bump(i + r.len());
-                    out.push((r.start..lex.span().end, Kind::String));
+            Ok(Inline::Backticks) => {
+                let n = r.len();
+                if missing.backticks.contains(&n) {
+                    continue;
                 }
-                None => clean = false,
-            },
+                match closing_backticks(lex.remainder(), n) {
+                    Some(i) => {
+                        lex.bump(i + n);
+                        out.push((r.start..lex.span().end, Kind::String));
+                    }
+                    None => {
+                        missing.backticks.insert(n);
+                    }
+                }
+            }
             Ok(Inline::Angle) => {
                 if let Some(e) = autolink(s, r.start) {
                     out.push((r.start..r.end, Kind::Punctuation));
                     out.push((r.end..e - 1, Kind::Attribute));
                     out.push((e - 1..e, Kind::Punctuation));
                     lex.bump(e - r.end);
-                } else {
-                    match inline_html(s, r.start) {
-                        Found::Yes(e) => {
-                            html(&s[r.start..e], r.start, out);
-                            lex.bump(e - r.end);
-                        }
-                        Found::Eof => clean = false,
-                        Found::No => {}
-                    }
+                } else if let Some(e) = inline_html(s, r.start, &mut missing) {
+                    html(&s[r.start..e], r.start, out);
+                    lex.bump(e - r.end);
                 }
             }
             Ok(Inline::Image) => openers.push(Opener {
@@ -1276,28 +1228,23 @@ fn inline(s: &str, from: usize, out: &mut Out) -> bool {
                     continue;
                 }
                 let mut tail = Vec::new();
-                match link_tail(s, r.end, &mut tail) {
-                    Found::Yes(e) => {
-                        let len = if op.image { 2 } else { 1 };
-                        out.push((op.at..op.at + len, Kind::Punctuation));
-                        out.push((r.clone(), Kind::Punctuation));
-                        out.extend(tail);
-                        lex.bump(e - r.end);
-                        // Links can't hold other links.
-                        if !op.image {
-                            for o in &mut openers {
-                                o.active &= o.image;
-                            }
+                if let Some(e) = link_tail(s, r.end, &mut tail) {
+                    let len = if op.image { 2 } else { 1 };
+                    out.push((op.at..op.at + len, Kind::Punctuation));
+                    out.push((r.clone(), Kind::Punctuation));
+                    out.extend(tail);
+                    lex.bump(e - r.end);
+                    // Links can't hold other links.
+                    if !op.image {
+                        for o in &mut openers {
+                            o.active &= o.image;
                         }
                     }
-                    Found::Eof => clean = false,
-                    Found::No => {}
                 }
             }
             _ => {}
         }
     }
-    clean && openers.is_empty()
 }
 
 /// Where the first run of exactly `n` backticks starts in `rest`.
@@ -1323,63 +1270,45 @@ fn closing_backticks(rest: &str, n: usize) -> Option<usize> {
 /// document defines, since a definition can come after its use. So we take
 /// any label as defined, except in a link like `[foo]` that is only a
 /// label, which more often isn't a link at all.
-fn link_tail(s: &str, p: usize, out: &mut Out) -> Found {
+fn link_tail(s: &str, p: usize, out: &mut Out) -> Option<usize> {
     let b = s.as_bytes();
     match b.get(p) {
         Some(b'(') => {}
         Some(b'[') => {
             if b.get(p + 1) == Some(&b']') {
                 out.push((p..p + 2, Kind::Punctuation));
-                return Found::Yes(p + 2);
+                return Some(p + 2);
             }
-            let close = match label(s, p) {
-                Found::Yes(close) => close,
-                other => return other,
-            };
+            let close = label(s, p)?;
             out.push((p..p + 1, Kind::Punctuation));
             out.push((p + 1..close, Kind::Attribute));
             out.push((close..close + 1, Kind::Punctuation));
-            return Found::Yes(close + 1);
+            return Some(close + 1);
         }
-        _ => return Found::No,
+        _ => return None,
     }
     let mut toks = vec![(p..p + 1, Kind::Punctuation)];
     let mut q = ws(s, p + 1);
-    if q == b.len() {
-        return Found::Eof;
-    }
-    if b[q] != b')' {
-        let end = match destination(s, q) {
-            Found::Yes(e) => e,
-            other => return other,
-        };
+    if q < b.len() && b[q] != b')' {
+        let end = destination(s, q)?;
         toks.push((q..end, Kind::Attribute));
         q = ws(s, end);
-        if q == b.len() {
-            return Found::Eof;
-        }
-        if q > end && matches!(b[q], b'"' | b'\'' | b'(') {
-            let te = match title(s, q) {
-                Found::Yes(te) => te,
-                other => return other,
-            };
+        if q > end && q < b.len() && matches!(b[q], b'"' | b'\'' | b'(') {
+            let te = title(s, q)?;
             toks.push((q..te, Kind::String));
             q = ws(s, te);
-            if q == b.len() {
-                return Found::Eof;
-            }
         }
     }
-    if b[q] != b')' {
-        return Found::No;
+    if b.get(q) != Some(&b')') {
+        return None;
     }
     toks.push((q..q + 1, Kind::Punctuation));
     out.extend(toks);
-    Found::Yes(q + 1)
+    Some(q + 1)
 }
 
 /// An autolink at `p`, as in `<https://example.com>` or `<me@example.com>`.
-/// It can't hold a line feed, so it never needs the next line.
+/// It can't hold a line feed.
 fn autolink(s: &str, p: usize) -> Option<usize> {
     let b = &s.as_bytes()[p + 1..];
     let end = |i: usize| Some(p + 1 + i + 1);
@@ -1422,11 +1351,17 @@ fn autolink(s: &str, p: usize) -> Option<usize> {
 
 /// Raw HTML at `p`, as CommonMark defines it: an open or closing tag, a
 /// comment, a processing instruction, a declaration or a CDATA section.
-fn inline_html(s: &str, p: usize) -> Found {
+fn inline_html(s: &str, p: usize, missing: &mut Missing) -> Option<usize> {
     let b = s.as_bytes();
-    let find = |from: usize, end: &str| match s.get(from..).and_then(|r| r.find(end)) {
-        Some(i) => Found::Yes(from + i + end.len()),
-        None => Found::Eof,
+    let mut find = |from: usize, end: &'static str| {
+        if missing.html.contains(&end) {
+            return None;
+        }
+        let found = s.get(from..).and_then(|r| r.find(end));
+        if found.is_none() {
+            missing.html.push(end);
+        }
+        Some(from + found? + end.len())
     };
     let name = |q: usize| {
         if !b.get(q).is_some_and(u8::is_ascii_alphabetic) {
@@ -1446,10 +1381,10 @@ fn inline_html(s: &str, p: usize) -> Found {
     let rest = &s[p + 1..];
     if let Some(comment) = rest.strip_prefix("!--") {
         if comment.starts_with('>') {
-            return Found::Yes(p + 5);
+            return Some(p + 5);
         }
         if comment.starts_with("->") {
-            return Found::Yes(p + 6);
+            return Some(p + 6);
         }
         return find(p + 4, "-->");
     }
@@ -1465,65 +1400,45 @@ fn inline_html(s: &str, p: usize) -> Found {
     if rest.starts_with('/') {
         let n = name(p + 2);
         if n == p + 2 {
-            return Found::No;
+            return None;
         }
         let q = skip(n);
-        return match b.get(q) {
-            None => Found::Eof,
-            Some(b'>') => Found::Yes(q + 1),
-            Some(_) => Found::No,
-        };
+        return (b.get(q) == Some(&b'>')).then_some(q + 1);
     }
     let mut q = name(p + 1);
     if q == p + 1 {
-        return Found::No;
+        return None;
     }
     loop {
         let w = skip(q);
-        let Some(&c) = b.get(w) else {
-            return Found::Eof;
-        };
-        match c {
-            b'>' => return Found::Yes(w + 1),
-            b'/' => {
-                return if b.get(w + 1) == Some(&b'>') {
-                    Found::Yes(w + 2)
-                } else {
-                    Found::No
-                };
-            }
+        match *b.get(w)? {
+            b'>' => return Some(w + 1),
+            b'/' => return (b.get(w + 1) == Some(&b'>')).then_some(w + 2),
             c if w > q && (c.is_ascii_alphabetic() || c == b'_' || c == b':') => {
                 q = w + b[w..]
                     .iter()
                     .take_while(|&&c| c.is_ascii_alphanumeric() || b"_.:-".contains(&c))
                     .count();
                 let eq = skip(q);
-                if eq == b.len() {
-                    return Found::Eof;
-                }
-                if b[eq] != b'=' {
+                if b.get(eq) != Some(&b'=') {
                     continue;
                 }
                 let v = skip(eq + 1);
-                match b.get(v) {
-                    None => return Found::Eof,
-                    Some(&quote @ (b'"' | b'\'')) => match s[v + 1..].find(quote as char) {
-                        Some(i) => q = v + 1 + i + 1,
-                        None => return Found::Eof,
-                    },
-                    Some(_) => {
+                match *b.get(v)? {
+                    quote @ (b'"' | b'\'') => q = v + 1 + s[v + 1..].find(quote as char)? + 1,
+                    _ => {
                         let n = b[v..]
                             .iter()
                             .take_while(|c| !b" \t\n\r\"'=<>`".contains(c))
                             .count();
                         if n == 0 {
-                            return Found::No;
+                            return None;
                         }
                         q = v + n;
                     }
                 }
             }
-            _ => return Found::No,
+            _ => return None,
         }
     }
 }
@@ -1548,9 +1463,8 @@ enum Markup {
     Text,
 }
 
-/// Color HTML, offset by `base`. Tags and comments take whatever follows
-/// until they end, so a tag's color doesn't depend on whether it's closed
-/// on a later line.
+/// Color HTML, offset by `base`. A tag or comment that doesn't end takes
+/// the rest of the text.
 fn html(s: &str, base: usize, out: &mut Out) {
     let mut push = |r: Range<usize>, kind| {
         if r.start < r.end {
@@ -1709,6 +1623,7 @@ Setext
             tokens(text),
             [
                 ("# Title #", Keyword),
+                ("Setext", Keyword),
                 ("------", Keyword),
                 (">", Punctuation),
                 ("-", Punctuation),
@@ -1717,6 +1632,9 @@ Setext
                 ("1.", Punctuation),
                 ("***", Punctuation),
                 ("indented", String),
+                ("|", Punctuation),
+                ("|", Punctuation),
+                ("|", Punctuation),
                 ("|---|:-:|", Punctuation),
                 ("|", Punctuation),
                 ("`c`", String),
@@ -1731,6 +1649,25 @@ Setext
         // An underline after a paragraph that is only definitions is a
         // thematic break.
         assert_eq!(kinds_of("[a]: /u\n---\n", Punctuation), ["[", "]:", "---"]);
+        // Definitions before a setext heading aren't part of it, and the
+        // heading's text can go on over several lines.
+        assert_eq!(
+            tokens("[a]: /u\nb `c\nd` e\n===\n"),
+            [
+                ("[", Punctuation),
+                ("]:", Punctuation),
+                ("/u", Attribute),
+                ("b `c", Keyword),
+                ("d` e", Keyword),
+                ("===", Keyword),
+            ]
+        );
+        // The header row of a table isn't part of the paragraph before it,
+        // so the backtick there doesn't start a code span.
+        assert_eq!(
+            tokens("a `b\n| c` |\n|-|\n"),
+            [("|", Punctuation), ("|", Punctuation), ("|-|", Punctuation)]
+        );
     }
 
     #[test]
@@ -1739,8 +1676,17 @@ Setext
             kinds_of("a `b` ``c`d`` ``` e", Kind::String),
             ["`b`", "``c`d``"]
         );
-        // A code span that goes on to the next line gets its color there.
-        assert_eq!(tokens("a `b\nc` d\n"), [("c`", Kind::String)]);
+        // A code span can go on over several lines, even lazy ones.
+        assert_eq!(
+            tokens("> a `b\n> c\nd` e\n"),
+            [
+                (">", Kind::Punctuation),
+                ("`b", Kind::String),
+                (">", Kind::Punctuation),
+                ("c", Kind::String),
+                ("d`", Kind::String)
+            ]
+        );
         // Escapes don't work in code spans, but one can stop a backtick
         // from starting one.
         assert_eq!(
@@ -1783,7 +1729,8 @@ Setext
             kinds_of("[a [b](c) d](e) [![f](g)](h)", Attribute),
             ["c", "g", "h"]
         );
-        // A definition, and a link whose destination is on the next line.
+        // A definition whose title is on the next line, and a link whose
+        // destination is.
         assert_eq!(
             tokens("[a]: /u\n  \"t\"\n[b](\n/v)"),
             [
@@ -1791,10 +1738,17 @@ Setext
                 ("]:", Punctuation),
                 ("/u", Attribute),
                 ("\"t\"", String),
+                ("[", Punctuation),
+                ("](", Punctuation),
                 ("/v", Attribute),
                 (")", Punctuation),
             ]
         );
+        // A title that doesn't end its line isn't part of the definition,
+        // so the line is text.
+        assert_eq!(kinds_of("[a]: /u\n\"t\" x\n", String), [] as [&str; 0]);
+        // A link that doesn't close isn't a link.
+        assert_eq!(tokens("[a](/u\n\"t\"\n"), []);
     }
 
     #[test]
@@ -1817,11 +1771,14 @@ Setext
                 ("/>", Punctuation),
             ]
         );
-        // A tag that isn't finished on its line is text, until the line
-        // that finishes it.
+        // A tag can go on over several lines, but one that doesn't end is
+        // text.
+        assert_eq!(tokens("a <b\nc=\"d\""), []);
         assert_eq!(
             tokens("a <b\nc=\"d\">"),
             [
+                ("<", Punctuation),
+                ("b", Keyword),
                 ("c", Attribute),
                 ("=", Punctuation),
                 ("\"d\"", String),
@@ -2010,11 +1967,14 @@ Setext
         })
     }
 
-    /// Lexing must take time in proportion to the length of the text,
-    /// even for a long paragraph whose first line leaves something open.
+    /// Lexing must take time in proportion to the length of the text, even
+    /// for a long paragraph full of things that never close.
     #[test]
     fn long_paragraphs_are_fast() {
-        let text = format!("` [ <a\n{}", "word `x` [a](b) <i>\n".repeat(20_000));
+        let text = format!(
+            "` [ <a\n{}",
+            "word `x` `` [a](b) [c]( <i> <!-- <? <![CDATA[ <!x <j k=\"\n".repeat(20_000)
+        );
         let start = std::time::Instant::now();
         let mut out = Tokens::default();
         lex(&text, &mut out);
@@ -2024,9 +1984,7 @@ Setext
     proptest! {
         /// Compare the colors with what pulldown-cmark parses. Code spans
         /// and code blocks are strings, headings are keywords, markers are
-        /// punctuation, and text is plain. A line that a code span, link or
-        /// tag goes on from isn't checked, since its colors can't depend
-        /// on the next line.
+        /// punctuation, raw HTML is colored, and text is plain.
         #[test]
         fn agrees_with_pulldown_cmark(text in document()) {
             use pulldown_cmark::{CodeBlockKind, Event, LinkType, Options, Parser, Tag, TagEnd};
@@ -2036,29 +1994,26 @@ Setext
             for (r, k) in out.0 {
                 kinds[r].fill(Some(k));
             }
-            let line_of = |i: usize| text[..i].matches('\n').count();
-            // Where the last line of a range starts, after the markers of
-            // block quotes.
-            let last_line = |r: &Range<usize>| {
-                let start = text[..r.end - 1].rfind('\n').map_or(0, |n| n + 1).max(r.start);
-                start + text[start..r.end].len()
-                    - text[start..r.end].trim_start_matches(['>', ' ', '\t']).len()
-            };
-            let events: Vec<_> = Parser::new_ext(&text, Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS)
-                .into_offset_iter()
-                .collect();
-            // Lines that a construct goes on from.
-            let mut skip = vec![false; text.lines().count() + 1];
-            for (ev, r) in &events {
-                if matches!(ev, Event::Code(_) | Event::InlineHtml(_) | Event::Start(Tag::Link { .. } | Tag::Image { .. })) {
-                    skip[line_of(r.start)..line_of(r.end - 1)].fill(true);
-                }
-            }
+            let events = Parser::new_ext(&text, Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS)
+                .into_offset_iter();
             let check = |r: Range<usize>, ok: &[Option<Kind>], what: &str| -> Result<(), TestCaseError> {
                 for i in r.clone() {
                     if !text.as_bytes()[i].is_ascii_whitespace() && !ok.contains(&kinds[i]) {
                         prop_assert!(false, "{what} {:?} has {:?} at {i} in\n{text}", &text[r], kinds[i]);
                     }
+                }
+                Ok(())
+            };
+            // Check a range that can go on over several lines, but not the
+            // markers of block quotes at the start of each line after the
+            // first.
+            let check_lines = |r: Range<usize>, ok: &[Option<Kind>], what: &str| -> Result<(), TestCaseError> {
+                let mut start = r.start;
+                for (i, l) in text[r].split_inclusive('\n').enumerate() {
+                    let end = start + l.len();
+                    let from = if i == 0 { start } else { end - l.trim_start_matches(['>', ' ', '\t']).len() };
+                    check(from..end, ok, what)?;
+                    start = end;
                 }
                 Ok(())
             };
@@ -2071,13 +2026,7 @@ Setext
                 match ev {
                     Event::Start(Tag::Heading { .. }) => {
                         heading += 1;
-                        let first = text[r.clone()].trim_start();
-                        if first.starts_with('#') {
-                            let end = r.start + text[r.clone()].find('\n').unwrap_or(r.len());
-                            check(r.start..end, &[Some(Kind::Keyword)], "ATX heading")?;
-                        } else {
-                            check(last_line(&r)..r.end, &[Some(Kind::Keyword)], "underline")?;
-                        }
+                        check_lines(r, &[Some(Kind::Keyword)], "heading")?;
                     }
                     Event::End(TagEnd::Heading(_)) => heading -= 1,
                     Event::Start(Tag::Link { link_type, .. }) => {
@@ -2093,12 +2042,16 @@ Setext
                     Event::End(TagEnd::CodeBlock) => { code.pop(); }
                     // Headings are all one color, even their code spans.
                     Event::Code(_) if heading == 0 => {
-                        check(last_line(&r)..r.end, &[Some(Kind::String)], "code span")?;
+                        check_lines(r, &[Some(Kind::String)], "code span")?;
+                    }
+                    Event::InlineHtml(_) if heading == 0 => {
+                        let colored = [Kind::Punctuation, Kind::Keyword, Kind::Attribute, Kind::String, Kind::Comment, Kind::Escape].map(Some);
+                        check_lines(r, &colored, "inline HTML")?;
                     }
                     Event::Rule => check(r, &[Some(Kind::Punctuation)], "rule")?,
                     Event::TaskListMarker(_) => check(r, &[Some(Kind::Punctuation)], "task")?,
                     Event::Text(_) if code.last() == Some(&true) => check(r, &[Some(Kind::String)], "code")?,
-                    Event::Text(_) if code.is_empty() && heading == 0 && !links.contains(&true) && !skip[line_of(r.start)] => {
+                    Event::Text(_) if code.is_empty() && heading == 0 && !links.contains(&true) => {
                         check(r, &[None, Some(Kind::Escape)], "text")?;
                     }
                     _ => {}
