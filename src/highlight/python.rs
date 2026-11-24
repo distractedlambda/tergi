@@ -9,7 +9,7 @@
 //! Without a parser we can't know what an identifier names, so every
 //! identifier gets a color from its name (see `Kind::Identifier`). Soft
 //! keywords such as `match` are only keywords in some places, and the
-//! lexer guesses those from the tokens around them on the same line.
+//! lexer guesses those from the tokens around them in the same statement.
 
 use std::ops::Range;
 
@@ -142,9 +142,8 @@ enum Stop {
 /// A token, before we know what color its words get.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Piece {
-    /// The end of a line, outside of strings, or a backslash that joins
-    /// it to the next. Nothing gets colored here, but soft keywords only
-    /// look at the tokens up to it.
+    /// The end of a logical line, where a statement ends. Nothing gets
+    /// colored here, but soft keywords only look at the tokens up to it.
     LineEnd,
     Word,
     Open,
@@ -381,12 +380,15 @@ pub fn lex(text: &str, out: &mut Tokens) {
         let span = lex.span();
         let slice = lex.slice();
         let piece = match token {
+            // A line break inside brackets doesn't end the statement.
             Ok(Token::Newline) => {
-                state.push(span, Piece::LineEnd);
-                state.line_start = state.stack.is_empty();
+                if state.stack.is_empty() {
+                    state.push(span, Piece::LineEnd);
+                    state.line_start = true;
+                }
                 continue;
             }
-            Ok(Token::Continuation) => Piece::LineEnd,
+            Ok(Token::Continuation) => continue,
             Ok(Token::Comment) => Piece::Colored(Kind::Comment),
             Ok(Token::Str) => {
                 let quote = Quote::new(slice);
@@ -510,7 +512,10 @@ fn word(text: &str, toks: &[Tok], i: usize) -> Kind {
         .filter(|n| n.piece == Piece::Word)
         .map(|n| &text[n.r.clone()]);
     let soft = match w {
-        "match" | "case" => t.line_start && subject_follows(text, toks, i),
+        // A `match` statement's header ends with a `:`. A `case` clause
+        // can have its body after the `:` on the same line.
+        "match" => t.line_start && subject_follows(text, next) && colons(&toks[i + 1..]).last,
+        "case" => t.line_start && subject_follows(text, next) && colons(&toks[i + 1..]).any,
         // Two names in a row are an error anywhere else, so this is a
         // type alias, as in `type X = int`.
         "type" => next_word.is_some_and(|n| !KEYWORDS.contains(&n) && !LITERALS.contains(&n)),
@@ -524,11 +529,11 @@ fn word(text: &str, toks: &[Tok], i: usize) -> Kind {
     }
 }
 
-/// Whether the `match` or `case` at `toks[i]`, at the start of a line, is
-/// followed by the subject of a `match` statement or the pattern of a
-/// `case`, rather than being a name in an expression.
-fn subject_follows(text: &str, toks: &[Tok], i: usize) -> bool {
-    let Some(next) = toks.get(i + 1) else {
+/// Whether `next`, the token after a `match` or `case` at the start of a
+/// statement, can start the subject of a `match` statement or the
+/// pattern of a `case`.
+fn subject_follows(text: &str, next: Option<&Tok>) -> bool {
+    let Some(next) = next else {
         return false;
     };
     let next_text = &text[next.r.clone()];
@@ -538,36 +543,40 @@ fn subject_follows(text: &str, toks: &[Tok], i: usize) -> bool {
         }
         Piece::Colored(Kind::String | Kind::Number | Kind::Constant) => true,
         Piece::Colored(Kind::Operator) => matches!(next_text, "-" | "+" | "~" | "*"),
-        // `match(x)` and `match[x]` call or index a name, unless the
-        // line ends with a `:` as a statement's header does. People
-        // write a space before the brackets of a `match` statement.
-        Piece::Open if next_text != "{" && next.r.start == toks[i].r.end => {
-            ends_with_colon(text, &toks[i + 1..])
-        }
         Piece::Open => true,
         _ => false,
     }
 }
 
-/// Whether the line that `toks` starts on ends with a `:` outside of the
-/// brackets that open on it. We don't look past the end of the line,
-/// because a line's colors mustn't depend on the lines after it.
-fn ends_with_colon(text: &str, toks: &[Tok]) -> bool {
+/// Where the colons outside of brackets are in a statement.
+struct Colons {
+    /// Whether there are any.
+    any: bool,
+    /// Whether the statement ends with one, not counting comments.
+    last: bool,
+}
+
+/// The colons outside of brackets in the statement that goes on with
+/// `toks`. The statement can go on over several lines.
+fn colons(toks: &[Tok]) -> Colons {
     let mut depth = 0;
+    let mut colon = false;
     let mut last = None;
     for t in toks {
-        if t.piece == Piece::LineEnd || text[t.r.clone()].contains(['\n', '\r']) {
-            break;
-        }
         match t.piece {
+            Piece::LineEnd => break,
             Piece::Open => depth += 1,
             Piece::Close => depth -= 1,
+            Piece::Colon if depth == 0 => colon = true,
             Piece::Colored(Kind::Comment) => continue,
             _ => {}
         }
-        last = Some(t.piece);
+        last = Some((t.piece, depth));
     }
-    depth == 0 && last == Some(Piece::Colon)
+    Colons {
+        any: colon,
+        last: last == Some((Piece::Colon, 0)),
+    }
 }
 
 #[cfg(test)]
@@ -910,19 +919,34 @@ mod tests {
             kinds_of("match x:  # c\nmatch not x:", Kind::Keyword),
             ["match", "match", "not"]
         );
-        // Brackets right after the word call or index a name, unless the
-        // line ends with a `:`.
-        assert_eq!(kinds_of("match(x):", Kind::Keyword), ["match"]);
-        assert_eq!(kinds_of("match [\n  x]:", Kind::Keyword), ["match"]);
+        // A `match` statement ends with a `:`, and a `case` has one, even
+        // when brackets or a backslash carry them over several lines.
+        assert_eq!(
+            kinds_of(
+                "match(x):\nmatch [\n  x]:\nmatch(\n  x,\n):\nmatch \\\n  x:\nmatch '''a\nb''':",
+                Kind::Keyword
+            ),
+            ["match", "match", "match", "match", "match"]
+        );
+        assert_eq!(
+            kinds_of(
+                "case(x): pass\ncase [\n  1,  # c\n]: pass\ncase \\\n  -1:",
+                Kind::Keyword
+            ),
+            ["case", "pass", "case", "pass", "case"]
+        );
+        // Otherwise brackets after the word call or index a name.
         assert_eq!(
             identifiers(
-                "match(x)\nmatch[1]\nmatch = re.match(p)\ncase.x\nif match: case + 1\nmatch, case = 1, 2\nmatch(x)  # :"
+                "match(x)\nmatch (x)\nmatch[1:\n  2]\nmatch = re.match(p)\ncase.x\nif match: case + 1\nmatch, case = 1, 2\nmatch(x)  # :\ncase(\n  x)"
             ),
             [
-                "match", "x", "match", "match", "re", "match", "p", "case", "x", "match", "case",
-                "match", "case", "match", "x"
+                "match", "x", "match", "x", "match", "match", "re", "match", "p", "case", "x",
+                "match", "case", "match", "case", "match", "x", "case", "x"
             ]
         );
+        // An annotation isn't a `match` statement.
+        assert_eq!(identifiers("match[x]: int"), ["match", "x", "int"]);
         // Only at the start of a line.
         assert_eq!(identifiers("x = match y"), ["x", "match", "y"]);
         assert_eq!(identifiers("f(\n  match x)"), ["f", "match", "x"]);
@@ -932,10 +956,13 @@ mod tests {
     fn type_and_lazy() {
         assert_eq!(
             kinds_of(
-                "type X = int\ntype Y[T] = list[T]; lazy import a\nlazy from b import c",
+                "type X = int\ntype Y[T] = list[T]; lazy import a\nlazy from b import c\ntype \\\n  Z = int\nlazy \\\n  import d",
                 Kind::Keyword
             ),
-            ["type", "type", "lazy", "import", "lazy", "from", "import"]
+            [
+                "type", "type", "lazy", "import", "lazy", "from", "import", "type", "lazy",
+                "import"
+            ]
         );
         assert_eq!(
             identifiers(

@@ -1095,17 +1095,17 @@ such as `print`. A name after `.` is always an identifier.
 
 `match`, `case`, `type` and `lazy` are soft keywords. They are keywords
 in some statements and names everywhere else. The lexer guesses which
-from the tokens next to them on the same line. It doesn't look at later
-lines, because a line's colors must not depend on the lines after it.
+from the other tokens in the statement. A statement goes on over
+several lines when brackets or a backslash join them, and the lexer
+looks at all of them.
 
 - `match` and `case` are keywords at the start of a statement, when
   what follows them can start an expression or a pattern. That's a
-  name, a literal, a bracket, `-`, `*` or `not`. So `match x:` has a
-  keyword, and `match = 1` and `match.group()` don't. A bracket right
-  after a name usually calls it or indexes it, as in `match(x)`, while
-  people write a space before the brackets of a statement. So a bracket
-  without a space before it only makes a keyword if the line ends with
-  `:`, as in `match(x):`.
+  name, a literal, a bracket, `-`, `*` or `not`. Then the statement
+  must end with a `:` outside of brackets, for `match`, or have one,
+  for `case`, since a `case` can have its body on the same line. So
+  `match x:` and `match(x):` have keywords, and `match = 1`,
+  `match.group()` and `match(x)` don't.
 - `type X = int` makes a type alias. Two names in a row are an error
   anywhere else, so `type` is a keyword when a name follows it.
 - `lazy` is a keyword when `import` or `from` follows it, as in
@@ -1804,9 +1804,9 @@ leave that column blank.
   lines, and that we don't have the full text for, doesn't know it's
   inside parentheses. So it reads a field at the start of a line, as
   in `file: !1,`, as the label of a basic block.
-- A `match` or `case` with a bracket right after it, as in `match(a,`,
-  is a name unless its line ends with `:`. So when the `:` is on a
-  later line, the lexer reads the statement as a call.
+- Python only reads `case` as a keyword in the body of a `match`
+  statement. The lexer doesn't keep track of those, so it reads the
+  annotation `case[x]: int` as the start of a `case`.
 - A hunk from the middle of a shell here-document, or of a quoted
   string over several lines, that we don't have the full text for
   reads the text as commands.
