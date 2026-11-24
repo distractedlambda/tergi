@@ -91,7 +91,7 @@ pub fn lex(text: &str, out: &mut Tokens) {
     while let Some(token) = lex.next() {
         let span = lex.span();
         if token == Ok(Token::Comment) {
-            out.push_comment(text, span);
+            out.push(span, Kind::Comment);
             continue;
         }
         let was_key = std::mem::replace(&mut key, false);
@@ -302,9 +302,8 @@ mod tests {
             tokens("{ // a \"b\": 1\r\n  /* c\n  d */ \"e\": /* f */ 2 /* g"),
             [
                 ("{", Kind::Punctuation),
-                ("// a \"b\": 1", Kind::Comment),
-                ("/* c", Kind::Comment),
-                ("  d */", Kind::Comment),
+                ("// a \"b\": 1\r", Kind::Comment),
+                ("/* c\n  d */", Kind::Comment),
                 (":", Kind::Punctuation),
                 ("/* f */", Kind::Comment),
                 ("2", Kind::Number),
@@ -363,7 +362,7 @@ mod tests {
             &[("\n  ", None)],
             &[("\r\n\t", None)],
             &[(" ", None), ("// c \"a\": 1, /*", C), ("\n", None)],
-            &[("// x", C), ("\r\n", None)],
+            &[("// x\r", C), ("\n", None)],
             &[("/* [1, \"x\": */", C)],
             &[("/*\n * \"a\": 1\n */", C), (" ", None)],
         ])
@@ -496,8 +495,7 @@ mod tests {
 
     proptest! {
         /// Every byte of a valid document gets the kind of what it's part
-        /// of. Whitespace in comments can be plain, since comments leave
-        /// out the whitespace at the end of each line.
+        /// of.
         #[test]
         fn colors_valid_documents(doc in document()) {
             let mut out = Tokens::default();
@@ -507,9 +505,7 @@ mod tests {
                 got[r].fill(Some(k));
             }
             for (i, (g, w)) in got.iter().zip(&doc.want).enumerate() {
-                let space = doc.text.as_bytes()[i].is_ascii_whitespace();
-                let ok = g == w || (*w == Some(Kind::Comment) && g.is_none() && space);
-                prop_assert!(ok, "byte {} of {:?} is {:?}, not {:?}", i, doc.text, g, w);
+                prop_assert!(g == w, "byte {} of {:?} is {:?}, not {:?}", i, doc.text, g, w);
             }
         }
     }
