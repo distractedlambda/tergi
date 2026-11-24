@@ -509,9 +509,9 @@ the diff against the text's line with that number, and a line that
 reads differently gets no colors. A carriage return at the end of the
 text's line that the diff doesn't have is allowed, so files whose CRLF
 endings `core.autocrlf` takes out keep their colors. Lines that do
-match get the colors from lexing the text we have. When an earlier
-line changed, such as by opening a comment, those can be wrong until
-the reload. Colors always stay inside the line they belong to, because
+match get the colors from lexing the text we have. When another line
+changed, such as by opening a comment, those can be wrong until the
+reload. Colors always stay inside the line they belong to, because
 spans are cut at the end of the diff's line.
 
 The language is chosen by the file's extension, in
@@ -682,9 +682,8 @@ comment color, as it does in most editors. Only a condition that is
 just `0` counts. The preprocessor still splits skipped code into
 tokens, so the lexer reads it as usual, and a `/*` in it can hide the
 `#endif`. It counts the conditionals inside to find the one that
-matches. The lexer colors the skipped lines once it finds the end, but
-which lines those are only depends on the lines before them, so a hunk
-lexed on its own gets the same colors.
+matches. The lexer colors the skipped lines once it finds the end. If
+there is no end, the rest of the file is skipped.
 
 A number is a preprocessing number, as the standard defines it. It
 takes in letters, dots, digit separators, and signs after `e` or `p`,
@@ -1000,8 +999,6 @@ are `.zon` files such as `build.zig.zon`, which hold Zig values.
 Zig is easy to lex. It has no block comments, and no string can go on
 to the next line. A multiline string is a run of lines that each start
 with `\\`, and each of those lines gets the string color on its own.
-So a line's colors never depend on the lines around it, and a hunk
-gets the same colors whether we have the full text or not.
 
 Comments, including doc comments that start with `///` or `//!`, get
 the comment color. Strings and characters get the string color, and
