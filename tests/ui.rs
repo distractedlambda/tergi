@@ -1319,6 +1319,79 @@ fn stages_selected_lines_and_discards_a_file() {
     assert_eq!(s.sh(&["diff", "--name-only"]).trim(), "");
 }
 
+/// `.S` stashes the file the cursor is in, from any row of it, and leaves
+/// the other files alone.
+#[test]
+fn stashes_one_file_from_the_detail_pane() {
+    let s = Scratch::new();
+    s.write("a.txt", "a\n");
+    s.write("b.txt", "b\n");
+    s.commit_all("init");
+    s.write("a.txt", "staged\n");
+    s.sh(&["add", "a.txt"]);
+    s.write("b.txt", "changed\n");
+    s.write("new.txt", "new\n");
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(1);
+    ui.key(KeyCode::Char('3'));
+    let in_file = |u: &Ui, r: &Row, sec: Section, path: &str| matches!(r, Row::Hunk { sec: s, file, .. } if *s == sec && u.app.section_files(sec)[*file].path() == path);
+    let at = ui
+        .app
+        .detail
+        .rows
+        .iter()
+        .position(|r| in_file(&ui, r, Section::Unstaged, "b.txt"))
+        .expect("the hunk of b.txt");
+    ui.app.detail_move_to(at, false);
+    ui.dot('S');
+    assert!(
+        matches!(ui.app.overlays.last(), Some(Overlay::Input(_))),
+        "{}",
+        ui.screen()
+    );
+    ui.type_text("just b");
+    ui.key(KeyCode::Enter);
+    ui.settle();
+    assert_eq!(
+        s.sh(&["stash", "list", "--format=%gs"]).trim(),
+        "On main: just b"
+    );
+    assert_eq!(s.sh(&["stash", "show", "--name-only"]).trim(), "b.txt");
+    assert_eq!(s.read("b.txt"), "b\n");
+    assert_eq!(s.index("a.txt"), "staged\n");
+    assert_eq!(s.read("new.txt"), "new\n");
+
+    // An untracked file, with no message, is named after the file.
+    ui.wait("the untracked file", |u| {
+        u.app.section_files(Section::Untracked).len() == 1
+    });
+    let at = ui
+        .app
+        .detail
+        .rows
+        .iter()
+        .position(|r| {
+            matches!(
+                r,
+                Row::File {
+                    sec: Section::Untracked,
+                    ..
+                }
+            )
+        })
+        .expect("the untracked file");
+    ui.app.detail_move_to(at, false);
+    ui.dot('S');
+    ui.key(KeyCode::Enter);
+    ui.settle();
+    assert!(!s.file("new.txt").exists());
+    assert_eq!(
+        s.sh(&["stash", "list", "--format=%gs"]).lines().next(),
+        Some("On main: new.txt")
+    );
+    assert_eq!(s.index("a.txt"), "staged\n");
+}
+
 /// Put the cursor on a row in the detail pane and press `.d`, which asks
 /// before discarding.
 fn ask_to_discard(ui: &mut Ui, row: impl Fn(&Ui, &Row) -> bool) {

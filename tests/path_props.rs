@@ -39,7 +39,7 @@ use tergi::git::workdir::Workdir;
 use tergi::util::fs_path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Content {
+pub(crate) enum Content {
     Text {
         text: String,
         exec: bool,
@@ -85,10 +85,10 @@ impl Layer {
 }
 
 #[derive(Debug, Clone)]
-struct Versions {
-    head: Option<Content>,
-    index: Option<Content>,
-    work: Option<Content>,
+pub(crate) struct Versions {
+    pub head: Option<Content>,
+    pub index: Option<Content>,
+    pub work: Option<Content>,
 }
 
 #[derive(Debug, Clone)]
@@ -203,7 +203,8 @@ fn layer() -> impl Strategy<Value = Layer> {
     ]
 }
 
-fn case() -> impl Strategy<Value = Case> {
+/// A few files with odd names, each with its versions.
+pub(crate) fn files() -> impl Strategy<Value = (Vec<BString>, Vec<Versions>)> {
     let versions = (prop::option::weighted(0.7, content()), layer(), layer()).prop_map(
         |(head, index, work)| {
             let index = index.apply(&head);
@@ -211,28 +212,29 @@ fn case() -> impl Strategy<Value = Case> {
             Versions { head, index, work }
         },
     );
+    prop::collection::vec((name(), versions), 1..6).prop_map(|f| usable(f).into_iter().unzip())
+}
+
+fn case() -> impl Strategy<Value = Case> {
     (
-        prop::collection::vec((name(), versions), 1..6),
+        files(),
         0u32..4,
         any::<bool>(),
         prop::collection::vec(any::<bool>(), 1..6),
         settings(),
     )
-        .prop_map(|(files, context, stage, whole, settings)| {
-            let (names, files) = usable(files).into_iter().unzip();
-            Case {
-                names,
-                files,
-                context,
-                stage,
-                whole,
-                settings,
-            }
+        .prop_map(|((names, files), context, stage, whole, settings)| Case {
+            names,
+            files,
+            context,
+            stage,
+            whole,
+            settings,
         })
 }
 
 /// A path in the working tree.
-fn file(s: &Scratch, rel: &[u8]) -> std::path::PathBuf {
+pub(crate) fn file(s: &Scratch, rel: &[u8]) -> std::path::PathBuf {
     s.path().join(fs_path(rel))
 }
 
@@ -262,7 +264,7 @@ fn put(s: &Scratch, rel: &[u8], content: Option<&Content>) {
     }
 }
 
-fn git(s: &Scratch, args: &[&str]) -> Vec<u8> {
+pub(crate) fn git(s: &Scratch, args: &[&str]) -> Vec<u8> {
     git_in(s.path(), args, None)
 }
 
@@ -408,7 +410,7 @@ fn text_of(data: &[u8]) -> Option<String> {
 }
 
 /// What git would store for a file in the working tree.
-fn disk(s: &Scratch, rel: &[u8]) -> Vec<u8> {
+pub(crate) fn disk(s: &Scratch, rel: &[u8]) -> Vec<u8> {
     let path = file(s, rel);
     let meta = std::fs::symlink_metadata(&path).expect("stat");
     if meta.is_symlink() {
@@ -569,7 +571,7 @@ fn check_workdir(s: &Scratch, case: &Case, wd: &Workdir) -> Result<(), TestCaseE
 }
 
 /// The entries of the index, or of a tree, by path, as (mode, id).
-fn entries(s: &Scratch, tree: Option<&str>) -> BTreeMap<BString, (String, String)> {
+pub(crate) fn entries(s: &Scratch, tree: Option<&str>) -> BTreeMap<BString, (String, String)> {
     let out = match tree {
         None => git(s, &["ls-files", "-s", "-z"]),
         Some(t) => git(s, &["ls-tree", "-r", "-z", t]),
@@ -588,7 +590,7 @@ fn entries(s: &Scratch, tree: Option<&str>) -> BTreeMap<BString, (String, String
         .collect()
 }
 
-fn hash(s: &Scratch, data: &[u8]) -> String {
+pub(crate) fn hash(s: &Scratch, data: &[u8]) -> String {
     let out = git_in(s.path(), &["hash-object", "--stdin"], Some(data));
     String::from_utf8_lossy(&out).trim().to_string()
 }
@@ -753,9 +755,11 @@ fn check_commit(s: &Scratch) -> Result<(), TestCaseError> {
     Ok(())
 }
 
-fn check(case: &Case) -> Result<(), TestCaseError> {
-    let rt = common::runtime();
-    let s = Scratch::with(&case.settings);
+/// Make a repository with `files` in HEAD, the index and the working
+/// tree. It also has a `keep.txt` that never changes, which some symlinks
+/// point to.
+pub(crate) fn make_repo(settings: &Settings, names: &[BString], files: &[Versions]) -> Scratch {
+    let s = Scratch::with(settings);
     s.write("keep.txt", "keep\n");
     let layers: [fn(&Versions) -> Option<&Content>; 3] = [
         |v| v.head.as_ref(),
@@ -763,7 +767,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
         |v| v.work.as_ref(),
     ];
     for (k, layer) in layers.iter().enumerate() {
-        for (name, v) in case.names.iter().zip(&case.files) {
+        for (name, v) in names.iter().zip(files) {
             put(&s, name, layer(v));
         }
         match k {
@@ -776,7 +780,12 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
             _ => {}
         }
     }
+    s
+}
 
+fn check(case: &Case) -> Result<(), TestCaseError> {
+    let rt = common::runtime();
+    let s = make_repo(&case.settings, &case.names, &case.files);
     let wd = rt
         .block_on(Workdir::load(&s.git, case.context, 100_000))
         .expect("load");
@@ -787,7 +796,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
 
 /// Run `cases` cases, unless `PROPTEST_CASES` asks for some other number.
 /// `ProptestConfig::with_cases` would ignore the variable.
-fn config(cases: u32) -> ProptestConfig {
+pub(crate) fn config(cases: u32) -> ProptestConfig {
     let mut config = ProptestConfig::default();
     if std::env::var_os("PROPTEST_CASES").is_none() {
         config.cases = cases;

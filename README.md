@@ -141,6 +141,7 @@ In the working directory:
 | --- | --- |
 | `.` Space | Stage or unstage the file, hunk or selected lines |
 | `.d` | Discard (asks first) |
+| `.S` | Stash the file, with its staged and unstaged changes |
 | `.o` | Open the file in your editor |
 
 ### The git menu

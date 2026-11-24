@@ -151,6 +151,31 @@ async fn take_side_when_one_side_deleted() {
     );
 }
 
+/// Stashing one file refuses what git couldn't stash, and leaves
+/// everything as it was.
+#[tokio::test]
+async fn stash_file_refuses_conflicts_and_empty_repositories() {
+    let s = Scratch::new();
+    s.write("new.txt", "new\n");
+    let err = ops::stash_file(&s.git, b"new.txt", "").await;
+    assert!(err.is_err(), "stashed before the first commit");
+    assert!(s.file("new.txt").exists());
+
+    s.write("f.txt", "a\n");
+    s.commit_all("init");
+    s.sh(&["checkout", "-q", "-b", "other"]);
+    s.write("f.txt", "theirs\n");
+    s.commit_all("theirs");
+    s.sh(&["checkout", "-q", "main"]);
+    s.write("f.txt", "ours\n");
+    s.commit_all("ours");
+    assert!(s.git.run(&["merge", "other"]).await.is_err());
+    let err = ops::stash_file(&s.git, b"f.txt", "").await;
+    assert!(err.is_err(), "stashed a conflicted file");
+    assert_eq!(s.sh(&["stash", "list"]), "");
+    assert_eq!(s.sh(&["status", "--porcelain"]).trim(), "UU f.txt");
+}
+
 #[tokio::test]
 async fn staged_files_before_the_first_commit() {
     let s = Scratch::new();

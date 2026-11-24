@@ -1,9 +1,10 @@
 # Staging
 
 The working directory view lets you stage, unstage and discard whole
-sections, files, hunks or single lines. This document explains how tergi
-loads the working directory, how it turns a selection into something git
-can apply, and the edge cases that shaped the code.
+sections, files, hunks or single lines, and stash single files. This
+document explains how tergi loads the working directory, how it turns a
+selection into something git can apply, and the edge cases that shaped
+the code.
 
 The loading code is in `src/git/workdir.rs` and `src/git/status.rs`. The
 patches are built in `src/git/patch.rs` and applied in `src/git/ops.rs`.
@@ -236,6 +237,40 @@ side has an entry, it checks out that side and stages it. If it doesn't,
 that side deleted the file, so taking it means `git rm`. "Mark as
 resolved" stages the file as it is.
 
+## Stashing one file
+
+`.S` stashes the file the cursor is in, staged and unstaged changes
+together, and puts the file back the way it is in HEAD. `ops::stash_file`
+does this.
+
+`git stash push -- <path>` isn't enough. It only resets that file, but
+the stash it makes still holds everything that is staged. Applying the
+stash later brings back staged changes to other files, even ones the
+user has thrown away since. So we build the stash ourselves, in a
+scratch index in `.git/tergi/`. The commits are laid out the way git
+lays out a stash, so `git stash` and the sidebar treat it like any
+other:
+
+- The index commit is HEAD with the file's index entry, or without the
+  file if the index has none.
+- The stash commit is that, with the file as it is on disk. An untracked
+  file isn't in it.
+- An untracked file goes in a third commit on its own, like
+  `--include-untracked` does.
+
+`git stash store` adds the stash to the list. Only then do we reset the
+file, with `git restore --source=HEAD --staged --worktree`, or
+`git clean` for an untracked file. If resetting fails, the file is left
+as it was, and nothing is lost.
+
+The stash is named after the message, or after the file. Whitespace in
+the name is squeezed into single spaces, the way the reflog that lists
+stashes does it anyway. A name that isn't UTF-8 gets replacement
+characters, because git would read it as Latin-1.
+
+Conflicted files and submodules are refused. So are files without
+changes, and repositories without a commit.
+
 ## After an operation
 
 Each of these runs through `App::spawn_op`, so only one runs at a time.
@@ -282,6 +317,10 @@ puts the cursor back on the same file and hunk by path (see
   index and the working tree have the entry that git recorded for that
   side, or no file if the side has none, and that `Workdir::load` lists
   no conflicts.
+- `tests/stash_file_props.rs` makes the files of `path_props.rs` and
+  stashes one of them. It checks that the other files are left alone,
+  that the stash commits hold only that file, and that popping the
+  stash puts it back on disk.
 - `tests/ui.rs` checks that a file or hunk waiting in the discard dialog
   stays the same one after a reload, and that discarding a section
   spares files that show up later.
@@ -297,5 +336,9 @@ puts the cursor back on the same file and hunk by path (see
   them one at a time.
 - A selection that splits a change to the last line of a file is
   refused rather than staged.
+- A file whose deletion is staged, but which is still on disk as an
+  untracked file, can be stashed but not popped again. Git won't put
+  the untracked file back over the version from HEAD. `git stash -u`
+  has the same problem.
 - Conflicted files show their whole text as added lines. There is no
   three-way view, and you can't stage parts of them.

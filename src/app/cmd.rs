@@ -159,6 +159,8 @@ pub enum Cmd {
     ToggleAmend,
     FocusMessage,
     StashPush,
+    /// Ask for a message, then stash the changes to one file.
+    StashFile(BString),
     ToggleFold,
     FoldAll,
     LoadFull,
@@ -401,6 +403,7 @@ pub enum Purpose {
     Squash(ObjectId),
     SquashCommits(Vec<ObjectId>),
     StashPush,
+    StashFile(BString),
     SetUpstream(BString),
     /// The message for the planner row with this commit.
     PlannerMessage(ObjectId),
@@ -1048,6 +1051,13 @@ impl App {
                                 )
                                 .hint(),
                             );
+                        }
+                        if sec != Section::Conflicted {
+                            v.push(act(
+                                Some(Key::ch('S')),
+                                "Stash file…",
+                                Cmd::StashFile(p.clone()),
+                            ));
                         }
                         v.push(act(
                             Some(Key::ch('o')),
@@ -1799,6 +1809,7 @@ impl App {
             }
             Cmd::ToggleAmend => self.toggle_amend(),
             Cmd::StashPush => self.open_input("Stash changes", "Optional message. Untracked files are included.", false, "", Purpose::StashPush),
+            Cmd::StashFile(p) => self.open_input(&format!("Stash {p}"), "Optional message. Staged and unstaged changes are both stashed.", false, "", Purpose::StashFile(p)),
             Cmd::ToggleFold => self.toggle_fold(),
             Cmd::FoldAll => self.fold_all(),
             Cmd::LoadFull => self.load_full(),
@@ -2090,7 +2101,9 @@ impl App {
         let exe = self.repo.exe.clone();
         let name = text.trim().to_string();
         match b.purpose {
-            _ if name.is_empty() && !matches!(b.purpose, Purpose::StashPush) => {
+            _ if name.is_empty()
+                && !matches!(b.purpose, Purpose::StashPush | Purpose::StashFile(_)) =>
+            {
                 self.set_status("Nothing entered", Level::Warn);
                 self.cancel_input(&b);
             }
@@ -2139,6 +2152,13 @@ impl App {
                     .await
                     .map(|()| "Stashed changes".into())
             }),
+            Purpose::StashFile(p) => {
+                self.spawn_op("Stash file", After::Nothing, move |r, _| async move {
+                    ops::stash_file(&r.git, &p, &name)
+                        .await
+                        .map(|()| format!("Stashed {p}"))
+                });
+            }
             Purpose::PlannerMessage(id) => {
                 if let Some(p) = &mut self.planner
                     && let Some(r) = p.rows.iter_mut().find(|r| r.id == id)

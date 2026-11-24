@@ -9,6 +9,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStringExt as _;
+use std::path::Path;
 
 use anyhow::{Result, bail};
 use bstr::BString;
@@ -432,6 +433,215 @@ pub async fn stash_drop(git: &Git, stash: ObjectId) -> Result<()> {
     git.run(&["stash", "drop", &stash_ref(git, stash).await?])
         .await?;
     Ok(())
+}
+
+/// Stash the changes to one file, staged, unstaged or untracked, and put
+/// the file back the way it is in HEAD.
+///
+/// `git stash push -- <path>` would leave the other files alone, but the
+/// stash would still hold everything that is staged. Applying it later
+/// would bring back staged changes to other files, even ones the user has
+/// thrown away since. So we build the stash commits ourselves, the way
+/// git lays them out, in a temporary index that starts from HEAD and only
+/// takes this file's entry. The commit for the index has this file as it
+/// is staged. The commit for the working tree has it as it is on disk. An
+/// untracked file goes in a third commit on its own, like
+/// `--include-untracked` does.
+///
+/// An empty `message` names the stash after the file.
+pub async fn stash_file(git: &Git, path: &[u8], message: &str) -> Result<()> {
+    let o = OsStr::new::<str>;
+    let spec = pathspec(path);
+    let Ok(head) = git.read(&["rev-parse", "--verify", "-q", "HEAD"]).await else {
+        bail!("There is nothing to stash before the first commit.");
+    };
+    let head = head.text().trim().to_string();
+    let entry = git
+        .read(&[o("ls-files"), o("-s"), o("-z"), o("--"), spec.as_os_str()])
+        .await?
+        .stdout;
+    // An entry is "<mode> <id> <stage>\t<path>\0". A conflicted file has
+    // one for each side, and git can't stash those either.
+    let entry = match entry
+        .split(|&b| b == 0)
+        .filter(|e| !e.is_empty())
+        .collect::<Vec<_>>()[..]
+    {
+        [] => None,
+        [e] => {
+            let meta = e.split(|&b| b == b'\t').next().unwrap_or_default();
+            let mut fields = meta.split(|&b| b == b' ');
+            let (Some(mode), Some(id), Some(b"0")) = (fields.next(), fields.next(), fields.next())
+            else {
+                bail!("Resolve the conflict in this file before stashing it.");
+            };
+            if mode == b"160000" {
+                bail!("Submodules can't be stashed one at a time.");
+            }
+            Some((mode.to_vec(), id.to_vec()))
+        }
+        _ => bail!("Resolve the conflict in this file before stashing it."),
+    };
+    let untracked = !git
+        .read(&[
+            o("ls-files"),
+            o("--others"),
+            o("--exclude-standard"),
+            o("-z"),
+            o("--"),
+            spec.as_os_str(),
+        ])
+        .await?
+        .stdout
+        .is_empty();
+    let in_head = git
+        .read(&[
+            o("cat-file"),
+            o("-e"),
+            os_concat(b"HEAD:", path).as_os_str(),
+        ])
+        .await
+        .is_ok();
+
+    let index = super::rebase::scratch_dir(git)
+        .await?
+        .join(format!("stash-index-{}", std::process::id()));
+    let made = stash_commits(git, &index, &head, path, entry.as_ref(), untracked, message).await;
+    let _ = tokio::fs::remove_file(&index).await;
+    let (Some(stash), subject) = made? else {
+        bail!("This file has no changes to stash.");
+    };
+    git.run(&[o("stash"), o("store"), o("-m"), os_str(&subject), o(&stash)])
+        .await?;
+
+    // The stash is saved, so from here on a failure only leaves the file
+    // as it was.
+    if untracked {
+        delete_untracked(git, &[path]).await?;
+    }
+    if entry.is_some() || in_head {
+        run_on_paths(
+            git,
+            &["restore", "--source=HEAD", "--staged", "--worktree"],
+            &[path],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Write the commits of a stash of one file, using `index` as a scratch
+/// index. Returns the stash commit, or `None` if the file has no changes,
+/// and the subject that names the stash.
+async fn stash_commits(
+    git: &Git,
+    index: &Path,
+    head: &str,
+    path: &[u8],
+    entry: Option<&(Vec<u8>, Vec<u8>)>,
+    untracked: bool,
+    message: &str,
+) -> Result<(Option<String>, Vec<u8>)> {
+    let o = OsStr::new::<str>;
+    let opts = RunOpts {
+        env: vec![("GIT_INDEX_FILE", index.as_os_str().to_owned())],
+        ..Default::default()
+    };
+    let read = async |args: &[&OsStr]| -> Result<String> {
+        Ok(git.read_opts(args, &opts).await?.text().trim().to_string())
+    };
+    let raw = path;
+    let path = os_str(raw);
+
+    // These are the subjects git gives a stash's commits.
+    let branch = match git.read(&["symbolic-ref", "-q", "--short", "HEAD"]).await {
+        Ok(out) => out.stdout.trim_ascii().to_vec(),
+        Err(_) => b"(no branch)".to_vec(),
+    };
+    let head_line = git
+        .read(&["log", "-1", "--no-show-signature", "--format=%h %s", "HEAD"])
+        .await?
+        .stdout;
+    let on = |what: &str| {
+        [
+            what.as_bytes(),
+            b" on ",
+            &branch,
+            b": ",
+            head_line.trim_ascii(),
+        ]
+        .concat()
+    };
+    // Git would read a name that isn't UTF-8 as Latin-1. We show it with
+    // replacement characters everywhere else, so the stash gets the same.
+    // The reflog that lists stashes turns each run of whitespace into one
+    // space, and we do too, so a name with a newline stays on one line.
+    let name = match message.trim() {
+        "" => String::from_utf8_lossy(raw),
+        m => m.into(),
+    };
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let subject = [b"On ", &branch[..], b": ", name.as_bytes()].concat();
+    let commit = async |tree: &str, parents: &[&str], subject: Vec<u8>| -> Result<String> {
+        // Git doesn't sign stashes, and commit-tree would follow
+        // `commit.gpgSign`.
+        let subject = OsString::from_vec(subject);
+        let mut args = vec![o("commit-tree"), o("--no-gpg-sign")];
+        for p in parents {
+            args.extend([o("-p"), o(p)]);
+        }
+        args.extend([o("-m"), subject.as_os_str(), o(tree)]);
+        read(&args).await
+    };
+
+    read(&[o("read-tree"), o(head)]).await?;
+    match entry {
+        Some((mode, id)) => {
+            let info = [mode.as_slice(), b",", id, b",", raw].concat();
+            read(&[
+                o("update-index"),
+                o("--add"),
+                o("--cacheinfo"),
+                os_str(&info),
+            ])
+            .await?;
+        }
+        None => {
+            read(&[o("update-index"), o("--force-remove"), o("--"), path]).await?;
+        }
+    }
+    let index_tree = read(&[o("write-tree")]).await?;
+    if entry.is_some() {
+        // This reads the file from disk, through the user's filters, and
+        // removes the entry if the file is gone.
+        read(&[o("update-index"), o("--add"), o("--remove"), o("--"), path]).await?;
+    }
+    let work_tree = read(&[o("write-tree")]).await?;
+    let untracked_tree = if untracked {
+        read(&[o("read-tree"), o("--empty")]).await?;
+        read(&[o("update-index"), o("--add"), o("--"), path]).await?;
+        Some(read(&[o("write-tree")]).await?)
+    } else {
+        None
+    };
+    let head_tree = read(&[o("rev-parse"), o(&format!("{head}^{{tree}}"))]).await?;
+    if work_tree == head_tree && index_tree == head_tree && untracked_tree.is_none() {
+        return Ok((None, subject));
+    }
+
+    let index_commit = commit(&index_tree, &[head], on("index")).await?;
+    let mut parents = vec![head, index_commit.as_str()];
+    let untracked_commit = match &untracked_tree {
+        Some(t) => Some(commit(t, &[], on("untracked files")).await?),
+        None => None,
+    };
+    parents.extend(untracked_commit.as_deref());
+    let stash = commit(&work_tree, &parents, subject.clone()).await?;
+    Ok((Some(stash), subject))
+}
+
+fn os_concat(a: &[u8], b: &[u8]) -> OsString {
+    OsString::from_vec([a, b].concat())
 }
 
 /// Find the current `stash@{n}` name of a stash. Pushing or dropping a

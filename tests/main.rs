@@ -23,6 +23,7 @@ mod rebase_props;
 mod rebase_stop_props;
 mod refs_props;
 mod staging;
+mod stash_file_props;
 mod stash_props;
 mod ui;
 mod ui_props;

@@ -222,7 +222,7 @@ async fn git_dir(git: &Git) -> Result<PathBuf> {
     Ok(fs_path(dir).to_path_buf())
 }
 
-async fn scratch_dir(git: &Git) -> Result<PathBuf> {
+pub(crate) async fn scratch_dir(git: &Git) -> Result<PathBuf> {
     let dir = git_dir(git).await?.join("tergi");
     tokio::fs::create_dir_all(&dir)
         .await
