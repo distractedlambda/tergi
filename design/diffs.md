@@ -1032,10 +1032,9 @@ a colon is a label. That includes the names of fields, as in
 attributes, the parser tells LLVM's lexer to read the name as a word
 instead. We can't tell these apart the way the parser does, so we look
 at where the label is. A label at the start of its line is a basic
-block, unless it's inside parentheses and something other than a
-comment follows it on its line. That's how a field looks in a node
-that goes on over several lines. Any other label is a field, and its
-name gets the colors it would have without the colon. So `line` and
+block, unless it's inside parentheses. That's how a field looks in a
+node that goes on over several lines. Any other label is a field, and
+its name gets the colors it would have without the colon. So `line` and
 `argmem` get the keyword color, and the `float` in
 `denormal_fpenv(float: ieee)` gets the type color.
 
@@ -1790,10 +1789,6 @@ leave that column blank.
   compiler joins them.
 - C and C++ read `<:` and `:>` as `[` and `]`. We read them as two
   tokens, which only changes the color of the `<` or `>`.
-- A hunk from the middle of an LLVM IR node that goes on over several
-  lines, and that we don't have the full text for, doesn't know it's
-  inside parentheses. So it reads a field at the start of a line, as
-  in `file: !1,`, as the label of a basic block.
 - Python only reads `case` as a keyword in the body of a `match`
   statement. The lexer doesn't keep track of those, so it reads the
   annotation `case[x]: int` as the start of a `case`.

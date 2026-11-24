@@ -122,14 +122,7 @@ static void label(const std::string &full, size_t s, size_t colon,
   for (size_t i = ls; i < s; i++)
     if (full[i] != ' ' && full[i] != '\t')
       start = false;
-  size_t le = full.find('\n', colon + 1);
-  if (le == std::string::npos)
-    le = full.size();
-  size_t r = colon + 1;
-  while (r < le && isWs(full[r]))
-    r++;
-  bool blank = r == le || full[r] == ';' || !inParens;
-  if (start && blank)
+  if (start && !inParens)
     ident(out, s, colon);
   else if (!classify(full, s, colon, out)) {
     ok = false;

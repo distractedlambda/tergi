@@ -186,21 +186,15 @@ fn string(text: &str, span: Range<usize>, out: &mut Tokens) {
 /// have without the colon.
 ///
 /// A field can start its line too, when a node goes on over several
-/// lines. But then it's inside parentheses, and a value follows it. A
-/// hunk that we lex on its own may not have the line with the opening
-/// parenthesis, so a label with only a comment after it is a basic block
-/// even inside parentheses.
+/// lines. But then it's inside parentheses, and a basic block never is.
 fn label(text: &str, name: Range<usize>, in_parens: bool, out: &mut Tokens) {
     let colon = name.end;
     let before = &text[..name.start];
     let line_start = before.rfind('\n').map_or(0, |i| i + 1);
-    let after = &text[colon + 1..];
-    let rest = &after[..after.find('\n').unwrap_or(after.len())];
-    let rest = rest.trim();
-    if before[line_start..]
-        .trim_start_matches([' ', '\t'])
-        .is_empty()
-        && (rest.is_empty() || rest.starts_with(';') || !in_parens)
+    if !in_parens
+        && before[line_start..]
+            .trim_start_matches([' ', '\t'])
+            .is_empty()
     {
         out.push(name, Kind::Identifier);
     } else {
@@ -449,19 +443,25 @@ declare void @"\01_f"(ptr %"a b", i32 %1)
                 (")", Kind::Punctuation),
             ]
         );
-        // A field that starts its line is still a field, but a label
-        // with code after it on its line is a basic block.
+        // A label with code after it on its line is a basic block, but
+        // a field that starts its line is still a field, even with only a
+        // comment after it.
         assert_eq!(
             identifiers("sw.default: br label %return"),
             ["sw.default", "return"]
         );
         assert_eq!(
-            tokens("!DIFile(\n  file: !1,\n  \"x\": 2)"),
+            tokens("!DIFile(\n  file: !1,\n  line: ; c\n 2,\n  \"x\": 2)"),
             [
                 ("!DIFile", Kind::Keyword),
                 ("(", Kind::Punctuation),
                 ("file", Kind::Keyword),
                 (":", Kind::Punctuation),
+                (",", Kind::Punctuation),
+                ("line", Kind::Keyword),
+                (":", Kind::Punctuation),
+                ("; c", Kind::Comment),
+                ("2", Kind::Number),
                 (",", Kind::Punctuation),
                 ("\"x\"", Kind::String),
                 (":", Kind::Punctuation),
