@@ -369,9 +369,10 @@ impl State<'_, '_> {
     }
 
     /// Pop the innermost bracket that `close` matches, along with any
-    /// unclosed brackets inside it. A closing bracket that doesn't match
-    /// anything changes nothing, since a hunk can start in the middle of
-    /// some brackets. Only a `}` can close a template's `${`.
+    /// unclosed brackets inside it. A closing bracket that matches nothing
+    /// changes nothing. Only a file with mismatched brackets has either,
+    /// and this way the brackets around them still count for the code
+    /// after them. Only a `}` can close a template's `${`.
     fn close(&mut self, close: u8) -> Option<Frame> {
         let i = self.stack.iter().rposition(|f| match f {
             Frame::Paren(_) => close == b')',
@@ -726,7 +727,8 @@ mod tests {
                 ("b`", String)
             ]
         );
-        // A hunk can start with the end of a template.
+        // A `}` that matches nothing isn't the end of the code in a
+        // template, so the backquote after it starts a new one.
         assert_eq!(tokens("a}`b`"), [("}", Punctuation), ("`b`", String)]);
     }
 

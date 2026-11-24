@@ -936,8 +936,9 @@ or right before one. Two closing brackets need more care:
 So the lexer keeps a stack of the brackets it's inside of. The same
 stack holds the `${` of each template literal, and the `}` that closes
 one goes back to the template's text. A `)` or `]` never closes a
-`${`. A closing bracket that matches nothing changes nothing, since a
-hunk can start in the middle of a block.
+`${`. A closing bracket that matches nothing changes nothing. Only a
+file with mismatched brackets has one, and the brackets around it
+still count for the code after it.
 
 The reserved words get the keyword color, and so do `let`, `static`,
 `async` and `await`. Any word after `.` or `?.` names a property, and
