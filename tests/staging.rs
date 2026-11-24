@@ -531,3 +531,69 @@ async fn texts_for_staged_files_before_the_first_commit() {
     assert_eq!(wd.staged_texts[0].old, None);
     assert_eq!(wd.staged_texts[0].new.as_deref(), Some("f\n"));
 }
+
+/// Text files are read whatever their size. A binary file is only read
+/// as far as it takes to see that it's binary.
+#[tokio::test]
+async fn texts_of_large_files() {
+    let s = Scratch::new();
+    // Over 4 MiB, but on few lines, so that the line limit doesn't apply.
+    let big = format!("{}\n", "x".repeat(1 << 20)).repeat(5);
+    s.write("staged.rs", "old\n");
+    s.write("unstaged.rs", "old\n");
+    s.commit_all("init");
+    s.write("staged.rs", &big);
+    s.sh(&["add", "staged.rs"]);
+    s.write("unstaged.rs", &big);
+    s.write("untracked.rs", &big);
+    let mut bin = big.clone().into_bytes();
+    bin[100] = 0;
+    std::fs::write(s.file("untracked.bin"), &bin).expect("write");
+
+    let wd = Workdir::load(&s.git, 3, 100_000).await.expect("load");
+    let find = |files: &[Arc<FileDiff>], path: &str| {
+        files
+            .iter()
+            .position(|f| f.path() == path)
+            .expect("file in diff")
+    };
+    let i = find(&wd.staged, "staged.rs");
+    assert!(!wd.staged[i].too_large);
+    assert_eq!(wd.staged_texts[i].new.as_deref(), Some(&*big));
+    let i = find(&wd.unstaged, "unstaged.rs");
+    assert!(!wd.unstaged[i].too_large);
+    assert_eq!(wd.unstaged_texts[i].new.as_deref(), Some(&*big));
+    let i = find(&wd.untracked, "untracked.rs");
+    assert!(!wd.untracked[i].too_large);
+    assert!(!wd.untracked[i].hunks.is_empty());
+    assert_eq!(wd.untracked_texts[i].new.as_deref(), Some(&*big));
+    let i = find(&wd.untracked, "untracked.bin");
+    assert!(wd.untracked[i].binary);
+    assert_eq!(wd.untracked_texts[i].new, None);
+}
+
+/// The id of a staged submodule names a commit that isn't in the
+/// repository. Git says it's missing, and the blobs after it are still
+/// read.
+#[tokio::test]
+async fn texts_after_a_missing_submodule_commit() {
+    let s = Scratch::new();
+    s.write("b.rs", "b\n");
+    let head = s.commit_all("init");
+    let missing = "1".repeat(head.len());
+    s.sh(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("160000,{missing},a-sub"),
+    ]);
+    s.write("b.rs", "b\nc\n");
+    s.sh(&["add", "b.rs"]);
+
+    let wd = Workdir::load(&s.git, 3, 100_000).await.expect("load");
+    let paths: Vec<String> = wd.staged.iter().map(|f| f.path().to_string()).collect();
+    assert_eq!(paths, ["a-sub", "b.rs"]);
+    assert_eq!(wd.staged_texts[0].new, None);
+    assert_eq!(wd.staged_texts[1].old.as_deref(), Some("b\n"));
+    assert_eq!(wd.staged_texts[1].new.as_deref(), Some("b\nc\n"));
+}

@@ -133,10 +133,10 @@ checks that applying the hunks to the old text gives the new text.
 Some files aren't diffed:
 
 - A blob with a NUL byte in its first 8000 bytes is binary.
-- A blob over 4 MiB (`MAX_BLOB`), or a diff over 20,000 lines
-  (`DEFAULT_LINE_LIMIT`), is marked too large. The user can ask for it
-  anyway with Enter on the notice, which loads the commit again without
-  limits.
+- A diff over 20,000 lines (`DEFAULT_LINE_LIMIT`) is marked too large.
+  The user can ask for it anyway with Enter on the notice, which loads
+  the commit again without the limit. Blobs of any size are diffed, so
+  a big file with few lines, such as minified code, is shown.
 - A submodule shows up as `Subproject commit <id>`, as git shows it.
 
 A stash made with `--include-untracked` keeps its untracked files in a
@@ -857,9 +857,10 @@ them from `git cat-file`. For an unstaged file, the old side is in the index
 and the new side is on disk. For a symlink, the text on disk is the path
 it points to, which is what git stores. For a staged file, the old side
 is in HEAD and the new side is in the index. `Workdir::load` reads the
-index and HEAD versions with `read_blobs`, which runs `git cat-file`
-twice: once with `--batch-check` to skip anything over `MAX_BLOB`, and
-once with `--batch` to read the rest. It asks for blobs by the ids in
+index and HEAD versions with `read_blobs`, which runs
+`git cat-file --batch`. It skips files that git's diff calls binary.
+A submodule's id names a commit in the submodule, which git usually
+reports as missing. It asks for blobs by the ids in
 the diff's `index` lines, which `--full-index` makes complete. Asking by
 path wouldn't work for every name. `git cat-file` reads one name per
 line, and a path like `1:x` names a stage of the index.

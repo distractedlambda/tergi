@@ -8,7 +8,7 @@ use anyhow::Result;
 use bstr::{BStr, ByteSlice as _};
 
 use super::cli::{Git, RunOpts};
-use super::commit::{FileTexts, MAX_BLOB, diff_texts, is_binary};
+use super::commit::{BINARY_TEST_LEN, FileTexts, diff_texts, is_binary};
 use super::diff::{FileDiff, FileStatus, parse_unified};
 use super::status::{Entry, Status};
 use crate::git::ObjectId;
@@ -69,9 +69,7 @@ impl Workdir {
 
         let mut conflicted_files = Vec::new();
         for e in status.conflicted() {
-            let data = tokio::fs::read(git.workdir().join(fs_path(e.path())))
-                .await
-                .ok();
+            let data = read_worktree(&git.workdir().join(fs_path(e.path()))).await;
             conflicted_files.push((e.path().to_owned(), data));
         }
 
@@ -79,7 +77,7 @@ impl Workdir {
         let mut modes = FileModes::new(git);
         for (i, e) in status.untracked().enumerate() {
             untracked_files.push(if i < MAX_UNTRACKED_DIFFS {
-                read_untracked(&mut modes, e.path(), MAX_BLOB).await
+                read_untracked(&mut modes, e.path()).await
             } else {
                 let mut f = FileDiff::new(FileStatus::Untracked, None, Some(e.path().to_owned()));
                 f.too_large = true;
@@ -105,13 +103,13 @@ impl Workdir {
                 // combined diff. We show them separately, so drop them from
                 // `unstaged`.
                 unstaged.retain(|u| u.path() != path.as_bstr());
-                if let Some(text) = data {
-                    if is_binary(&text) {
-                        f.binary = true;
-                    } else {
+                match data {
+                    Some(Contents::Binary) => f.binary = true,
+                    Some(Contents::Text(text)) => {
                         f.hunks = diff_texts(b"", &text, context);
                         f.old_path = Some(path);
                     }
+                    None => {}
                 }
                 conflicted.push(f);
             }
@@ -172,27 +170,59 @@ impl Workdir {
     }
 }
 
-/// The text of a file in the working tree, as git would store it. For a
-/// symlink, that is the path it points to, not the file there.
-async fn read_text(path: &std::path::Path) -> Option<Arc<str>> {
-    let meta = tokio::fs::symlink_metadata(path).await.ok()?;
-    let data = if meta.is_symlink() {
-        tokio::fs::read_link(path)
-            .await
-            .ok()?
-            .into_os_string()
-            .into_encoded_bytes()
-    } else {
-        tokio::fs::read(path).await.ok()?
-    };
-    if data.len() > MAX_BLOB || is_binary(&data) {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&data).into())
+/// What a file in the working tree holds, as far as we read it.
+enum Contents {
+    Text(Vec<u8>),
+    /// A binary file, of which we only read the start.
+    Binary,
 }
 
-/// Read the text of each blob. Ids that aren't blobs, and blobs that are
-/// binary or over `MAX_BLOB`, give `None`. If git fails, every id does.
+/// Read a file in the working tree the way git would store it. For a
+/// symlink, that is the path it points to, not the file there. Anything
+/// that is neither, such as a directory or a FIFO, and a file we can't
+/// read, give `None`. Opening a FIFO would wait for a writer.
+///
+/// A binary file can be huge, so we only read as much of it as
+/// `is_binary` looks at. Text files are read whatever their size.
+async fn read_worktree(path: &std::path::Path) -> Option<Contents> {
+    use tokio::io::AsyncReadExt as _;
+    let meta = tokio::fs::symlink_metadata(path).await.ok()?;
+    if meta.is_symlink() {
+        let target = tokio::fs::read_link(path).await.ok()?;
+        return Some(Contents::Text(target.into_os_string().into_encoded_bytes()));
+    }
+    if !meta.is_file() {
+        return None;
+    }
+    let mut file = tokio::fs::File::open(path).await.ok()?;
+    let mut data = Vec::new();
+    (&mut file)
+        .take(BINARY_TEST_LEN as u64)
+        .read_to_end(&mut data)
+        .await
+        .ok()?;
+    if is_binary(&data) {
+        return Some(Contents::Binary);
+    }
+    file.read_to_end(&mut data).await.ok()?;
+    Some(Contents::Text(data))
+}
+
+/// The text of a file in the working tree, unless it's binary.
+async fn read_text(path: &std::path::Path) -> Option<Arc<str>> {
+    match read_worktree(path).await? {
+        Contents::Text(data) => Some(String::from_utf8_lossy(&data).into()),
+        Contents::Binary => None,
+    }
+}
+
+/// Read the text of each blob. Ids that aren't there or aren't blobs, and
+/// blobs that are binary, give `None`. If git fails, every id does.
+///
+/// The ids come from the diff's `index` lines. The caller leaves out the
+/// files that git's diff calls binary, so we don't read those. The id of
+/// a submodule names a commit in the submodule, which usually isn't
+/// here.
 async fn read_blobs(git: &Git, ids: &[Option<ObjectId>]) -> Vec<Option<Arc<str>>> {
     let mut texts = vec![None; ids.len()];
     let asked: Vec<(usize, String)> = ids
@@ -203,73 +233,39 @@ async fn read_blobs(git: &Git, ids: &[Option<ObjectId>]) -> Vec<Option<Arc<str>>
     if asked.is_empty() {
         return texts;
     }
-    let lines = |items: &mut dyn Iterator<Item = &str>| {
-        let mut input = Vec::new();
-        for item in items {
-            input.extend_from_slice(item.as_bytes());
-            input.push(b'\n');
-        }
-        RunOpts {
-            stdin: Some(input),
-            ..Default::default()
-        }
-    };
-
-    // First find out what each id is and how big it is, so we don't read
-    // large blobs only to throw them away.
-    let Ok(out) = git
-        .read_opts(
-            &[
-                "cat-file",
-                "--batch-check=%(objectname) %(objecttype) %(objectsize)",
-            ],
-            &lines(&mut asked.iter().map(|(_, id)| id.as_str())),
-        )
-        .await
-    else {
-        return texts;
-    };
-    let info = String::from_utf8_lossy(&out.stdout);
-    let mut wanted: Vec<(usize, String)> = Vec::new();
-    for ((i, _), line) in asked.iter().zip(info.lines()) {
-        // An id that isn't there gives "<id> missing" instead.
-        let fields: Vec<&str> = line.split(' ').collect();
-        if let [id, "blob", size] = fields[..]
-            && size.parse().is_ok_and(|n: usize| n <= MAX_BLOB)
-        {
-            wanted.push((*i, id.to_string()));
-        }
+    let mut input = Vec::new();
+    for (_, id) in &asked {
+        input.extend_from_slice(id.as_bytes());
+        input.push(b'\n');
     }
-    if wanted.is_empty() {
-        return texts;
-    }
-
-    let Ok(out) = git
-        .read_opts(
-            &["cat-file", "--batch"],
-            &lines(&mut wanted.iter().map(|(_, id)| id.as_str())),
-        )
-        .await
-    else {
+    let opts = RunOpts {
+        stdin: Some(input),
+        ..Default::default()
+    };
+    let Ok(out) = git.read_opts(&["cat-file", "--batch"], &opts).await else {
         return texts;
     };
-    // Each blob comes as "<id> blob <size>\n", its contents and a newline.
+    // Each object comes as "<id> <type> <size>\n", its contents and a
+    // newline. An id that isn't there gives only "<id> missing\n".
     let mut rest = out.stdout.as_slice();
-    for (i, id) in wanted {
+    for (i, id) in asked {
         let Some(end) = rest.iter().position(|&b| b == b'\n') else {
             break;
         };
         let header = String::from_utf8_lossy(&rest[..end]);
-        let mut fields = header.split(' ');
-        let size = match (fields.next(), fields.next(), fields.next()) {
-            (Some(got), Some("blob"), Some(size)) if got == id => size.parse::<usize>().ok(),
-            _ => None,
+        rest = &rest[end + 1..];
+        let fields: Vec<&str> = header.split(' ').collect();
+        let [got, kind, size] = fields[..] else {
+            continue;
         };
-        let Some(data) = size.and_then(|n| rest.get(end + 1..end + 1 + n)) else {
+        let Some(data) = size.parse::<usize>().ok().and_then(|n| rest.get(..n)) else {
             break;
         };
-        rest = rest.get(end + 2 + data.len()..).unwrap_or_default();
-        if !is_binary(data) {
+        rest = rest.get(data.len() + 1..).unwrap_or_default();
+        if got != id {
+            break;
+        }
+        if kind == "blob" && !is_binary(data) {
             texts[i] = Some(String::from_utf8_lossy(data).into());
         }
     }
@@ -313,38 +309,26 @@ impl<'a> FileModes<'a> {
     }
 }
 
-/// An untracked file with its mode filled in, and its contents if they
-/// are small enough to show.
+/// An untracked file with its mode filled in, and its contents if we
+/// could read them.
 struct Untracked {
     f: FileDiff,
-    data: Option<Vec<u8>>,
+    data: Option<Contents>,
 }
 
-/// Read an untracked file. Files bigger than `size_limit` bytes are marked
-/// `too_large` and not read.
-async fn read_untracked(modes: &mut FileModes<'_>, rel: &BStr, size_limit: usize) -> Untracked {
+async fn read_untracked(modes: &mut FileModes<'_>, rel: &BStr) -> Untracked {
     let mut f = FileDiff::new(FileStatus::Untracked, None, Some(rel.to_owned()));
     let path = modes.git.workdir().join(fs_path(rel));
     let Ok(meta) = tokio::fs::symlink_metadata(&path).await else {
         return Untracked { f, data: None };
     };
-    let data = if meta.is_symlink() {
+    if meta.is_symlink() {
         // Git stores a symlink as a file that holds the path it points at.
         f.new_mode = Some("120000".into());
-        tokio::fs::read_link(&path)
-            .await
-            .ok()
-            .map(|t| t.into_os_string().into_encoded_bytes())
     } else if meta.is_file() {
         f.new_mode = Some(modes.regular(&meta).await.into());
-        if meta.len() > size_limit as u64 {
-            f.too_large = true;
-            return Untracked { f, data: None };
-        }
-        tokio::fs::read(&path).await.ok()
-    } else {
-        None
-    };
+    }
+    let data = read_worktree(&path).await;
     Untracked { f, data }
 }
 
@@ -354,8 +338,8 @@ fn diff_untracked(u: Untracked, context: u32, line_limit: usize) -> (FileDiff, F
     let Untracked { mut f, data } = u;
     let mut texts = FileTexts::default();
     match data {
-        Some(data) if is_binary(&data) => f.binary = true,
-        Some(data) => {
+        Some(Contents::Binary) => f.binary = true,
+        Some(Contents::Text(data)) => {
             f.hunks = diff_texts(b"", &data, context);
             if f.line_count() > line_limit {
                 f.too_large = true;
@@ -368,13 +352,14 @@ fn diff_untracked(u: Untracked, context: u32, line_limit: usize) -> (FileDiff, F
     (f, texts)
 }
 
-/// Load an untracked file's diff without the size limits, for "show anyway".
+/// Load an untracked file's diff without the line limit, for "show
+/// anyway".
 pub async fn load_full_untracked(git: &Git, path: &BStr, context: u32) -> (FileDiff, FileTexts) {
-    let u = read_untracked(&mut FileModes::new(git), path, usize::MAX).await;
+    let u = read_untracked(&mut FileModes::new(git), path).await;
     crate::util::blocking(move || diff_untracked(u, context, usize::MAX)).await
 }
 
-/// Load the diff of `file` again without the size limit, for "show anyway".
+/// Load the diff of `file` again without the line limit, for "show anyway".
 pub async fn load_full_diff(
     git: &Git,
     file: &FileDiff,

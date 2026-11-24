@@ -51,9 +51,6 @@ pub struct Base {
     pub message: String,
 }
 
-/// Blobs bigger than this aren't diffed unless the user asks.
-pub const MAX_BLOB: usize = 4 * 1024 * 1024;
-
 pub async fn load(
     git: &Git,
     id: ObjectId,
@@ -544,11 +541,6 @@ fn files_of(
         if binary {
             f.binary = true;
             texts.push(FileTexts::default());
-        } else if old_text.as_ref().map_or(0, |t| t.len()) > MAX_BLOB
-            || new_text.as_ref().map_or(0, |t| t.len()) > MAX_BLOB
-        {
-            f.too_large = true;
-            texts.push(FileTexts::default());
         } else {
             f.hunks = diff_texts(
                 old_text.as_deref().unwrap_or("").as_bytes(),
@@ -589,8 +581,12 @@ fn blob_text(side: &Side, blobs: &HashMap<ObjectId, Vec<u8>>) -> Option<Arc<str>
     Some(String::from_utf8_lossy(data).into())
 }
 
+/// How many bytes at the start of a file `is_binary` looks at, as git
+/// does.
+pub const BINARY_TEST_LEN: usize = 8000;
+
 pub fn is_binary(data: &[u8]) -> bool {
-    data[..data.len().min(8000)].contains(&0)
+    data[..data.len().min(BINARY_TEST_LEN)].contains(&0)
 }
 
 /// Compute unified-diff hunks between two texts. They are bytes because an

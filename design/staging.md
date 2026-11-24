@@ -50,7 +50,6 @@ Some changes are too big to show at once.
 
 - A file diff with more than 20,000 lines (`DEFAULT_LINE_LIMIT`) is
   marked `too_large` and its hunks are dropped.
-- An untracked file bigger than 4 MiB (`MAX_BLOB`) isn't read.
 - Only the first 200 untracked files (`MAX_UNTRACKED_DIFFS`) are read.
   The rest are listed without contents.
 
@@ -59,8 +58,13 @@ The detail pane shows a notice for such files. Pressing Enter on it runs
 result comes back, `put_full_diff` finds the file again by its paths,
 because the status may have reloaded in the meantime.
 
-A file counts as binary if its first 8000 bytes contain a NUL byte. That
-is the same test git uses.
+Files of any size are read, as long as they are text. A file counts as
+binary if its first 8000 bytes contain a NUL byte. That is the same test
+git uses. Git hasn't looked at an untracked or conflicted file, so
+`read_worktree` reads its first 8000 bytes, and only reads the rest if
+there's no NUL byte in them. That way a huge binary file isn't read in
+full. For the other files, git's diff already says which are binary,
+and we don't read those at all.
 
 ### Modes of new files
 
