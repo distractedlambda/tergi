@@ -220,8 +220,26 @@ def predict(t, kinds):
     """What tergi's colors say message() prints for the text t, or None if
     they say CMake reports an error. `kinds` has a kind for each byte of
     t."""
+    # CMake reads a CRLF as a line feed, and drops a backslash before a
+    # line feed along with it, before it reads escapes and references.
+    raw = t.encode()
+    b = bytearray()
+    joined = []
+    i = 0
+    while i < len(raw):
+        if raw[i:i + 2] == b"\r\n":
+            i += 1
+        elif raw[i:i + 2] == b"\\\n":
+            i += 2
+        elif raw[i:i + 3] == b"\\\r\n":
+            i += 3
+        else:
+            n = 2 if raw[i] == ord("\\") else 1
+            b += raw[i:i + n]
+            joined += kinds[i:i + n]
+            i += n
+    kinds = joined
     out = bytearray()
-    b = t.encode()
     i = 0
     while i < len(b):
         k = kinds[i]
@@ -267,7 +285,8 @@ def check_message():
     bad = 0
     stats = collections.Counter()
     for (n, path), (code, body) in zip(scripts, results):
-        text = pathlib.Path(path).read_text(encoding="utf-8")
+        # read_text would turn CRLFs into LFs.
+        text = pathlib.Path(path).read_bytes().decode()
         t = text[len(PREFIX):-3]
         start = len(PREFIX.encode())
         tb = t.encode()

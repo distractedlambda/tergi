@@ -6,10 +6,6 @@
 //! `ExpandVariablesInStringImpl` in `cmMakefile.cxx` reads the escapes and
 //! variable references inside an argument, and `cmConditionEvaluator.cxx`
 //! has the words that `if` treats as operators.
-//!
-//! Lines that come after a line never change its colors. A variable
-//! reference or generator expression has to end on the line it starts on
-//! to get a color.
 
 use std::ops::Range;
 
@@ -194,7 +190,7 @@ pub fn lex(text: &str, out: &mut Tokens) {
                 for r in strings {
                     kinds[r.start - i..r.end - i].fill(Some(Kind::String));
                 }
-                value(&b[..end], i, &mut kinds);
+                value(&b[i..end], |k| k, &mut kinds);
                 push_kinds(out, i, &kinds);
                 line_start = false;
                 i = end;
@@ -260,7 +256,40 @@ fn quoted(text: &str, i: usize, out: &mut Tokens) -> usize {
     }
     let end = (j + 1).min(b.len());
     let mut kinds = vec![Some(Kind::String); end - i];
-    value(&b[..j], i + 1, &mut kinds[1..]);
+    // CMake reads a CRLF as a line feed, and drops a backslash before a
+    // line feed along with it. A reference or generator expression can go
+    // on across either, so we read them in the text that's left. `at`
+    // has the place in `kinds` of each byte of `arg`.
+    let mut arg = Vec::with_capacity(j - i);
+    let mut at = Vec::with_capacity(j - i);
+    let mut k = i + 1;
+    while k < j {
+        let n = match &b[k..j] {
+            [b'\\', b'\n', ..] => 2,
+            [b'\\', b'\r', b'\n', ..] => 3,
+            [b'\r', b'\n', ..] => {
+                k += 1;
+                continue;
+            }
+            // Keep an escape together, so that `\\` before a line feed
+            // doesn't drop it.
+            [b'\\', _, ..] => {
+                arg.extend_from_slice(&b[k..k + 2]);
+                at.extend([k - i, k + 1 - i]);
+                k += 2;
+                continue;
+            }
+            _ => {
+                arg.push(b[k]);
+                at.push(k - i);
+                k += 1;
+                continue;
+            }
+        };
+        kinds[k - i..k - i + n].fill(Some(Kind::Escape));
+        k += n;
+    }
+    value(&arg, |k| at[k], &mut kinds);
     push_kinds(out, i, &kinds);
     end
 }
@@ -356,14 +385,14 @@ fn part(b: &[u8], i: usize, strings: &mut Vec<Range<usize>>) -> usize {
 }
 
 /// Color the escapes, variable references and generator expressions in
-/// the argument text that starts at `start` and ends at the end of `b`.
-/// `kinds` holds a kind for each of its bytes, which starts as the color
-/// of the argument as a whole.
-fn value(b: &[u8], start: usize, kinds: &mut [Option<Kind>]) {
-    let mut fill = |r: Range<usize>, kind| kinds[r.start - start..r.end - start].fill(Some(kind));
+/// the text `b` of an argument. `kinds` holds a kind for each byte of the
+/// argument, which starts as the color of the argument as a whole, and
+/// `at` gives the place in `kinds` of each byte of `b`.
+fn value(b: &[u8], at: impl Fn(usize) -> usize, kinds: &mut [Option<Kind>]) {
+    let mut fill = |r: Range<usize>, kind| kinds[at(r.start)..at(r.end - 1) + 1].fill(Some(kind));
     // The `$<` of the generator expressions that are open.
     let mut open = Vec::new();
-    let mut i = start;
+    let mut i = 0;
     while i < b.len() {
         match b[i] {
             b'\\' => {
@@ -371,11 +400,6 @@ fn value(b: &[u8], start: usize, kinds: &mut [Option<Kind>]) {
                     break;
                 };
                 let end = i + 1 + utf8_len(c).min(b.len() - i - 1);
-                // A backslash before a line break only shows up in quoted
-                // arguments, where it joins the lines.
-                if c == b'\n' {
-                    open.clear();
-                }
                 if escape(c) {
                     fill(i..end, Kind::Escape);
                 }
@@ -399,10 +423,6 @@ fn value(b: &[u8], start: usize, kinds: &mut [Option<Kind>]) {
                 }
                 i += 1;
             }
-            b'\n' => {
-                open.clear();
-                i += 1;
-            }
             _ => i += 1,
         }
     }
@@ -424,12 +444,12 @@ fn reference_open(rest: &[u8]) -> Option<usize> {
         .map(|p| p.len())
 }
 
-/// If a variable reference such as `${NAME}` starts at `i` and ends on
-/// the same line, where it ends.
+/// If a variable reference such as `${NAME}` starts at `i`, where it
+/// ends.
 ///
 /// A name can hold letters, digits, `_/.+-`, escapes, other references,
-/// and a `$` that doesn't start anything. CMake also allows a line break
-/// inside a quoted argument, but we don't follow it onto the next line.
+/// and a `$` that doesn't start anything. It can also hold a line break,
+/// which only a quoted argument can have.
 fn reference(b: &[u8], i: usize) -> Option<usize> {
     let mut j = i + 1 + reference_open(&b[i + 1..])?;
     let name_char = |c: u8| c.is_ascii_alphanumeric() || b"_/.+-".contains(&c);
@@ -451,12 +471,12 @@ fn reference(b: &[u8], i: usize) -> Option<usize> {
                 // after the backslash, and the rest of a character that
                 // isn't ASCII doesn't belong in a name.
                 let c = *b.get(j + 1)?;
-                if c == b'\n' || !c.is_ascii() || !escape(c) {
+                if !c.is_ascii() || !escape(c) {
                     return None;
                 }
                 j += 2;
             }
-            c if name_char(c) => j += 1,
+            c if name_char(c) || c == b'\n' => j += 1,
             _ => return None,
         }
     }
@@ -712,12 +732,31 @@ endif()
                 (")", Punctuation)
             ]
         );
-        // A reference has to end on its line.
+        // In a quoted argument, a reference can go on over lines, and a
+        // backslash before a line break joins the lines even in the
+        // middle of `${`. A CRLF counts as a line feed.
         assert_eq!(
-            tokens("x(\"${a\n}\")"),
+            tokens("x(\"${a\nb} $\\\n{c\\\r\nd} ${e\r\n} ${f\r}\")"),
             [
                 ("(", Punctuation),
-                ("\"${a\n}\"", String),
+                ("\"", String),
+                ("${a\nb}", Attribute),
+                (" ", String),
+                ("$\\\n{c\\\r\nd}", Attribute),
+                (" ", String),
+                ("${e\r\n}", Attribute),
+                (" ${f\r}\"", String),
+                (")", Punctuation)
+            ]
+        );
+        // An escaped backslash doesn't join the lines.
+        assert_eq!(
+            tokens("x(\"$\\\\\n{a}\")"),
+            [
+                ("(", Punctuation),
+                ("\"$", String),
+                ("\\\\", Escape),
+                ("\n{a}\"", String),
                 (")", Punctuation)
             ]
         );
@@ -735,6 +774,20 @@ endif()
                 ("\"", String),
                 ("$<", Punctuation),
                 ("a:b", String),
+                (">", Punctuation),
+                ("\"", String),
+                (")", Punctuation),
+            ]
+        );
+        // In a quoted argument, one can go on over lines.
+        assert_eq!(
+            tokens("x(\"$<a\nb\\\n>\")"),
+            [
+                ("(", Punctuation),
+                ("\"", String),
+                ("$<", Punctuation),
+                ("a\nb", String),
+                ("\\\n", Escape),
                 (">", Punctuation),
                 ("\"", String),
                 (")", Punctuation),

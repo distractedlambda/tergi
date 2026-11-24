@@ -741,10 +741,10 @@ CMake reads generator expressions later, and only in some commands,
 but the lexer can't tell which, so it colors them in every argument.
 A `$<` only gets a color when its `>` comes later in the same argument.
 
-The colors of a line never depend on the lines after it. So a variable
-reference or generator expression only gets a color when it ends on
-the line it starts on. CMake allows a line break inside a reference in
-a quoted argument, but nobody writes one.
+In a quoted argument, a variable reference or generator expression
+can go on over several lines. A backslash at the end of a line joins
+the lines there. CMake drops it before it reads references, so it can
+even split the `${` of one.
 
 ### YAML
 
@@ -1603,10 +1603,11 @@ leave that column blank.
   CMake's parser on them. It checks that each byte has the color its
   token calls for, on random texts and on the 12,885 CMake files in
   CMake's own source. For escapes and variable references, it runs
-  `message("…")` with `cmake -P` on random arguments. With no
-  variables defined, the colors say whether CMake gives an error, and
-  what it prints if it doesn't. They agreed on all of them, on 25,000
-  random texts and 15,000 arguments when we wrote the lexer.
+  `message("…")` with `cmake -P` on random arguments, some of them
+  over several lines. With no variables defined, the colors say
+  whether CMake gives an error, and what it prints if it doesn't. They
+  agreed on all of them, on 25,000 random texts and 15,000 arguments
+  when we wrote the lexer.
 - `src/highlight/sh.rs` has examples for each kind of shell token,
   such as reserved words in and out of place, quotes and escapes,
   parameter expansions, command substitutions, arithmetic,
