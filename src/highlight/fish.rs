@@ -1537,6 +1537,13 @@ end
             kinds_of("time not time a; and --help; time -p a", Kind::Keyword),
             ["time", "not", "time"]
         );
+        assert_eq!(
+            kinds_of(
+                "if a; else time -p b; end; if a; else time b; end",
+                Kind::Keyword
+            ),
+            ["if", "else", "end", "if", "else", "time", "end"]
+        );
         assert_eq!(kinds_of("! a; !a; a !", Kind::Operator), ["!"]);
         // `command`, `builtin` and `exec` only decorate a command that
         // follows them.
