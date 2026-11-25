@@ -345,6 +345,12 @@ rebuilds the rows. The rebuild keeps the cursor on its row, so the next
 search starts from the same place and finds the hunks that just
 appeared.
 
+After a keyboard move, `App::ensure_doc_visible` scrolls as little as
+it takes to show the cursor. When the cursor lands on a file's header,
+it shows the whole file, and when the file is taller than the pane, it
+puts the header at the top. A click doesn't scroll, so the row under
+the mouse stays where it is.
+
 ### Moving the edges of hunks
 
 The user can move the top and bottom edges of a hunk, to show the

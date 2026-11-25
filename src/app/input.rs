@@ -435,13 +435,26 @@ impl App {
         self.ensure_doc_visible();
     }
 
+    /// Scroll the detail pane as little as it takes to show the cursor's
+    /// row. On a file's header, that's the whole file, and when the file
+    /// doesn't fit, the header goes at the top. Keyboard moves call this.
+    /// A click on a row doesn't, so it never scrolls what's under the
+    /// mouse.
     pub fn ensure_doc_visible(&mut self) {
         let h = usize::from(self.areas.doc.height.max(1));
         let c = self.detail.cursor;
-        if c < self.detail.scroll {
+        let rows = &self.detail.rows;
+        let last = match rows.get(c) {
+            Some(&Row::File { sec, file }) => (c + 1..rows.len())
+                .take_while(|&i| rows[i].file() == Some((sec, file)))
+                .last()
+                .unwrap_or(c),
+            _ => c,
+        };
+        if c < self.detail.scroll || last - c >= h {
             self.detail.scroll = c;
-        } else if c >= self.detail.scroll + h {
-            self.detail.scroll = c + 1 - h;
+        } else if last >= self.detail.scroll + h {
+            self.detail.scroll = last + 1 - h;
         }
     }
 
