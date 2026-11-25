@@ -2220,6 +2220,95 @@ fn the_detail_pane_moves_by_file_then_hunk_then_line() {
 }
 
 #[test]
+fn moving_to_a_file_shows_the_whole_file() {
+    let s = Scratch::new();
+    let short = |n: usize| format!("one\ntwo {n}\nthree\n");
+    let long = |n: usize| {
+        (0..80)
+            .map(|i| format!("line {i} {n}\n"))
+            .collect::<String>()
+    };
+    for i in 0..8 {
+        s.write(&format!("f{i}.txt"), &short(0));
+    }
+    s.write("long.txt", &long(0));
+    s.write("z.txt", &short(0));
+    s.commit_all("init");
+    for i in 0..8 {
+        s.write(&format!("f{i}.txt"), &short(1));
+    }
+    s.write("long.txt", &long(1));
+    s.write("z.txt", &short(1));
+    s.commit_all("change everything");
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    ui.select_commit(1);
+    ui.wait("the commit's files", |u| {
+        u.app
+            .detail
+            .rows
+            .iter()
+            .filter(|r| matches!(r, Row::File { .. }))
+            .count()
+            == 10
+    });
+    ui.key(KeyCode::Char('3'));
+
+    // With the cursor on a file's header, the whole file is on screen, or
+    // the header is at the top when the file doesn't fit. Returns whether
+    // it fits.
+    let check = |ui: &Ui| -> Option<bool> {
+        let d = &ui.app.detail;
+        let c = d.cursor;
+        let Row::File { sec, file } = d.rows[c] else {
+            return None;
+        };
+        let last = (c..d.rows.len())
+            .take_while(|&i| d.rows[i].file() == Some((sec, file)))
+            .last()
+            .expect("the header");
+        let h = usize::from(ui.app.areas.doc.height);
+        let fits = last - c < h;
+        if fits {
+            assert!(
+                d.scroll <= c && last < d.scroll + h,
+                "rows {c}..={last} aren't all shown from {}\n{}",
+                d.scroll,
+                ui.screen()
+            );
+        } else {
+            assert_eq!(d.scroll, c, "the header isn't at the top\n{}", ui.screen());
+        }
+        Some(fits)
+    };
+
+    let mut seen = Vec::new();
+    for _ in 0..30 {
+        ui.key(KeyCode::Char('j'));
+        seen.extend(check(&ui));
+    }
+    for _ in 0..30 {
+        ui.key(KeyCode::Char('k'));
+        seen.extend(check(&ui));
+    }
+    for _ in 0..12 {
+        ui.key(KeyCode::Char(']'));
+        seen.extend(check(&ui));
+    }
+    for _ in 0..12 {
+        ui.key(KeyCode::Char('['));
+        seen.extend(check(&ui));
+    }
+    // Back out from the last line of the long file to its header.
+    for c in ['G', 'k', 'l', 'l', 'G', 'h', 'h'] {
+        ui.key(KeyCode::Char(c));
+    }
+    assert!(matches!(cursor_row(&ui), Row::File { .. }));
+    seen.extend(check(&ui));
+    assert!(seen.contains(&true) && seen.contains(&false));
+}
+
+#[test]
 fn esc_backs_out_before_it_opens_the_git_menu() {
     let s = Scratch::new();
     s.write("f.txt", "1\n2\n3\n");

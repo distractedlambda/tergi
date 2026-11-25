@@ -1829,6 +1829,7 @@ impl App {
             Cmd::NextFile(fwd) => {
                 self.detail.anchor = None;
                 self.detail.jump(fwd, |r| matches!(r, Row::File { .. }));
+                self.ensure_doc_visible();
             }
             Cmd::MoveHunkEdge { top, out } => self.move_edge_at_cursor(top, out),
             Cmd::ResetHunkEdges => self.reset_hunk_edges(),
