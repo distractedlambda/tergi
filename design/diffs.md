@@ -536,7 +536,14 @@ identifier, and gets a color from its name.
 
 An attribute is colored from `#[` up to the end of its path, such as
 `#[rustfmt::skip`. Finding where the attribute itself ends would take a
-parser.
+parser. The path follows the reference's simple paths, so it can start
+with `::`, and `crate`, `self`, `super` and `$crate` are segments of it.
+A macro's `$name` there is colored as a segment too. In
+`#[unsafe(no_mangle)]`, `unsafe` keeps the keyword color and the path
+inside it is the attribute's. rustc allows whitespace and comments
+between `#`, `!` and `[`, so the lexer looks past them from each `#`.
+A doc comment there ends the attribute, because rustc reads it as an
+attribute of its own.
 
 The Rust lexer follows rustc's own lexer, `rustc_lexer`, even where
 rustc only reads something so that it can report an error. So `'ab'`
@@ -1620,6 +1627,11 @@ leave that column blank.
   suffixes, so `1f16` was a number and a name. It also read shebang
   lines as code, and read characters and escapes that rustc rejects
   differently, which could change the colors of the rest of the line.
+  The check colors attributes the way tergi means to, so it found
+  nothing wrong with them. Attributes wrapped in `unsafe(`, paths
+  through `crate` or `$crate`, and a `#` apart from its `[` used to end
+  the attribute's color early, which showed up 970 times in the crates
+  that tergi depends on once the check knew about them.
 - `src/highlight/zig.rs` has examples for each kind of Zig token, such
   as multiline strings, quoted identifiers, escapes, and numbers that
   only the compiler rejects. `dev/reference/zig` runs the tokenizer

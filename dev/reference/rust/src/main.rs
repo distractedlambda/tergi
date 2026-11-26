@@ -150,20 +150,65 @@ fn is_trivia(kind: TokenKind) -> bool {
     )
 }
 
-/// Whether the token is a name that can be part of an attribute's path.
+/// Whether the token is a segment of an attribute's path: a name,
+/// `crate`, `self` or `super`.
 fn is_path_name(kind: TokenKind, text: &str) -> bool {
     match kind {
-        TokenKind::Ident | TokenKind::UnknownPrefix => word(text) == Kind::Identifier,
+        TokenKind::Ident | TokenKind::UnknownPrefix => {
+            word(text) == Kind::Identifier || matches!(text, "crate" | "self" | "super")
+        }
         TokenKind::RawIdent => true,
         _ => false,
     }
 }
 
-/// What comes next in the path at the start of an attribute, such as
-/// `#[rustfmt::skip`. tergi colors it as part of the attribute.
+/// Whether the tokens after the `#` at `i` are `[` or `![`, with only
+/// whitespace and comments between them. Doc comments don't count, since
+/// rustc's parser reads them as attributes.
+fn starts_attribute(toks: &[(TokenKind, Range<usize>)], i: usize) -> bool {
+    let next = |mut j: usize| {
+        j += 1;
+        while toks.get(j).is_some_and(|t| {
+            matches!(
+                t.0,
+                TokenKind::Whitespace
+                    | TokenKind::LineComment { doc_style: None }
+                    | TokenKind::BlockComment {
+                        doc_style: None,
+                        ..
+                    }
+            )
+        }) {
+            j += 1;
+        }
+        j
+    };
+    let kind = |j: usize| toks.get(j).map(|t| t.0);
+    let j = next(i);
+    match kind(j) {
+        Some(TokenKind::OpenBracket) => true,
+        Some(TokenKind::Bang) => kind(next(j)) == Some(TokenKind::OpenBracket),
+        _ => false,
+    }
+}
+
+/// Where we are in the start of an attribute, which tergi colors up to
+/// the end of its path, as in `#![rustfmt::skip`. The path can be wrapped
+/// in `unsafe(`, start with `::`, and have `$crate` or a macro's `$name`
+/// as a segment.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum AttrPath {
+enum Attr {
+    /// After the `#`, before `!` or `[`.
+    Pound,
+    /// Right after `[`.
+    Bracket,
+    /// After `unsafe`, before its `(`.
+    Unsafe,
+    /// Where the path starts.
+    Start,
+    /// After `::` or `$`, before a name.
     Name,
+    /// After a name, before `::`.
     Sep,
 }
 
@@ -192,31 +237,42 @@ fn expected(text: &str) -> Expected {
             i += 1;
             continue;
         }
-        let path = attr.take();
+        let at = attr.take();
+        let is = |states: &[Attr]| at.is_some_and(|a| states.contains(&a));
+        use Attr::*;
         // How many tokens this one takes up, and their color.
         let (n, color) = match kind {
-            TokenKind::Pound
-                if next(1) == Some(TokenKind::OpenBracket)
-                    || next(1) == Some(TokenKind::Bang)
-                        && next(2) == Some(TokenKind::OpenBracket) =>
-            {
-                attr = Some(AttrPath::Name);
-                let n = if next(1) == Some(TokenKind::Bang) {
-                    3
+            TokenKind::Bang | TokenKind::OpenBracket if at == Some(Pound) => {
+                attr = Some(if kind == TokenKind::Bang {
+                    Pound
                 } else {
-                    2
-                };
-                (n, Want::Is(Some(Kind::Attribute)))
-            }
-            _ if path == Some(AttrPath::Name) && is_path_name(kind, slice) => {
-                attr = Some(AttrPath::Sep);
+                    Bracket
+                });
                 (1, Want::Is(Some(Kind::Attribute)))
             }
-            TokenKind::Colon
-                if path == Some(AttrPath::Sep) && next(1) == Some(TokenKind::Colon) =>
-            {
-                attr = Some(AttrPath::Name);
+            TokenKind::Ident if at == Some(Bracket) && slice == "unsafe" => {
+                attr = Some(Unsafe);
+                (1, Want::Is(Some(Kind::Keyword)))
+            }
+            TokenKind::OpenParen if at == Some(Unsafe) => {
+                attr = Some(Start);
+                (1, Want::Is(Some(Kind::Punctuation)))
+            }
+            TokenKind::Colon if is(&[Bracket, Start, Sep]) && next(1) == Some(TokenKind::Colon) => {
+                attr = Some(Name);
                 (2, Want::Is(Some(Kind::Attribute)))
+            }
+            TokenKind::Dollar if is(&[Bracket, Start, Name]) => {
+                attr = Some(Name);
+                (1, Want::Is(Some(Kind::Attribute)))
+            }
+            _ if is(&[Bracket, Start, Name]) && is_path_name(kind, slice) => {
+                attr = Some(Sep);
+                (1, Want::Is(Some(Kind::Attribute)))
+            }
+            TokenKind::Pound if starts_attribute(&toks, i) => {
+                attr = Some(Pound);
+                (1, Want::Is(Some(Kind::Attribute)))
             }
             TokenKind::Ident | TokenKind::UnknownPrefix => {
                 let k = word(slice);
@@ -562,7 +618,7 @@ const PIECES: &[&str] = &[
     "usize", "f32", "f64", "\\n", "\\x41", "\\xff", "\\u{e9}", "\\u{", "}", "{", "\\'", "\\\"",
     "\\0", "\\q", "$", "?", ":", "::", "<", ">", "=", "-", "+", "!", "&", "|", "[", "]", "(", ")",
     ";", ",", "@", "#[", "#![", "'a'", "\"s\"", "/", "*", "#!", "1.", "f16", "e_", "\\u{_", "©",
-    "\u{b}", "\u{85}", "\u{200e}", "\u{2028}",
+    "\u{b}", "\u{85}", "\u{200e}", "\u{2028}", "unsafe", "unsafe(", "crate", "super", "$crate",
 ];
 
 /// A small random number generator, so that the texts only depend on the

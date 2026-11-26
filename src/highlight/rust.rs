@@ -52,12 +52,8 @@ enum Token {
     #[regex(r"[0-9]", number)]
     Number,
 
-    // Only the start of an attribute. `lex` also colors the path after it,
-    // such as `derive` or `rustfmt::skip`. Finding where the attribute ends
-    // would take a parser, since it can hold anything.
-    #[regex(r"#!?\[")]
-    Attribute,
-
+    // A `#` that starts an attribute is punctuation here too. `lex` finds
+    // the `[` after it and colors them both.
     #[regex(r"[-+*/%^!&|<>=]=?")]
     #[regex(r"&&|\|\||<<=?|>>=?|\.\.[.=]?|->|=>|[@~?]")]
     Operator,
@@ -400,18 +396,33 @@ fn shebang(text: &str) -> usize {
     let Some(rest) = text.strip_prefix("#!") else {
         return 0;
     };
-    let mut lex = Token::lexer(rest);
-    let next = loop {
-        match lex.next() {
-            Some(Ok(Token::Comment)) if !is_doc_comment(lex.slice()) => {}
-            next => break next.map(|_| lex.slice()),
-        }
-    };
-    if next == Some("[") {
+    if next_token(&mut Token::lexer(rest)) == Some("[") {
         return 0;
     }
     let line = rest.split('\n').next().unwrap_or(rest);
     2 + line.strip_suffix('\r').unwrap_or(line).len()
+}
+
+/// Skip whitespace and comments, and return the text of the next token.
+/// Doc comments count as tokens, because rustc reads them as attributes.
+fn next_token<'a>(lex: &mut Lexer<'a, Token>) -> Option<&'a str> {
+    loop {
+        match lex.next() {
+            Some(Ok(Token::Comment)) if !is_doc_comment(lex.slice()) => {}
+            next => return next.map(|_| lex.slice()),
+        }
+    }
+}
+
+/// Whether the `#` that `lex` just read starts an attribute, because `[`
+/// or `![` follows it. rustc allows whitespace and comments between them.
+fn starts_attribute(lex: &Lexer<Token>) -> bool {
+    let mut ahead = lex.clone();
+    match next_token(&mut ahead) {
+        Some("[") => true,
+        Some("!") => next_token(&mut ahead) == Some("["),
+        _ => false,
+    }
 }
 
 fn is_doc_comment(comment: &str) -> bool {
@@ -424,11 +435,46 @@ fn is_doc_comment(comment: &str) -> bool {
     }
 }
 
-/// What comes next in the path at the start of an attribute.
+/// Where we are in the start of an attribute, which we color up to the
+/// end of its path, as in `#![rustfmt::skip`. Finding where the attribute
+/// ends would take a parser, since it can hold anything.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum AttrPath {
+enum Attr {
+    /// After the `#`, before `!` or `[`. We only get here when
+    /// `starts_attribute` found them.
+    Pound,
+    /// Right after `[`, where `unsafe(` can wrap the attribute, as in
+    /// `#[unsafe(no_mangle)]`.
+    Bracket,
+    /// After that `unsafe`, before its `(`.
+    Unsafe,
+    /// Where the path starts. It can start with `::`.
+    Start,
+    /// After `::` or `$`, before a name.
     Name,
+    /// After a name, before `::`.
     Sep,
+}
+
+/// The color of a token in the start of an attribute, where `at` was
+/// before it, and where it leaves us. Returns `None` for a token that
+/// ends the path. Its segments can be names, `crate`, `self`, `super` and
+/// `$crate`, or a macro's `$name`.
+fn attribute(at: Attr, token: Token, slice: &str) -> Option<(Kind, Attr)> {
+    use Attr::*;
+    Some(match (at, token, slice) {
+        (Pound, Token::Operator, "!") => (Kind::Attribute, Pound),
+        (Pound, Token::Punctuation, "[") => (Kind::Attribute, Bracket),
+        (Bracket, Token::Keyword, "unsafe") => (Kind::Keyword, Unsafe),
+        (Unsafe, Token::Punctuation, "(") => (Kind::Punctuation, Start),
+        (Bracket | Start | Sep, Token::Punctuation, "::") => (Kind::Attribute, Name),
+        (Bracket | Start | Name, Token::Punctuation, "$") => (Kind::Attribute, Name),
+        (Bracket | Start | Name, Token::Ident, _)
+        | (Bracket | Start | Name, Token::Keyword, "crate" | "self" | "super") => {
+            (Kind::Attribute, Sep)
+        }
+        _ => return None,
+    })
 }
 
 /// Color a string or character literal and the escapes in it. Its body
@@ -497,28 +543,26 @@ pub fn lex(text: &str, out: &mut Tokens) {
     let shebang = shebang(text);
     out.push(0..shebang, Kind::Comment);
     lex.bump(shebang);
-    // Whether we're in the path of an attribute, such as `#[rustfmt::skip`.
+    // Where we are in the start of an attribute, if we're in one.
     let mut attr = None;
     while let Some(token) = lex.next() {
         let span = lex.span();
         let slice = lex.slice();
-        // A comment inside an attribute's path changes nothing.
+        // A comment inside the start of an attribute changes nothing.
         if token == Ok(Token::Comment) {
             out.push(span, Kind::Comment);
             continue;
         }
-        let path = attr.take();
+        if let (Some(at), Ok(token)) = (attr.take(), token)
+            && let Some((kind, next)) = attribute(at, token, slice)
+        {
+            attr = Some(next);
+            out.push(span, kind);
+            continue;
+        }
         let kind = match token {
-            Ok(Token::Attribute) => {
-                attr = Some(AttrPath::Name);
-                Kind::Attribute
-            }
-            Ok(Token::Ident) if path == Some(AttrPath::Name) => {
-                attr = Some(AttrPath::Sep);
-                Kind::Attribute
-            }
-            Ok(Token::Punctuation) if path == Some(AttrPath::Sep) && slice == "::" => {
-                attr = Some(AttrPath::Name);
+            Ok(Token::Punctuation) if slice == "#" && starts_attribute(&lex) => {
+                attr = Some(Attr::Pound);
                 Kind::Attribute
             }
             Ok(Token::Ident) => Kind::Identifier,
@@ -851,6 +895,97 @@ mod tests {
             ]
         );
         assert_eq!(kinds_of("#[x] y::z", Kind::Attribute), ["#[x"]);
+        // rustc allows whitespace and comments between `#`, `!` and `[`,
+        // but a doc comment is an attribute of its own.
+        assert_eq!(
+            tokens("# ! /* a */ [x] # [y] # /// b\n[z]"),
+            [
+                ("#", Kind::Attribute),
+                ("!", Kind::Attribute),
+                ("/* a */", Kind::Comment),
+                ("[x", Kind::Attribute),
+                ("]", Kind::Punctuation),
+                ("#", Kind::Attribute),
+                ("[y", Kind::Attribute),
+                ("]", Kind::Punctuation),
+                ("#", Kind::Punctuation),
+                ("/// b", Kind::Comment),
+                ("[", Kind::Punctuation),
+                ("]", Kind::Punctuation),
+            ]
+        );
+        // A `#` that isn't followed by `[` is punctuation, as in macros.
+        assert_eq!(
+            tokens("#x #!y #!=["),
+            [
+                ("#", Kind::Punctuation),
+                ("#", Kind::Punctuation),
+                ("!", Kind::Operator),
+                ("#", Kind::Punctuation),
+                ("!=", Kind::Operator),
+                ("[", Kind::Punctuation),
+            ]
+        );
+    }
+
+    #[test]
+    fn unsafe_attributes() {
+        assert_eq!(
+            tokens("#[unsafe(no_mangle)] #![unsafe(export_name = \"f\")] #[unsafe]"),
+            [
+                ("#[", Kind::Attribute),
+                ("unsafe", Kind::Keyword),
+                ("(", Kind::Punctuation),
+                ("no_mangle", Kind::Attribute),
+                (")]", Kind::Punctuation),
+                ("#![", Kind::Attribute),
+                ("unsafe", Kind::Keyword),
+                ("(", Kind::Punctuation),
+                ("export_name", Kind::Attribute),
+                ("=", Kind::Operator),
+                ("\"f\"", Kind::String),
+                (")]", Kind::Punctuation),
+                ("#[", Kind::Attribute),
+                ("unsafe", Kind::Keyword),
+                ("]", Kind::Punctuation),
+            ]
+        );
+        // Only the attribute itself can be wrapped in `unsafe(`.
+        assert_eq!(
+            kinds_of("#[a(unsafe(b))] #[a::unsafe(b)]", Kind::Attribute),
+            ["#[a", "#[a::"]
+        );
+    }
+
+    #[test]
+    fn attribute_paths() {
+        assert_eq!(
+            kinds_of(
+                "#[crate::a] #[self::b] #[super::c] #[::d::e] #[$crate::f] $(#[$m])* #[a:: :: b]",
+                Kind::Attribute
+            ),
+            [
+                "#[crate::a",
+                "#[self::b",
+                "#[super::c",
+                "#[::d::e",
+                "#[$crate::f",
+                "#[$m",
+                "#[a::"
+            ]
+        );
+        // Other keywords end the path.
+        assert_eq!(
+            tokens("#[fn] #[a::Self]"),
+            [
+                ("#[", Kind::Attribute),
+                ("fn", Kind::Keyword),
+                ("]", Kind::Punctuation),
+                ("#[a::", Kind::Attribute),
+                ("Self", Kind::Keyword),
+                ("]", Kind::Punctuation),
+            ]
+        );
     }
 
     #[test]
