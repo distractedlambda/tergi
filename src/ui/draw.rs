@@ -2001,6 +2001,95 @@ fn draw_overlays(app: &mut App, buf: &mut Buffer, area: Rect, hits: &mut Hits) -
                     top,
                 );
             }
+            Overlay::Fetch(d) => {
+                const PRUNE: &str = "Prune remote branches that are gone (--prune)";
+                const HEADING: &str = "Fetch from these remotes (space checks and unchecks)";
+                let names: Vec<String> = d
+                    .remotes
+                    .iter()
+                    .map(|(r, _)| r.to_str_lossy().into_owned())
+                    .collect();
+                let longest = names
+                    .iter()
+                    .map(|n| width(n, 4))
+                    .chain([width(PRUNE, 4)])
+                    .max()
+                    .unwrap_or(0);
+                let w = (longest as u16 + 10)
+                    .max(48)
+                    .min(area.width.saturating_sub(4));
+                let n = names.len();
+                let visible = n.min(usize::from(area.height.saturating_sub(9)).max(1));
+                // Keep the cursor in view when it is on a remote.
+                if d.selected < n {
+                    if d.selected < d.scroll {
+                        d.scroll = d.selected;
+                    } else if d.selected >= d.scroll + visible {
+                        d.scroll = d.selected + 1 - visible;
+                    }
+                }
+                d.scroll = d.scroll.min(n - visible);
+                let h = visible as u16 + 7;
+                let r = centered(area, w, h);
+                frame(buf, r, t, Some("Fetch"));
+                if top {
+                    hits.push((r, Target::Overlay));
+                }
+                put(
+                    buf,
+                    r.x + 2,
+                    r.y + 1,
+                    HEADING,
+                    r.width.saturating_sub(4),
+                    Style::default().bg(t.panel).fg(t.dim),
+                );
+                let rows = (d.scroll..d.scroll + visible)
+                    .map(|i| (i, r.y + 2 + (i - d.scroll) as u16, names[i].as_str()))
+                    .chain([(n, r.y + 3 + visible as u16, PRUNE)]);
+                for (i, iy, label) in rows {
+                    // On a short screen, the frame cuts the dialog off.
+                    if iy + 1 >= r.bottom() {
+                        continue;
+                    }
+                    let ir = Rect::new(r.x + 1, iy, r.width.saturating_sub(2), 1);
+                    let bg = if i == d.selected {
+                        t.sel
+                    } else if hover(ir) {
+                        t.hover
+                    } else {
+                        t.panel
+                    };
+                    fill(buf, ir, bg);
+                    let mark = if d.checked(i) { "[x] " } else { "[ ] " };
+                    let x = ir.x + 1;
+                    let max = ir.width.saturating_sub(2);
+                    let end = put(buf, x, iy, mark, max, Style::default().bg(bg).fg(t.accent));
+                    put(
+                        buf,
+                        end,
+                        iy,
+                        label,
+                        max.saturating_sub(end - x),
+                        Style::default().bg(bg).fg(t.fg),
+                    );
+                    if top {
+                        hits.push((ir, Target::Checkbox(i)));
+                    }
+                }
+                draw_dialog_buttons(
+                    t,
+                    mouse,
+                    buf,
+                    hits,
+                    r.right().saturating_sub(2),
+                    r.bottom().saturating_sub(2),
+                    vec![
+                        ("Cancel (esc)", Cmd::CloseOverlay, None),
+                        ("Fetch (F)", Cmd::SubmitInput, Some(t.badge_head)),
+                    ],
+                    top,
+                );
+            }
             Overlay::Palette {
                 input,
                 items,

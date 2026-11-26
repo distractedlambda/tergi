@@ -189,7 +189,7 @@ again.
 
 In the sidebar, Space folds a section, and `.` Space checks out the
 selected branch. `.H` hides the selected branch or remote branch from the
-history, or shows it again.
+history, or shows it again. `.F` on a remote fetches just that remote.
 
 ### On several commits in the history
 
@@ -253,6 +253,13 @@ Then press `,C` to continue, or `,X` to abort. The banner's
 buttons do the same.
 
 ## Remotes and passwords
+
+`,F` opens the fetch dialog, which has a box to check for each remote
+and one for `--prune`. Move with `j` and `k`, check or uncheck with
+Space or a click, and press `F` again, or Enter, to fetch. The dialog
+starts with the choices of the last fetch, even in a new run of tergi.
+It remembers them for each repository, in the same place as the hidden
+branches. A remote added since then starts out checked.
 
 Fetch, pull and push run the `git` command, so your credential helpers,
 SSH config and hooks all work as usual. tergi never asks for passwords

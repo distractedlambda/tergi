@@ -5,6 +5,7 @@
 //! menu, the `?` help menu, the hint bar and the command palette.
 
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -111,7 +112,14 @@ pub enum Cmd {
     CloseOverlay,
     SubmitInput,
 
+    /// Open the fetch dialog.
     Fetch,
+    /// Fetch these remotes, which were configured when the user chose
+    /// this.
+    FetchRemotes {
+        remotes: Vec<BString>,
+        prune: bool,
+    },
     Pull(PullMode),
     PullMenu,
     /// Push the branch, which was checked out when the user chose this.
@@ -438,6 +446,54 @@ pub struct MessageEdit {
     pub focus: Focus,
 }
 
+/// The dialog that `Cmd::Fetch` opens. It has a box to check for each
+/// remote, and one more for `--prune`. It starts with the choices that
+/// the last fetch from it used (`App::fetch`).
+pub struct FetchDialog {
+    /// Each configured remote, and whether to fetch it.
+    pub remotes: Vec<(BString, bool)>,
+    pub prune: bool,
+    /// The row with the cursor: one of the remotes, or the prune box,
+    /// which comes after them.
+    pub selected: usize,
+    /// The first remote shown, when they don't all fit.
+    pub scroll: usize,
+}
+
+impl FetchDialog {
+    /// The remotes, and then the prune box.
+    pub fn rows(&self) -> usize {
+        self.remotes.len() + 1
+    }
+
+    /// Whether row `i` is checked.
+    pub fn checked(&self, i: usize) -> bool {
+        match self.remotes.get(i) {
+            Some((_, on)) => *on,
+            None => self.prune,
+        }
+    }
+
+    /// Check or uncheck the box in row `i`.
+    pub fn toggle(&mut self, i: usize) {
+        let n = self.remotes.len();
+        match self.remotes.get_mut(i) {
+            Some((_, on)) => *on = !*on,
+            None if i == n => self.prune = !self.prune,
+            None => {}
+        }
+    }
+
+    /// The remotes to fetch.
+    pub fn chosen(&self) -> Vec<BString> {
+        self.remotes
+            .iter()
+            .filter(|(_, on)| *on)
+            .map(|(r, _)| r.clone())
+            .collect()
+    }
+}
+
 pub enum Overlay {
     Menu(Menu),
     Confirm {
@@ -447,6 +503,7 @@ pub enum Overlay {
         yes_label: String,
     },
     Input(InputBox),
+    Fetch(FetchDialog),
     Palette {
         input: TextArea,
         items: Vec<ActionDef>,
@@ -684,7 +741,7 @@ impl App {
             );
         }
         v.extend([
-            act(Some(Key::ch('F')), "Fetch", Cmd::Fetch).comma(),
+            act(Some(Key::ch('F')), "Fetch…", Cmd::Fetch).comma(),
             act(Some(Key::ch('p')), "Pull…", Cmd::PullMenu).comma(),
             act(Some(Key::ch('P')), "Push…", Cmd::PushMenu).comma(),
             act(Some(Key::ch('S')), "Stash changes…", Cmd::StashPush).comma(),
@@ -1176,7 +1233,15 @@ impl App {
                 )
                 .hint()
                 .direct(),
-                act(Some(Key::ch('F')), "Fetch", Cmd::Fetch),
+                act(
+                    Some(Key::ch('F')),
+                    "Fetch this remote",
+                    Cmd::FetchRemotes {
+                        remotes: vec![r.clone()],
+                        prune: self.fetch.prune,
+                    },
+                )
+                .enabled(refs.remotes[..refs.configured_remotes].contains(r)),
             ],
             SideRow::Branch(i) => {
                 let b = &refs.branches[*i];
@@ -1590,14 +1655,28 @@ impl App {
             Cmd::Confirmed(_) | Cmd::CloseOverlay | Cmd::SubmitInput => {}
 
             Cmd::Fetch => {
+                let remotes: Vec<(BString, bool)> = self.refs.remotes[..self.refs.configured_remotes]
+                    .iter()
+                    .map(|r| (r.clone(), !self.fetch.skip.contains(r)))
+                    .collect();
+                if remotes.is_empty() {
+                    self.set_status("There are no remotes to fetch from", Level::Info);
+                    return;
+                }
+                self.overlays.push(Overlay::Fetch(FetchDialog { remotes, prune: self.fetch.prune, selected: 0, scroll: 0 }));
+            }
+            Cmd::FetchRemotes { remotes, prune } => {
                 self.spawn_op("Fetch", After::Nothing, move |r, progress| async move {
+                    let prune = if prune { "--prune" } else { "--no-prune" };
+                    let mut args: Vec<&OsStr> = ["fetch", "--multiple", "--progress", prune, "--end-of-options"].map(OsStr::new).into();
+                    args.extend(remotes.iter().map(|r| os_str(r)));
                     r.git
-                        .run_streaming(
-                            &["fetch", "--all", "--prune", "--progress"],
-                            &crate::git::cli::RunOpts::default(),
-                            |l| progress(l.to_string()),
-                        ).await
-                        .map(|_| "Fetched".to_string())
+                        .run_streaming(&args, &crate::git::cli::RunOpts::default(), |l| progress(l.to_string()))
+                        .await
+                        .map(|_| match remotes.as_slice() {
+                            [one] => format!("Fetched {one}"),
+                            _ => "Fetched".to_string(),
+                        })
                 });
             }
             Cmd::PullMenu => {
@@ -2094,6 +2173,31 @@ impl App {
             preview: None,
             help: false,
         }));
+    }
+
+    /// Fetch what the fetch dialog chose, and remember the choices for
+    /// next time. With no remote chosen, the dialog stays open.
+    pub fn submit_fetch(&mut self, d: FetchDialog) {
+        let remotes = d.chosen();
+        if remotes.is_empty() {
+            self.set_status("Choose a remote to fetch from", Level::Warn);
+            self.overlays.push(Overlay::Fetch(d));
+            return;
+        }
+        let skip = d
+            .remotes
+            .iter()
+            .filter(|(_, on)| !on)
+            .map(|(r, _)| r.clone())
+            .collect();
+        self.set_fetch_choices(crate::state::FetchChoices {
+            prune: d.prune,
+            skip,
+        });
+        self.run_cmd(Cmd::FetchRemotes {
+            remotes,
+            prune: d.prune,
+        });
     }
 
     fn open_input(

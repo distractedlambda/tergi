@@ -655,6 +655,13 @@ fn check_state(ui: &Ui) -> Result<(), TestCaseError> {
                 m.items.len(),
                 screen()
             ),
+            Overlay::Fetch(d) => prop_assert!(
+                d.selected < d.rows(),
+                "fetch dialog row {} of {} is selected\n{}",
+                d.selected,
+                d.rows(),
+                screen()
+            ),
             Overlay::Palette {
                 input,
                 items,
@@ -680,6 +687,7 @@ fn check_state(ui: &Ui) -> Result<(), TestCaseError> {
                     t,
                     Target::Button(_)
                         | Target::MenuItem(_)
+                        | Target::Checkbox(_)
                         | Target::PaletteItem(_)
                         | Target::InputText
                         | Target::Overlay

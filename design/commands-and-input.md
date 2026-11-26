@@ -116,6 +116,10 @@ Only the top one gets keys and clicks. The kinds are:
 - `Confirm`: a yes or no question.
 - `Input`: a text box with a `Purpose` that says what to do with the
   text, such as naming a branch.
+- `Fetch`: the fetch dialog, a list of boxes to check
+  (`running-git.md`). Its rows are `Target::Checkbox`es. Space or a
+  click checks one, and `F` or Enter fetches, as its Fetch button
+  (`Cmd::SubmitInput`) does.
 - `Palette`: the command palette.
 - `Log`: the command log.
 - `Message`: an error or other long message.
@@ -235,6 +239,8 @@ above:
 - `draws_at_any_size`, which draws the main screens and dialogs at
   many small sizes to catch layout code that panics.
 - `clicks_on_detail_rows_that_are_gone_do_nothing`.
+- `fetch_asks_which_remotes_and_remembers_the_choices`, which also
+  opens the app again to see that the choices are kept.
 
 `tests/ui_props.rs` runs random sessions. It sends random keys, clicks
 and right clicks on random entries in `App::hits`, drags, scrolls,

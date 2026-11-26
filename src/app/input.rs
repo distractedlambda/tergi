@@ -25,6 +25,8 @@ pub enum Target {
     /// The commit message editor in the detail pane.
     Edit,
     MenuItem(usize),
+    /// A row with a box to check in the fetch dialog.
+    Checkbox(usize),
     PaletteItem(usize),
     PlannerRow(usize),
     PlannerAction(usize),
@@ -573,6 +575,22 @@ impl App {
                 }
                 _ => {}
             },
+            Overlay::Fetch(d) => {
+                let n = d.rows();
+                if matches!(k.code, KeyCode::Esc | KeyCode::Char('q')) {
+                    self.overlays.pop();
+                } else if up {
+                    d.selected = (d.selected + n - 1) % n;
+                } else if down {
+                    d.selected = (d.selected + 1) % n;
+                } else if k.code == KeyCode::Char(' ') {
+                    d.toggle(d.selected);
+                } else if matches!(k.code, KeyCode::Enter | KeyCode::Char('F'))
+                    && let Some(Overlay::Fetch(d)) = self.overlays.pop()
+                {
+                    self.submit_fetch(d);
+                }
+            }
             Overlay::Input(b) => match b.text.handle_key(k) {
                 Outcome::Submit => {
                     if let Some(Overlay::Input(b)) = self.overlays.pop() {
@@ -641,6 +659,7 @@ impl App {
             Some(
                 Target::Button(_)
                 | Target::MenuItem(_)
+                | Target::Checkbox(_)
                 | Target::PaletteItem(_)
                 | Target::PlannerAction(_),
             ) => "pointer",
@@ -849,11 +868,11 @@ impl App {
                     self.cancel_input(&b);
                 }
             }
-            Target::Button(Cmd::SubmitInput) => {
-                if let Some(Overlay::Input(b)) = self.overlays.pop() {
-                    self.submit_input(b);
-                }
-            }
+            Target::Button(Cmd::SubmitInput) => match self.overlays.pop() {
+                Some(Overlay::Input(b)) => self.submit_input(b),
+                Some(Overlay::Fetch(d)) => self.submit_fetch(d),
+                _ => {}
+            },
             Target::Button(cmd) => {
                 if let Some(Overlay::Confirm { .. }) = self.overlays.last() {
                     self.overlays.pop();
@@ -884,6 +903,12 @@ impl App {
                         self.overlays.pop();
                         self.run_cmd(a.cmd);
                     }
+                }
+            }
+            Target::Checkbox(i) => {
+                if let Some(Overlay::Fetch(d)) = self.overlays.last_mut() {
+                    d.selected = i;
+                    d.toggle(i);
                 }
             }
             Target::PaletteItem(i) => {
@@ -1055,6 +1080,7 @@ impl App {
                     apply(scroll, usize::MAX / 2);
                 }
                 Overlay::Menu(m) => apply(&mut m.scroll, m.items.len()),
+                Overlay::Fetch(d) => apply(&mut d.scroll, d.remotes.len()),
                 _ => {}
             }
             return;

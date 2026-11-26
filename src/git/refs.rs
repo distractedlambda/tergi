@@ -130,7 +130,11 @@ pub struct Refs {
     /// The checked out branch, or `None` when detached or unborn.
     pub head_branch: Option<BString>,
     pub branches: Vec<Branch>,
+    /// The configured remotes, followed by any others that refs are left
+    /// over from.
     pub remotes: Vec<BString>,
+    /// How many of `remotes` are configured. Only these can be fetched.
+    pub configured_remotes: usize,
     pub remote_branches: Vec<RemoteBranch>,
     pub tags: Vec<Tag>,
     pub stashes: Vec<Stash>,
@@ -154,6 +158,7 @@ impl Refs {
             .filter(|s| !s.is_empty())
             .map(BString::from)
             .collect();
+        refs.configured_remotes = refs.remotes.len();
         let mut remote_refs = Vec::new();
         for line in out.stdout.lines() {
             let f: Vec<&[u8]> = line.split(|&b| b == 0).collect();
@@ -395,6 +400,7 @@ mod tests {
             head_branch: Some("main".into()),
             branches: vec![branch("main", 1, true), branch("side", 2, false)],
             remotes: vec!["origin".into()],
+            configured_remotes: 1,
             remote_branches: vec![RemoteBranch {
                 remote: "origin".into(),
                 name: "side".into(),

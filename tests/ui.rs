@@ -580,6 +580,147 @@ fn a_large_commit_remembers_the_files_unfolded_in_it() {
     assert_eq!(commit_folds(&ui), 0);
 }
 
+/// The remotes in the fetch dialog, whether each is checked, and whether
+/// prune is.
+fn fetch_dialog(ui: &Ui) -> (Vec<(String, bool)>, bool) {
+    match ui.app.overlays.last() {
+        Some(Overlay::Fetch(d)) => (
+            d.remotes
+                .iter()
+                .map(|(r, on)| (r.to_string(), *on))
+                .collect(),
+            d.prune,
+        ),
+        _ => panic!("the fetch dialog isn't open\n{}", ui.screen()),
+    }
+}
+
+fn has_ref(s: &Scratch, name: &str) -> bool {
+    !s.sh(&["for-each-ref", name]).is_empty()
+}
+
+#[test]
+fn fetch_asks_which_remotes_and_remembers_the_choices() {
+    let s = Scratch::new();
+    s.write("a.txt", "a\n");
+    s.commit_all("Add a");
+    let remotes = tempfile::tempdir().expect("tempdir");
+    let bare = |name: &str| {
+        let p = remotes.path().join(name);
+        let p = p.to_str().expect("UTF-8 temporary path").to_string();
+        s.sh(&["init", "-q", "--bare", &p]);
+        s.sh(&["remote", "add", name, &p]);
+        s.sh(&["push", "-q", name, "HEAD:main"]);
+        p
+    };
+    let origin = bare("origin");
+    let upstream = bare("upstream");
+    // A branch that the first fetch shouldn't prune and the second should.
+    s.sh(&["push", "-q", "origin", "HEAD:gone"]);
+    s.sh(&["--git-dir", &origin, "branch", "-D", "gone"]);
+    s.sh(&["--git-dir", &origin, "branch", "o-new", "main"]);
+    s.sh(&["--git-dir", &upstream, "branch", "u-new", "main"]);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = dir.path().join("state.redb");
+    let mut ui = Ui::open_with_store(&s, &store);
+    ui.wait_loaded(1);
+
+    // At first every remote is checked, and so is prune.
+    ui.git('F');
+    let all = vec![("origin".to_string(), true), ("upstream".to_string(), true)];
+    assert_eq!(fetch_dialog(&ui), (all.clone(), true));
+    ui.key(KeyCode::Down);
+    ui.key(KeyCode::Char(' '));
+    let prune = ui.find_hit(|t| *t == Target::Checkbox(2));
+    ui.click(MouseButton::Left, prune);
+    let origin_only = vec![
+        ("origin".to_string(), true),
+        ("upstream".to_string(), false),
+    ];
+    assert_eq!(fetch_dialog(&ui), (origin_only.clone(), false));
+
+    // With nothing checked, the dialog stays open.
+    ui.key(KeyCode::Up);
+    ui.key(KeyCode::Up);
+    ui.key(KeyCode::Char(' '));
+    ui.key(KeyCode::Char('F'));
+    assert!(ui.app.busy.is_none());
+    ui.key(KeyCode::Char(' '));
+    assert_eq!(fetch_dialog(&ui), (origin_only.clone(), false));
+
+    ui.key(KeyCode::Char('F'));
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
+    ui.settle();
+    assert!(has_ref(&s, "refs/remotes/origin/o-new"));
+    assert!(!has_ref(&s, "refs/remotes/upstream/u-new"));
+    assert!(has_ref(&s, "refs/remotes/origin/gone"));
+
+    // The next run starts with the same choices. Cancelling forgets what
+    // changed in the dialog.
+    ui.finish_saving();
+    drop(ui);
+    let mut ui = Ui::open_with_store(&s, &store);
+    ui.wait_loaded(1);
+    ui.git('F');
+    assert_eq!(fetch_dialog(&ui), (origin_only.clone(), false));
+    ui.key(KeyCode::Char(' '));
+    ui.key(KeyCode::Esc);
+    assert!(ui.app.overlays.is_empty());
+    ui.git('F');
+    assert_eq!(fetch_dialog(&ui), (origin_only, false));
+
+    // Check everything again, and fetch with the button.
+    ui.key(KeyCode::Down);
+    ui.key(KeyCode::Char(' '));
+    ui.key(KeyCode::Down);
+    ui.key(KeyCode::Char(' '));
+    let fetch = ui.find_hit(|t| *t == Target::Button(Cmd::SubmitInput));
+    ui.click(MouseButton::Left, fetch);
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
+    ui.settle();
+    assert!(has_ref(&s, "refs/remotes/upstream/u-new"));
+    assert!(!has_ref(&s, "refs/remotes/origin/gone"));
+    ui.finish_saving();
+    drop(ui);
+    let mut ui = Ui::open_with_store(&s, &store);
+    ui.wait_loaded(1);
+    ui.git('F');
+    assert_eq!(fetch_dialog(&ui), (all, true));
+}
+
+#[test]
+fn fetch_from_the_sidebar_fetches_one_remote() {
+    let s = Scratch::new();
+    s.write("a.txt", "a\n");
+    s.commit_all("Add a");
+    let remotes = tempfile::tempdir().expect("tempdir");
+    for name in ["origin", "upstream"] {
+        let p = remotes.path().join(name);
+        let p = p.to_str().expect("UTF-8 temporary path").to_string();
+        s.sh(&["init", "-q", "--bare", &p]);
+        s.sh(&["remote", "add", name, &p]);
+        s.sh(&["push", "-q", name, "HEAD:main"]);
+        s.sh(&["--git-dir", &p, "branch", "new", "main"]);
+    }
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(1);
+    ui.app.sidebar_visible = Some(true);
+    ui.run_cmd(Cmd::Focus(Focus::Sidebar));
+    ui.draw();
+    let i = ui
+        .app
+        .sidebar
+        .rows
+        .iter()
+        .position(|r| *r == SideRow::Remote("upstream".into()))
+        .expect("a row for upstream");
+    ui.app.sidebar_select(i);
+    ui.dot('F');
+    ui.settle();
+    assert!(has_ref(&s, "refs/remotes/upstream/new"));
+    assert!(!has_ref(&s, "refs/remotes/origin/new"));
+}
+
 #[test]
 fn long_message_lines_scroll_sideways() {
     let s = Scratch::new();
@@ -767,6 +908,12 @@ fn clicks_on_detail_rows_that_are_gone_do_nothing() {
 #[test]
 fn draws_at_any_size() {
     let s = repo_with_change();
+    for r in [
+        "origin",
+        "a-remote-with-a-name-longer-than-the-dialog-is-wide",
+    ] {
+        s.sh(&["remote", "add", r, "/nonexistent"]);
+    }
     let mut ui = Ui::open(&s);
     ui.wait_loaded(2);
     let sizes: Vec<(u16, u16)> = [1, 2, 3, 4, 7, 12, 24, 39, 40, 70, 100, 140]
@@ -809,6 +956,9 @@ fn draws_at_any_size() {
     ui.key(KeyCode::Esc);
     ui.run_cmd(Cmd::Drop(ui.app.history.commits[0].id));
     draw_all(&mut ui, "a confirmation");
+    ui.key(KeyCode::Esc);
+    ui.git('F');
+    draw_all(&mut ui, "the fetch dialog");
     ui.key(KeyCode::Esc);
     ui.app.show_error(
         "Something failed",

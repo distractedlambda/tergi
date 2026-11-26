@@ -429,6 +429,8 @@ pub struct App {
     save_tx: Option<UnboundedSender<state::Change>>,
     /// Closes once that task has saved everything it was sent.
     saved: Option<tokio::sync::oneshot::Receiver<()>>,
+    /// What the fetch dialog starts with: what it last fetched with.
+    pub fetch: state::FetchChoices,
 
     pub history: History,
 
@@ -596,6 +598,7 @@ impl App {
             refs_load: Reload::default(),
             hidden: Hidden::default(),
             store: None,
+            fetch: state::FetchChoices::default(),
             save_tx: None,
             saved: None,
             history: History::default(),
@@ -721,8 +724,9 @@ impl App {
         }
     }
 
-    /// Read the hidden branches and stashes and the folds in the working
-    /// directory, and start the task that saves changes to them. The first
+    /// Read the hidden branches and stashes, the folds in the working
+    /// directory and the fetch settings, and start the task that saves
+    /// changes to them. The first
     /// history walk needs to know what to leave out, so this reads them
     /// right away rather than in the background. The database is small and
     /// the read is quick.
@@ -758,6 +762,13 @@ impl App {
             }
             Err(e) => self.set_status(
                 format!("Couldn't read the folded files: {e:#}"),
+                Level::Warn,
+            ),
+        }
+        match store.fetch_choices() {
+            Ok(c) => self.fetch = c,
+            Err(e) => self.set_status(
+                format!("Couldn't read the last fetch settings: {e:#}"),
                 Level::Warn,
             ),
         }
@@ -838,6 +849,16 @@ impl App {
         self.hidden = Hidden::default();
         self.save(state::Change::ShowAll);
         self.update_tips();
+    }
+
+    /// Remember what the fetch dialog fetched with, so that it starts with
+    /// the same choices next time.
+    pub fn set_fetch_choices(&mut self, choices: state::FetchChoices) {
+        if choices == self.fetch {
+            return;
+        }
+        self.fetch = choices.clone();
+        self.save(state::Change::Fetch(choices));
     }
 
     fn save(&mut self, change: state::Change) {

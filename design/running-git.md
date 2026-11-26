@@ -154,10 +154,31 @@ The commands are:
 
 | Action | Command |
 | --- | --- |
-| Fetch | `git fetch --all --prune --progress` |
+| Fetch | `git fetch --multiple --progress --prune --end-of-options <remote>...`, or `--no-prune` |
 | Pull | `git pull --progress`, plus `--ff-only`, `--rebase --autostash` or `--no-rebase --no-edit` depending on the choice |
 | Push | `git push --progress`, plus `--force-with-lease` for a force push |
 | Push tag | `git push --progress --end-of-options <remote> refs/tags/<tag>` |
+
+`,F` doesn't fetch right away. It opens a dialog (`Overlay::Fetch`)
+with a box for each configured remote and one for `--prune`, and its
+Fetch button runs `Cmd::FetchRemotes` with the remotes that are
+checked. The remotes are named one by one, rather than with `--all`, so
+that the fetch is exactly what the dialog showed. That means
+`remote.<name>.skipFetchAll` has no effect. Prune is always passed one
+way or the other, so `fetch.prune` and `remote.<name>.prune` don't
+decide it either. The sidebar also lists remotes that only have refs
+left over, after `git remote` no longer names them, so `Refs::remotes`
+holds those too. `Refs::configured_remotes` says how many of its
+remotes, from the start, are configured. Only those are offered, and
+`.F` is disabled on the others, because fetching them would fail.
+
+The dialog starts with the choices of the last fetch from it, which
+`App::fetch` holds and the state store saves for each repository
+(`state::FetchChoices`). It keeps the remotes that were left out
+rather than the ones that were checked, so a remote added later starts
+out checked. Cancelling the dialog saves nothing. `.F` on a remote in
+the sidebar fetches only that remote, with the saved prune choice,
+without asking.
 
 Push needs some care. Without a refspec, git pushes whatever is checked
 out when it runs, and it respects settings like `remote.pushDefault` and
@@ -235,6 +256,10 @@ works. The app suspends while it runs (see `background-work.md`).
   for shell quoting. The quoting test runs the quoted words through `sh`
   and `bash --posix` and checks that they come back unchanged. Some of
   the words aren't UTF-8.
+- `fetch_asks_which_remotes_and_remembers_the_choices` in
+  `tests/ui.rs` fetches from the dialog with some remotes and prune
+  unchecked, and checks that the next run starts with the same choices.
+  `fetch_from_the_sidebar_fetches_one_remote` checks `.F` on a remote.
 - `ssh_never_asks_on_the_terminal` in `tests/ops.rs` fetches through
   a fake ssh command and checks that ssh would run the askpass program,
   and that the program fails.

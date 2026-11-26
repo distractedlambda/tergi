@@ -1,6 +1,6 @@
 //! What tergi remembers about each repository between runs: the branches
-//! and stashes the user hid from the history, and the files they folded
-//! in the detail pane.
+//! and stashes the user hid from the history, the files they folded in
+//! the detail pane, and what they chose in the fetch dialog.
 //!
 //! This lives in a redb database under the user's data folder, not in the
 //! repository, so tergi never adds files to the user's work. Each
@@ -12,7 +12,7 @@
 //! repository then don't undo each other's changes. They only see each
 //! other's changes the next time they start, though.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -51,6 +51,30 @@ const COMMIT_FOLDS: TableDefinition<RepoAndCommit, Vec<&[u8]>> =
 
 type RepoAndCommit = (&'static [u8], &'static [u8]);
 
+/// For each repository, what the fetch dialog last fetched with: whether
+/// it pruned, and the remotes it left out. A repository that isn't here
+/// fetches every remote and prunes.
+const FETCH: TableDefinition<&[u8], (bool, Vec<&[u8]>)> = TableDefinition::new("fetch");
+
+/// What the fetch dialog starts with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchChoices {
+    /// Whether to pass `--prune`.
+    pub prune: bool,
+    /// The remotes not to fetch. We keep the ones left out rather than the
+    /// ones chosen, so that a remote added later starts out chosen.
+    pub skip: BTreeSet<BString>,
+}
+
+impl Default for FetchChoices {
+    fn default() -> Self {
+        FetchChoices {
+            prune: true,
+            skip: BTreeSet::new(),
+        }
+    }
+}
+
 /// redb lets only one process open the file at a time. Each copy of tergi
 /// only holds it for a moment, so one that finds it busy waits this long
 /// for the other to finish.
@@ -69,6 +93,8 @@ pub enum Change {
     Unfold(&'static str, BString),
     /// Replace the folded files of a commit, or forget them with `None`.
     CommitFolds(Vec<u8>, Option<Vec<BString>>),
+    /// Replace what the fetch dialog starts with.
+    Fetch(FetchChoices),
 }
 
 /// The settings of one repository in the database.
@@ -155,6 +181,23 @@ impl Store {
         })
     }
 
+    /// What the fetch dialog last fetched with.
+    pub fn fetch_choices(&self) -> Result<FetchChoices> {
+        self.read(|tx| {
+            let Some(table) = exists(tx.open_table(FETCH))? else {
+                return Ok(FetchChoices::default());
+            };
+            let Some(v) = table.get(self.repo.as_slice())? else {
+                return Ok(FetchChoices::default());
+            };
+            let (prune, skip) = v.value();
+            Ok(FetchChoices {
+                prune,
+                skip: skip.into_iter().map(BString::from).collect(),
+            })
+        })
+    }
+
     /// Read from the database. Without one, `f` reads from an empty one.
     fn read<T: Default>(&self, f: impl FnOnce(&ReadTransaction) -> Result<T>) -> Result<T> {
         if !self.path.exists() {
@@ -178,6 +221,7 @@ impl Store {
             let mut stashes = tx.open_multimap_table(HIDDEN_STASHES)?;
             let mut workdir = tx.open_multimap_table(WORKDIR_FOLDS)?;
             let mut commits = tx.open_table(COMMIT_FOLDS)?;
+            let mut fetch = tx.open_table(FETCH)?;
             let repo = self.repo.as_slice();
             for c in changes {
                 match c {
@@ -209,6 +253,10 @@ impl Store {
                     }
                     Change::CommitFolds(commit, None) => {
                         commits.remove((repo, commit.as_slice()))?;
+                    }
+                    Change::Fetch(c) => {
+                        let skip: Vec<&[u8]> = c.skip.iter().map(|r| r.as_slice()).collect();
+                        fetch.insert(repo, (c.prune, skip))?;
                     }
                 }
             }
@@ -381,6 +429,35 @@ mod tests {
             sb.commit_folds(b"c1").expect("read"),
             Some(vec!["r".into()])
         );
+    }
+
+    #[test]
+    fn fetch_choices_are_kept_for_each_repository() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.redb");
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::create_dir(&a).expect("mkdir");
+        std::fs::create_dir(&b).expect("mkdir");
+        let sa = Store::new(path.clone(), &a);
+        let sb = Store::new(path.clone(), &b);
+        assert_eq!(sa.fetch_choices().expect("read"), FetchChoices::default());
+
+        let choices = FetchChoices {
+            prune: false,
+            skip: [BString::from("upstream"), BString::from(&b"\xff"[..])].into(),
+        };
+        sa.apply(&[Change::Fetch(choices.clone())]).expect("write");
+        let again = Store::new(path, &a);
+        assert_eq!(again.fetch_choices().expect("read"), choices);
+        assert_eq!(sb.fetch_choices().expect("read"), FetchChoices::default());
+
+        // Each change replaces the whole set.
+        let fewer = FetchChoices {
+            prune: true,
+            skip: [BString::from("upstream")].into(),
+        };
+        sa.apply(&[Change::Fetch(fewer.clone())]).expect("write");
+        assert_eq!(sa.fetch_choices().expect("read"), fewer);
     }
 
     #[test]
