@@ -2,6 +2,11 @@
 # directory, mount the project, and run cargo inside it. Mounting a volume
 # at /usr/local/cargo/registry saves downloading crates on every run.
 #
+# The integration tests run at the same time, and each one starts git and
+# tergi, so together they need more processes than podman allows a
+# container by default (2048). Then about half of them fail, though each
+# passes on its own. Run the container with `--pids-limit=-1`.
+#
 # Some tests need git 2.45 or newer, which can create repositories in the
 # reftable format. Older versions skip those tests, so use a Debian release
 # that ships a new enough git.
