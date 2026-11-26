@@ -365,6 +365,23 @@ pub async fn merge(git: &Git, rev: impl AsRef<[u8]>) -> Result<()> {
     Ok(())
 }
 
+/// Fast-forward the checked out branch to `rev`. Like a checkout, this
+/// keeps uncommitted changes, and it fails without changing anything if
+/// it would have to overwrite them, or if `rev` isn't ahead of `HEAD`.
+pub async fn fast_forward(git: &Git, rev: &str) -> Result<()> {
+    // With merge.autoStash, git would stash the changes and could then
+    // leave them in the stash, half applied.
+    git.run(&[
+        "merge",
+        "--ff-only",
+        "--no-autostash",
+        "--end-of-options",
+        rev,
+    ])
+    .await?;
+    Ok(())
+}
+
 /// Cherry-pick commits in the order given.
 pub async fn cherry_pick(git: &Git, revs: &[String]) -> Result<()> {
     let mut args = vec!["cherry-pick", "--end-of-options"];

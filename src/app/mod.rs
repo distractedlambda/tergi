@@ -251,9 +251,50 @@ pub struct History {
     pub replace_on_next: bool,
     /// Why the last walk failed, if it did.
     pub error: Option<String>,
+    /// The last answer of `is_descendant`, because the actions ask it
+    /// for every frame. It is cleared whenever the list changes.
+    descendant_memo: std::cell::Cell<Option<(ObjectId, ObjectId, bool)>>,
 }
 
 impl History {
+    /// Whether `ancestor` is reachable from `descendant` (and isn't the
+    /// same commit), going only through the commits in the list. It says
+    /// no when it can't tell, such as while the walk hasn't reached them.
+    pub fn is_descendant(&self, descendant: ObjectId, ancestor: ObjectId) -> bool {
+        if let Some((d, a, yes)) = self.descendant_memo.get()
+            && (d, a) == (descendant, ancestor)
+        {
+            return yes;
+        }
+        let yes = self.find_descendant(descendant, ancestor);
+        self.descendant_memo.set(Some((descendant, ancestor, yes)));
+        yes
+    }
+
+    fn find_descendant(&self, descendant: ObjectId, ancestor: ObjectId) -> bool {
+        let (Some(&start), Some(&end)) = (self.index.get(&descendant), self.index.get(&ancestor))
+        else {
+            return false;
+        };
+        // The list is in topological order, so every descendant of
+        // `ancestor` comes before it. Commits after it can't lead to it.
+        let mut seen = HashSet::from([start]);
+        let mut todo = vec![start];
+        while let Some(i) = todo.pop() {
+            let Some(c) = self.commits.get(i) else {
+                continue;
+            };
+            for p in &c.parents {
+                match self.index.get(p) {
+                    Some(&j) if j == end => return true,
+                    Some(&j) if j < end && seen.insert(j) => todo.push(j),
+                    _ => {}
+                }
+            }
+        }
+        false
+    }
+
     /// The number of rows, counting the working directory row.
     pub fn row_count(&self) -> usize {
         self.commits.len() + 1
@@ -1220,6 +1261,7 @@ impl App {
         }
         h.commits.extend(batch.commits);
         h.rows.extend(batch.rows);
+        h.descendant_memo.set(None);
         if batch.done {
             h.loading = false;
             // The anchor is gone, usually because a rebase rewrote it. If

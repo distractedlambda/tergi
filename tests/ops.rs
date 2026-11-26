@@ -693,3 +693,67 @@ async fn ssh_never_asks_on_the_terminal() {
     };
     assert!(format!("{err:#}").contains("askpass refused"), "{err:#}");
 }
+
+/// A fast-forward keeps uncommitted changes like a checkout does, and
+/// fails without changing anything when it would have to overwrite them.
+#[tokio::test]
+async fn fast_forward_keeps_uncommitted_changes() {
+    let s = Scratch::new();
+    s.write("a.txt", "a\n");
+    s.write("b.txt", "b\n");
+    s.commit_all("init");
+    s.sh(&["checkout", "-q", "-b", "ahead"]);
+    s.write("a.txt", "a2\n");
+    s.write("new.txt", "new\n");
+    s.commit_all("change a, add new");
+    s.sh(&["checkout", "-q", "main"]);
+    let main_before = s.sh(&["rev-parse", "main"]);
+    let ahead = s.sh(&["rev-parse", "ahead"]);
+    let ahead = ahead.trim();
+
+    let refused = async |what: &str| {
+        ops::fast_forward(&s.git, ahead).await.expect_err(what);
+        assert_eq!(s.sh(&["rev-parse", "main"]), main_before, "{what}");
+    };
+
+    // Unstaged, staged and untracked changes in the way.
+    s.write("a.txt", "mine\n");
+    refused("unstaged").await;
+    assert_eq!(s.read("a.txt"), "mine\n");
+    s.sh(&["add", "a.txt"]);
+    refused("staged").await;
+    assert_eq!(s.index("a.txt"), "mine\n");
+    s.sh(&["reset", "-q", "--hard"]);
+    s.write("new.txt", "mine\n");
+    refused("untracked").await;
+    assert_eq!(s.read("new.txt"), "mine\n");
+    std::fs::remove_file(s.file("new.txt")).expect("remove");
+
+    // With merge.autoStash, git would stash the change, fast-forward, and
+    // then leave the change half applied and in the stash.
+    s.sh(&["config", "merge.autoStash", "true"]);
+    s.write("a.txt", "mine\n");
+    refused("autostash").await;
+    assert_eq!(s.read("a.txt"), "mine\n");
+    assert_eq!(s.sh(&["stash", "list"]), "");
+
+    // A change to a file the fast-forward doesn't touch stays.
+    s.sh(&["reset", "-q", "--hard"]);
+    s.write("b.txt", "mine\n");
+    ops::fast_forward(&s.git, ahead)
+        .await
+        .expect("fast-forward");
+    assert_eq!(s.sh(&["rev-parse", "main"]).trim(), ahead);
+    assert_eq!(s.read("a.txt"), "a2\n");
+    assert_eq!(s.read("b.txt"), "mine\n");
+
+    // A commit that isn't ahead can't be fast-forwarded to.
+    s.sh(&["checkout", "-q", "-b", "other", "main~1"]);
+    s.write("c.txt", "c\n");
+    let other = s.commit_all("other");
+    s.sh(&["checkout", "-q", "main"]);
+    ops::fast_forward(&s.git, &other)
+        .await
+        .expect_err("not ahead");
+    assert_eq!(s.sh(&["rev-parse", "main"]).trim(), ahead);
+}

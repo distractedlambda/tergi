@@ -175,6 +175,7 @@ toggles amend.
 | `.i` | Open the rebase planner from this commit |
 | `.b` / `.T` | New branch or tag here |
 | `.C` / `.V` | Cherry-pick or revert |
+| `.F` | Fast-forward the current branch to here, if the commit is ahead of it |
 | `.X` | Reset the current branch to here |
 | `.y` | Copy the hash |
 

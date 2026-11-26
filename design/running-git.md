@@ -171,6 +171,29 @@ A branch without an upstream gets `-u --end-of-options <remote>
 <branch>`, where the remote is `origin` if there is one, or else the
 first remote.
 
+## Fast-forward
+
+The menu for a commit ahead of the current branch can fast-forward the
+branch to it (`history.md` says how tergi knows it is ahead). This runs
+`git merge --ff-only --no-autostash --end-of-options <commit>`. Like
+push, the `FastForward` command carries the branch's name, and the task
+checks that it is still checked out first, because git moves whatever
+is checked out.
+
+A fast-forward must never lose uncommitted changes. git updates the
+working tree as a checkout does: changes to files that the new commits
+don't touch stay, and if a staged, unstaged or untracked change is in
+the way, git refuses and changes nothing. The error dialog then lists
+the files. `--no-autostash` matters here. With `merge.autoStash` set,
+git would instead stash the changes, fast-forward, and apply the stash
+again, which can stop with conflicts and leave the changes in the
+stash.
+
+`fast_forward_keeps_uncommitted_changes` in `tests/ops.rs` covers each
+of these cases, with and without `merge.autoStash`, and
+`fast_forward_fails_rather_than_lose_changes` in `tests/ui.rs` checks
+the error dialog.
+
 ## No prompts
 
 git and ssh sometimes want to ask the user something: an HTTPS

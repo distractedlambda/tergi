@@ -258,6 +258,23 @@ Clicking a parent in the commit details runs `jump_to`. If the parent is
 loaded, it gets selected. If not, the detail pane shows it anyway, and
 the status bar says it isn't in the history yet.
 
+## Commits ahead of HEAD
+
+The menu for a commit offers to fast-forward the current branch to it,
+but only when the commit is ahead of `HEAD`: `HEAD` is one of its
+ancestors and not the commit itself. `History::is_descendant` answers
+this from the loaded list, without asking git, because the actions are
+built for every frame. It follows parents from the commit, and only
+through commits that come before `HEAD` in the list. The list is in
+topological order, so a commit after `HEAD` can't lead back to it, and
+the search never has to look past `HEAD`'s row. While the walk is still
+loading, a parent that isn't loaded yet counts as a dead end, so the
+answer can be no for a while.
+
+Even so, a commit far above `HEAD` can mean a search through most of
+the history. So the last answer is kept, keyed by the two commits, and
+forgotten whenever a batch of the walk changes the list.
+
 ## Drawing
 
 `draw_history` only draws the entries that are visible, so a long
@@ -311,6 +328,8 @@ how many whole entries fit in the pane, which is how far paging moves.
   from git and from `Refs::load` against a model.
 - `tests/ui.rs` has `selection_follows_its_commit_through_a_reload`,
   `first_load_starts_at_the_top` and `stashes_show_in_the_history`.
+  `fast_forwards_only_to_commits_ahead` checks which commits offer a
+  fast-forward, and that a detached `HEAD` offers none.
 - `hidden_branches_and_stashes_give_no_tips_or_labels` in
   `src/git/refs.rs` checks the filtering, and the tests in
   `src/state.rs` check saving and reading the database, and waiting

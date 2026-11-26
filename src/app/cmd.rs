@@ -134,6 +134,12 @@ pub enum Cmd {
     NewTag(ObjectId),
     CherryPick(ObjectId),
     Revert(ObjectId),
+    /// Fast-forward the branch, which was checked out when the user chose
+    /// this, to the commit.
+    FastForward {
+        branch: BString,
+        to: ObjectId,
+    },
     ResetMenu(ObjectId),
     Reset(ObjectId, ResetMode),
     CopyHash(ObjectId),
@@ -850,7 +856,18 @@ impl App {
         let has_parent = !c.parents.is_empty();
         let merge = c.parents.len() > 1;
         let staged = self.workdir.as_ref().is_some_and(|w| w.status.has_staged());
-        vec![
+        let fast_forward = match (&self.refs.head_branch, self.refs.head) {
+            (Some(branch), Some(head)) if self.history.is_descendant(id, head) => Some(act(
+                Some(Key::ch('F')),
+                format!("Fast-forward {branch} to here"),
+                Cmd::FastForward {
+                    branch: branch.clone(),
+                    to: id,
+                },
+            )),
+            _ => None,
+        };
+        let mut v = vec![
             act(Some(Key::ch('r')), "Reword", Cmd::Reword(id))
                 .hint()
                 .enabled(!merge),
@@ -895,13 +912,17 @@ impl App {
             ),
             act(Some(Key::ch('C')), "Cherry-pick", Cmd::CherryPick(id)),
             act(Some(Key::ch('V')), "Revert", Cmd::Revert(id)),
+        ];
+        v.extend(fast_forward);
+        v.extend([
             act(
                 Some(Key::ch('X')),
                 "Reset current branch to here…",
                 Cmd::ResetMenu(id),
             ),
             act(Some(Key::ch('y')), "Copy commit hash", Cmd::CopyHash(id)),
-        ]
+        ]);
+        v
     }
 
     /// The actions on the commits selected with `v`, newest first.
@@ -1709,6 +1730,15 @@ impl App {
             Cmd::Revert(id) => {
                 let s = id.to_string();
                 self.spawn_op("Revert", After::Nothing, move |r, _| async move { ops::revert(&r.git, &[s]).await.map(|()| "Reverted".into()) });
+            }
+            Cmd::FastForward { branch, to } => {
+                self.spawn_op("Fast-forward", After::Nothing, move |r, _| async move {
+                    // git fast-forwards whatever is checked out when it runs.
+                    if ops::head_branch(&r.git).await.as_ref() != Some(&branch) {
+                        return Err(anyhow::anyhow!("{branch} isn't checked out any more, so nothing was fast-forwarded."));
+                    }
+                    ops::fast_forward(&r.git, &to.to_string()).await.map(|()| format!("Fast-forwarded {branch} to {}", short(&to)))
+                });
             }
             Cmd::ResetMenu(id) => {
                 let items = vec![

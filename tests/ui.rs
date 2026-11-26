@@ -987,6 +987,107 @@ fn the_message_editor_closes_when_its_commit_goes_away() {
     );
 }
 
+/// `main` at "one", with "two" and "three" ahead of it on `ahead`, and
+/// "aside" on `aside`, which forks before "one".
+fn branch_behind() -> Scratch {
+    let s = Scratch::new();
+    s.write("zero.txt", "zero\n");
+    s.commit_all("zero");
+    s.sh(&["checkout", "-q", "-b", "aside"]);
+    s.write("aside.txt", "aside\n");
+    s.commit_all("aside");
+    s.sh(&["checkout", "-q", "main"]);
+    s.write("one.txt", "one\n");
+    s.commit_all("one");
+    s.sh(&["checkout", "-q", "-b", "ahead"]);
+    for name in ["two", "three"] {
+        s.write(&format!("{name}.txt"), &format!("{name}\n"));
+        s.commit_all(name);
+    }
+    s.sh(&["checkout", "-q", "main"]);
+    s
+}
+
+/// Select the commit at `rev` in the history.
+fn select_rev(ui: &mut Ui, s: &Scratch, rev: &str) {
+    let id = s.sh(&["rev-parse", rev]);
+    let i = ui
+        .app
+        .history
+        .commits
+        .iter()
+        .position(|c| c.id.to_string() == id.trim())
+        .expect("commit in the history");
+    ui.select_commit(i + 1);
+}
+
+fn fast_forward_label(ui: &Ui) -> Option<String> {
+    ui.app
+        .actions(Context::History)
+        .into_iter()
+        .find(|a| matches!(a.cmd, Cmd::FastForward { .. }))
+        .map(|a| a.label)
+}
+
+#[test]
+fn fast_forwards_only_to_commits_ahead() {
+    let s = branch_behind();
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(5);
+    for rev in ["main", "main~1", "aside"] {
+        select_rev(&mut ui, &s, rev);
+        assert_eq!(fast_forward_label(&ui), None, "{rev}");
+    }
+    select_rev(&mut ui, &s, "ahead~1");
+    assert_eq!(
+        fast_forward_label(&ui).as_deref(),
+        Some("Fast-forward main to here")
+    );
+
+    // An uncommitted change to a file the commits don't touch stays.
+    s.write("zero.txt", "changed\n");
+    select_rev(&mut ui, &s, "ahead");
+    ui.dot('F');
+    ui.settle();
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
+    assert_eq!(s.sh(&["rev-parse", "main"]), s.sh(&["rev-parse", "ahead"]));
+    assert_eq!(s.sh(&["symbolic-ref", "--short", "HEAD"]).trim(), "main");
+    assert_eq!(s.read("three.txt"), "three\n");
+    assert_eq!(s.read("zero.txt"), "changed\n");
+
+    // With a detached HEAD, there is no branch to move.
+    s.sh(&["checkout", "-q", "--detach", "main~2"]);
+    ui.run_cmd(Cmd::Refresh);
+    ui.wait("the detached HEAD", |u| u.app.refs.head_branch.is_none());
+    select_rev(&mut ui, &s, "ahead");
+    assert_eq!(fast_forward_label(&ui), None);
+}
+
+#[test]
+fn fast_forward_fails_rather_than_lose_changes() {
+    let s = branch_behind();
+    s.write("one.txt", "mine\n");
+    s.sh(&["checkout", "-q", "ahead"]);
+    s.write("one.txt", "theirs\n");
+    s.commit_all("change one");
+    s.sh(&["checkout", "-q", "main"]);
+    s.write("one.txt", "mine\n");
+    let main_before = s.sh(&["rev-parse", "main"]);
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(6);
+    select_rev(&mut ui, &s, "ahead");
+    ui.dot('F');
+    ui.settle();
+    match ui.app.overlays.last() {
+        Some(Overlay::Message {
+            body, error: true, ..
+        }) => assert!(body.contains("one.txt"), "{body}"),
+        _ => panic!("no error\n{}", ui.screen()),
+    }
+    assert_eq!(s.sh(&["rev-parse", "main"]), main_before);
+    assert_eq!(s.read("one.txt"), "mine\n");
+}
+
 /// Commits "one" to "four", each adding a file.
 fn four_commits() -> Scratch {
     let s = Scratch::new();
