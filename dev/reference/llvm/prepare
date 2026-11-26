@@ -7,7 +7,9 @@
 set -eu
 work=$1
 rm -rf "$work/corpus"
-cp -a /opt/corpus "$work/corpus"
+# Not -a, which would keep the label that SELinux gives the image's files,
+# so the dev image couldn't read the copy.
+cp -R --preserve=mode,timestamps /opt/corpus "$work/corpus"
 
 # The language name in front of each path keeps tergi from guessing it.
 find "$work/corpus" -name '*.ll' -type f | LC_ALL=C sort | sed 's/^/LlvmIr\t/' > "$work/files.txt"

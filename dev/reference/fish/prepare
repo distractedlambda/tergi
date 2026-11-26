@@ -13,7 +13,9 @@ corpus=$work/corpus
 # The image has the files already, so this only saves the copy on reruns.
 if [ ! -d "$corpus" ]; then
     rm -rf "$corpus.tmp"
-    cp -a /opt/corpus "$corpus.tmp"
+    # Not -a, which would keep the label that SELinux gives the image's files,
+    # so the dev image couldn't read the copy.
+    cp -R --preserve=mode,timestamps /opt/corpus "$corpus.tmp"
     mv "$corpus.tmp" "$corpus"
 fi
 

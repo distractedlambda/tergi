@@ -7,6 +7,8 @@
 set -eu
 work=$1
 rm -rf "$work/corpus"
-cp -a /opt/corpus "$work/corpus"
+# Not -a, which would keep the label that SELinux gives the image's files,
+# so the dev image couldn't read the copy.
+cp -R --preserve=mode,timestamps /opt/corpus "$work/corpus"
 find "$work/corpus" -name '*.py' -type f | LC_ALL=C sort > "$work/files.txt"
 echo "$(wc -l < "$work/files.txt") files"
