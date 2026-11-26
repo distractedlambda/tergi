@@ -308,8 +308,8 @@ pub enum Via {
     Direct,
     /// `.`, which opens the menu for the selection.
     Dot,
-    /// Esc, which opens the menu of git operations.
-    Esc,
+    /// `,`, which opens the menu of git operations.
+    Comma,
 }
 
 #[derive(Debug, Clone)]
@@ -355,8 +355,8 @@ impl ActionDef {
         self.via = Via::Direct;
         self
     }
-    fn esc(mut self) -> Self {
-        self.via = Via::Esc;
+    fn comma(mut self) -> Self {
+        self.via = Via::Comma;
         self.menu = false;
         self
     }
@@ -366,13 +366,13 @@ impl ActionDef {
     }
 
     /// The keys to press for this action from the pane, such as `.r` or
-    /// `esc F`.
+    /// `,F`.
     pub fn keys_label(&self) -> Option<String> {
         let k = self.key?.label();
         Some(match self.via {
             Via::Direct => k,
             Via::Dot => format!(".{k}"),
-            Via::Esc => format!("esc {k}"),
+            Via::Comma => format!(",{k}"),
         })
     }
 }
@@ -391,7 +391,7 @@ pub struct Menu {
     pub preview: Option<Cmd>,
     /// The `?` list. It shows every key with what comes before it, and
     /// pressing a key there doesn't run anything, because the same key
-    /// can mean different things after `.` and after Esc.
+    /// can mean different things after `.` and after `,`.
     pub help: bool,
 }
 
@@ -586,7 +586,7 @@ impl App {
             act(Some(Key::ch('.')), "Selection menu", Cmd::ContextMenu)
                 .hint()
                 .direct(),
-            act(Some(Key::code(KeyCode::Esc)), "Git menu", Cmd::RepoMenu)
+            act(Some(Key::ch(',')), "Git menu", Cmd::RepoMenu)
                 .hint()
                 .direct(),
             act(Some(Key::ctrl('p')), "Command palette", Cmd::Palette).direct(),
@@ -658,7 +658,7 @@ impl App {
         ]
     }
 
-    /// The git operations that act on the whole repository. Esc opens a
+    /// The git operations that act on the whole repository. `,` opens a
     /// menu of these, and their keys work in that menu.
     pub fn repo_actions(&self) -> Vec<ActionDef> {
         let mut v = Vec::new();
@@ -666,26 +666,30 @@ impl App {
             v.push(
                 act(Some(Key::ch('C')), "Continue", Cmd::ContinueOp)
                     .hint()
-                    .esc(),
+                    .comma(),
             );
             if !matches!(self.repo_state, RepoState::Merge) {
-                v.push(act(Some(Key::ch('s')), "Skip commit", Cmd::SkipOp).esc());
+                v.push(act(Some(Key::ch('s')), "Skip commit", Cmd::SkipOp).comma());
             }
-            v.push(act(Some(Key::ch('X')), "Abort", Cmd::AbortOp).hint().esc());
+            v.push(
+                act(Some(Key::ch('X')), "Abort", Cmd::AbortOp)
+                    .hint()
+                    .comma(),
+            );
         }
         v.extend([
-            act(Some(Key::ch('F')), "Fetch", Cmd::Fetch).esc(),
-            act(Some(Key::ch('p')), "Pull…", Cmd::PullMenu).esc(),
-            act(Some(Key::ch('P')), "Push…", Cmd::PushMenu).esc(),
-            act(Some(Key::ch('S')), "Stash changes…", Cmd::StashPush).esc(),
-            act(Some(Key::ch('a')), "Stage all", Cmd::StageAll).esc(),
-            act(Some(Key::ch('u')), "Unstage all", Cmd::UnstageAll).esc(),
+            act(Some(Key::ch('F')), "Fetch", Cmd::Fetch).comma(),
+            act(Some(Key::ch('p')), "Pull…", Cmd::PullMenu).comma(),
+            act(Some(Key::ch('P')), "Push…", Cmd::PushMenu).comma(),
+            act(Some(Key::ch('S')), "Stash changes…", Cmd::StashPush).comma(),
+            act(Some(Key::ch('a')), "Stage all", Cmd::StageAll).comma(),
+            act(Some(Key::ch('u')), "Unstage all", Cmd::UnstageAll).comma(),
             act(
                 Some(Key::ch('c')),
                 "Write commit message",
                 Cmd::FocusMessage,
             )
-            .esc(),
+            .comma(),
             act(
                 Some(Key::ch('A')),
                 if self.amend {
@@ -695,14 +699,14 @@ impl App {
                 },
                 Cmd::ToggleAmend,
             )
-            .esc(),
+            .comma(),
             act(
                 Some(Key::ch('w')),
                 "Show working directory",
                 Cmd::ShowWorkdir,
             )
-            .esc(),
-            act(Some(Key::ch('r')), "Refresh", Cmd::Refresh).esc(),
+            .comma(),
+            act(Some(Key::ch('r')), "Refresh", Cmd::Refresh).comma(),
         ]);
         v
     }
@@ -1989,9 +1993,7 @@ impl App {
         self.spawn_op(label, After::Nothing, move |r, _| async move {
             Ok(match f(r).await? {
                 Outcome::Done => "Done".to_string(),
-                Outcome::Stopped => {
-                    "Stopped. Make your changes, then continue (esc C).".to_string()
-                }
+                Outcome::Stopped => "Stopped. Make your changes, then continue (,C).".to_string(),
             })
         });
     }

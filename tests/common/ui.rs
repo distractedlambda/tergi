@@ -198,17 +198,14 @@ impl Ui {
         self.key(KeyCode::Char(c));
     }
 
-    /// Press Esc until the git menu opens, and then `c` in it. In the
-    /// detail pane the first presses may only back out a level.
+    /// Press `,` to open the git menu, and then `c` in it.
     pub fn git(&mut self, c: char) {
-        let open = |u: &Ui| matches!(u.app.overlays.last(), Some(Overlay::Menu(m)) if m.title.as_deref() == Some("Git"));
-        for _ in 0..4 {
-            if open(self) {
-                break;
-            }
-            self.key(KeyCode::Esc);
-        }
-        assert!(open(self), "Esc opened no git menu\n{}", self.screen());
+        self.key(KeyCode::Char(','));
+        assert!(
+            matches!(self.app.overlays.last(), Some(Overlay::Menu(m)) if m.title.as_deref() == Some("Git")),
+            "`,` opened no git menu\n{}",
+            self.screen()
+        );
         self.key(KeyCode::Char(c));
     }
 

@@ -81,8 +81,9 @@ Skip and Abort buttons.
 
 The keys work like vim's. Movement keys work by themselves. Actions on
 the selected item come after `.`, which opens the menu for it. Git
-operations on the whole repository come after Esc, which opens a menu
-of them. Both menus list their keys, and a second Esc closes them.
+operations on the whole repository come after `,`, which opens a menu
+of them in every pane, the rebase planner too. Both menus list their
+keys, and Esc closes them.
 
 The focused pane has a colored border. The bottom bar shows the most
 useful keys for it. Press `?` for the full list, or Ctrl+P to search
@@ -96,7 +97,7 @@ for any command by name.
 | Ctrl+D / Ctrl+U | Move by half a page |
 | Tab, `1` `2` `3` | Switch panes |
 | `.` | Open the menu for the selected item |
-| Esc | Open the git menu |
+| `,` | Open the git menu |
 | `?` | Show all keys |
 | Ctrl+P | Command palette |
 | `t` | Switch between unified and side-by-side diffs |
@@ -149,16 +150,17 @@ In the working directory:
 
 | Key | What it does |
 | --- | --- |
-| Esc `F` / `p` / `P` | Fetch, pull, push |
-| Esc `S` | Stash your changes |
-| Esc `a` / `u` | Stage all, unstage all |
-| Esc `c` | Write a commit message. Ctrl+Enter or Ctrl+S commits. |
-| Esc `A` | Toggle amend |
-| Esc `w` | Show the working directory |
-| Esc `r` | Refresh |
-| Esc `C` / `s` / `X` | Continue, skip or abort a rebase, merge, cherry-pick or revert that stopped |
+| `,F` / `,p` / `,P` | Fetch, pull, push |
+| `,S` | Stash your changes |
+| `,a` / `,u` | Stage all, unstage all |
+| `,c` | Write a commit message. Ctrl+Enter or Ctrl+S commits. |
+| `,A` | Toggle amend |
+| `,w` | Show the working directory |
+| `,r` | Refresh |
+| `,C` / `,s` / `,X` | Continue, skip or abort a rebase, merge, cherry-pick or revert that stopped |
 
-In the message box, Esc leaves the box instead, and Alt+A toggles amend.
+In the message box, `,` types a comma, Esc leaves the box, and Alt+A
+toggles amend.
 
 ### On a commit in the history
 
@@ -246,7 +248,7 @@ try to recreate merges.
 If a rebase stops on a conflict, the conflicted files appear at the top
 of the working directory. Resolve each one from its menu with `.O`
 (ours) or `.T` (theirs), or edit it and mark it resolved with `.M`.
-Then press Esc `C` to continue, or Esc `X` to abort. The banner's
+Then press `,C` to continue, or `,X` to abort. The banner's
 buttons do the same.
 
 ## Remotes and passwords

@@ -94,7 +94,12 @@ impl App {
             if let Some(a) = find_action(&self.global_actions(), &k)
                 && matches!(
                     a,
-                    Cmd::Help | Cmd::Quit | Cmd::Palette | Cmd::CommandLog | Cmd::ContextMenu
+                    Cmd::Help
+                        | Cmd::Quit
+                        | Cmd::Palette
+                        | Cmd::CommandLog
+                        | Cmd::ContextMenu
+                        | Cmd::RepoMenu
                 )
             {
                 self.run_cmd(a);
@@ -270,8 +275,7 @@ impl App {
                     .hscroll_by(self.detail.cursor, 8, self.areas.doc.width);
                 true
             }
-            // Esc finishes a line selection, then backs out a level. At the
-            // file level it falls through and opens the git menu.
+            // Esc finishes a line selection, then backs out a level.
             (Focus::Detail, KeyCode::Esc) if self.detail.anchor.is_some() => {
                 self.detail.anchor = None;
                 true
@@ -1084,7 +1088,7 @@ impl App {
 }
 
 /// The command for a key pressed in a pane. Only actions whose keys work
-/// by themselves count. The others need `.` or Esc first, which open a
+/// by themselves count. The others need `.` or `,` first, which open a
 /// menu where their keys work.
 fn find_action(actions: &[ActionDef], k: &KeyEvent) -> Option<Cmd> {
     actions

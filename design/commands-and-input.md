@@ -44,8 +44,8 @@ themselves. These are movement keys like `l` and `h`, Space for
 folding, `v` for selecting lines or commits, and the global keys. `Dot`
 actions act on the selection. Their keys only work in the menu that `.`
 and the right mouse button open, so that letters like `d` can't clash
-with movement. `Esc` actions are the
-ones in `repo_actions`. Their keys work in the git menu that Esc opens.
+with movement. `Comma` actions are the
+ones in `repo_actions`. Their keys work in the git menu that `,` opens.
 The planner is the exception. Its actions are `Direct` and also in its
 right-click menu, because setting actions on its rows is all it does.
 
@@ -57,18 +57,19 @@ That one list is used in six places:
 - **The right-click menu.** `open_context_menu` shows the pane's actions
   that have `menu` set. The `.` key opens the same menu near the
   selected row.
-- **The git menu.** Esc runs `Cmd::RepoMenu`, which shows
-  `repo_actions`.
+- **The git menu.** `,` runs `Cmd::RepoMenu`, which shows
+  `repo_actions`. It works in every pane, whatever is selected there,
+  and in the planner. Only the text boxes take it as text.
 - **The hint bar.** `draw_bottom` shows the actions with `hint` set, as
   many as fit, and each one can be clicked. Each key is shown with what
-  comes before it, such as `.r` or `esc F` (`ActionDef::keys_label`).
+  comes before it, such as `.r` or `,F` (`ActionDef::keys_label`).
   The global hints go at the right end, so that a pane with many hints
   can't push them off.
 - **The help menu.** `?` shows `all_actions`, which is the pane's list
   plus the global one and the git menu. A command that is in more than
   one appears once if its key is the same. The help menu shows each key
   with what comes before it. Pressing a key there runs nothing, because
-  a key can mean one thing after `.` and another after Esc.
+  a key can mean one thing after `.` and another after `,`.
 - **The command palette.** Ctrl+P shows the enabled actions from
   `all_actions` and filters them with `util::fuzzy_score`.
 
@@ -78,13 +79,14 @@ depending on what the cursor is on.
 
 ## Esc
 
-Esc opens the git menu only when nothing else uses it. In a text box
-it cancels or leaves the box, and in a menu or dialog it closes it. In
-the planner it cancels the plan. In the history it first ends a
-selection of commits. In the detail pane, it first ends a
-line selection and then backs out one level, like `h`. It opens the git
-menu once the cursor is at the file level. `diffs.md` explains the
-levels.
+Esc backs out of whatever is open. In a text box it cancels or leaves
+the box, and in a menu or dialog it closes it. In the planner it
+cancels the plan. In the history it ends a selection of commits. In the
+detail pane, it first ends a line selection and then backs out one
+level, like `h`, until the cursor is at the file level. `diffs.md`
+explains the levels. Elsewhere it does nothing. The git menu has its
+own key, `,`, so that it opens the same way however deep the cursor is
+and whatever is selected.
 
 To add a feature, add a `Cmd` variant, put an `ActionDef` for it in the
 right pane's list, and handle it in `run_cmd`. Its key, menu entry, help
@@ -221,7 +223,8 @@ above:
 - `clicks_behind_a_dialog_are_ignored` and
   `buttons_under_a_dialog_do_not_light_up`.
 - `actions_on_the_selection_need_a_dot_first`,
-  `esc_backs_out_before_it_opens_the_git_menu` and
+  `esc_backs_out_one_level_at_a_time`,
+  `comma_opens_the_git_menu_everywhere` and
   `menus_from_the_keyboard_open_in_the_middle`.
 - `the_detail_pane_moves_by_file_then_hunk_then_line` and
   `moving_by_hunks_opens_folded_files`, for the levels.

@@ -253,7 +253,7 @@ impl App {
             Ok(match rebase::run(&r.git, &plan, &exe).await? {
                 rebase::Outcome::Done => "Rebase finished".to_string(),
                 rebase::Outcome::Stopped => {
-                    "Rebase stopped. Make your changes, then continue (esc C).".to_string()
+                    "Rebase stopped. Make your changes, then continue (,C).".to_string()
                 }
             })
         });

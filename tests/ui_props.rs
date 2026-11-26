@@ -145,7 +145,7 @@ fn key() -> impl Strategy<Value = (KeyCode, KeyModifiers)> {
     let alt = KeyModifiers::ALT;
     let shift = KeyModifiers::SHIFT;
     // Every key with a binding somewhere, and a few without.
-    let chars = "?pFPStw@123.qjkgGhlrsfeidAbTcCVXy auvzZ[]{}oOMnRDg/xKJ=";
+    let chars = "?pFPStw@123.,qjkgGhlrsfeidAbTcCVXy auvzZ[]{}oOMnRDg/xKJ=";
     let plain: Vec<(KeyCode, KeyModifiers)> = chars
         .chars()
         .map(|c| (KeyCode::Char(c), none))

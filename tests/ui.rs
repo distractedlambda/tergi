@@ -201,9 +201,9 @@ fn menus_from_the_keyboard_open_in_the_middle() {
         _ => panic!("no menu is open"),
     };
 
-    // Esc opens the git menu in the middle, and so does its push key.
+    // `,` opens the git menu in the middle, and so does its push key.
     ui.mouse(MouseEventKind::Moved, 3, 3);
-    ui.key(KeyCode::Esc);
+    ui.key(KeyCode::Char(','));
     assert_eq!(anchor(&ui), None);
     ui.key(KeyCode::Char('P'));
     assert_eq!(ui.app.overlays.len(), 1);
@@ -212,14 +212,14 @@ fn menus_from_the_keyboard_open_in_the_middle() {
     assert!(ui.app.overlays.is_empty());
 
     // Clicking the push item opens the push menu at the pointer.
-    ui.key(KeyCode::Esc);
+    ui.key(KeyCode::Char(','));
     let push = ui.find_hit(|t| matches!(t, Target::MenuItem(i) if matches!(ui.app.overlays.last(), Some(Overlay::Menu(m)) if m.items[*i].cmd == Cmd::PushMenu)));
     ui.click(MouseButton::Left, push);
     assert_eq!(anchor(&ui), Some((push.x, push.y)));
     ui.key(KeyCode::Esc);
 
     // Keys in the help menu don't run anything, because the same key can
-    // mean something else after `.` or Esc.
+    // mean something else after `.` or `,`.
     ui.key(KeyCode::Char('?'));
     ui.key(KeyCode::Char('P'));
     assert_eq!(ui.app.overlays.len(), 1);
@@ -796,7 +796,7 @@ fn draws_at_any_size() {
     ui.key(KeyCode::Char('?'));
     draw_all(&mut ui, "the help menu");
     ui.key(KeyCode::Esc);
-    ui.key(KeyCode::Esc);
+    ui.key(KeyCode::Char(','));
     draw_all(&mut ui, "the git menu");
     ui.key(KeyCode::Char('S'));
     draw_all(&mut ui, "an input box");
@@ -2510,7 +2510,7 @@ fn moving_to_a_file_shows_the_whole_file() {
 }
 
 #[test]
-fn esc_backs_out_before_it_opens_the_git_menu() {
+fn esc_backs_out_one_level_at_a_time() {
     let s = Scratch::new();
     s.write("f.txt", "1\n2\n3\n");
     s.commit_all("init");
@@ -2535,14 +2535,76 @@ fn esc_backs_out_before_it_opens_the_git_menu() {
     ui.key(KeyCode::Esc);
     assert!(matches!(cursor_row(&ui), Row::File { .. }));
     assert!(ui.app.overlays.is_empty());
+    // At the file level there is nothing left to back out of, so Esc does
+    // nothing more.
     ui.key(KeyCode::Esc);
-    assert!(
-        matches!(ui.app.overlays.last(), Some(Overlay::Menu(m)) if m.title.as_deref() == Some("Git")),
-        "{}",
-        ui.screen()
-    );
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
+    assert!(matches!(cursor_row(&ui), Row::File { .. }));
+}
+
+#[test]
+fn comma_opens_the_git_menu_everywhere() {
+    let s = Scratch::new();
+    s.write("f.txt", "1\n2\n3\n");
+    s.commit_all("one");
+    s.write("f.txt", "1\n2\nthree\n");
+    s.commit_all("two");
+    s.write("f.txt", "1\ntwo\nthree\n");
+    let mut ui = Ui::open(&s);
+    ui.wait_loaded(2);
+    let git_menu = |u: &Ui| matches!(u.app.overlays.last(), Some(Overlay::Menu(m)) if m.title.as_deref() == Some("Git"));
+    let open_and_close = |ui: &mut Ui, what: &str| {
+        ui.key(KeyCode::Char(','));
+        assert!(git_menu(ui), "{what}\n{}", ui.screen());
+        ui.key(KeyCode::Esc);
+        assert!(ui.app.overlays.is_empty(), "{what}\n{}", ui.screen());
+    };
+
+    for pane in ['1', '2', '3'] {
+        ui.key(KeyCode::Char(pane));
+        open_and_close(&mut ui, &format!("pane {pane}"));
+    }
+
+    // Deep in the detail pane, with lines selected. The selection stays.
+    ui.key(KeyCode::Char('j'));
+    ui.key(KeyCode::Char('l'));
+    ui.key(KeyCode::Char('l'));
+    ui.key(KeyCode::Char('v'));
+    ui.key(KeyCode::Char('j'));
+    assert!(ui.app.detail.selection().is_some());
+    open_and_close(&mut ui, "a line selection");
+    assert!(ui.app.detail.selection().is_some());
     ui.key(KeyCode::Esc);
-    assert!(ui.app.overlays.is_empty());
+    ui.key(KeyCode::Esc);
+    open_and_close(&mut ui, "the hunk level");
+    assert!(matches!(cursor_row(&ui), Row::Hunk { .. }));
+
+    // In the history, with commits selected. They stay selected.
+    ui.key(KeyCode::Char('2'));
+    ui.app.select_history(1);
+    ui.key(KeyCode::Char('v'));
+    ui.key(KeyCode::Char('j'));
+    assert_eq!(ui.app.history.marked_rows(), Some((1, 2)));
+    open_and_close(&mut ui, "a commit selection");
+    assert_eq!(ui.app.history.marked_rows(), Some((1, 2)));
+    ui.key(KeyCode::Esc);
+    assert_eq!(ui.app.history.anchor, None);
+
+    // In the planner.
+    ui.app.select_history(2);
+    ui.dot('i');
+    ui.wait("the planner", |u| u.app.planner.is_some());
+    open_and_close(&mut ui, "the planner");
+    assert!(ui.app.planner.is_some());
+
+    // In the message box, `,` is text.
+    ui.key(KeyCode::Esc);
+    assert!(ui.app.planner.is_none());
+    ui.git('c');
+    assert_eq!(ui.app.focus, Focus::Message);
+    ui.type_text("a, b");
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
+    assert_eq!(ui.app.message.text(), "a, b");
 }
 
 #[test]

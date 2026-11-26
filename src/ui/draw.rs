@@ -1702,7 +1702,7 @@ fn draw_bottom(app: &App, buf: &mut Buffer, r: Rect, hits: &mut Hits) {
     }
     // The keys that work everywhere go at the right end, so that the
     // pane's hints can't push them off. In the message boxes these keys
-    // type text, and in the planner Esc cancels it.
+    // type text, and the planner only takes a few of them.
     let global: Vec<ActionDef> = app
         .global_actions()
         .into_iter()
@@ -1710,7 +1710,7 @@ fn draw_bottom(app: &App, buf: &mut Buffer, r: Rect, hits: &mut Hits) {
             a.hint
                 && match ctx {
                     Context::Message | Context::Edit => false,
-                    Context::Planner => a.cmd == Cmd::Help,
+                    Context::Planner => matches!(a.cmd, Cmd::Help | Cmd::RepoMenu),
                     _ => true,
                 }
         })
