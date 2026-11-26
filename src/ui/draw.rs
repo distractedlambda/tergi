@@ -2003,7 +2003,10 @@ fn draw_overlays(app: &mut App, buf: &mut Buffer, area: Rect, hits: &mut Hits) -
             }
             Overlay::Fetch(d) => {
                 const PRUNE: &str = "Prune remote branches that are gone (--prune)";
-                const HEADING: &str = "Fetch from these remotes (space checks and unchecks)";
+                let heading = match &d.single {
+                    Some(r) => format!("Fetch from {}", r.to_str_lossy()),
+                    None => "Fetch from these remotes (space checks and unchecks)".to_string(),
+                };
                 let names: Vec<String> = d
                     .remotes
                     .iter()
@@ -2016,9 +2019,12 @@ fn draw_overlays(app: &mut App, buf: &mut Buffer, area: Rect, hits: &mut Hits) -
                     .max()
                     .unwrap_or(0);
                 let w = (longest as u16 + 10)
+                    .max(width(&heading, 4) as u16 + 4)
                     .max(48)
                     .min(area.width.saturating_sub(4));
                 let n = names.len();
+                // The dialog for one remote has no list, so the heading is
+                // followed by a blank line and the prune box.
                 let visible = n.min(usize::from(area.height.saturating_sub(9)).max(1));
                 // Keep the cursor in view when it is on a remote.
                 if d.selected < n {
@@ -2039,7 +2045,7 @@ fn draw_overlays(app: &mut App, buf: &mut Buffer, area: Rect, hits: &mut Hits) -
                     buf,
                     r.x + 2,
                     r.y + 1,
-                    HEADING,
+                    &heading,
                     r.width.saturating_sub(4),
                     Style::default().bg(t.panel).fg(t.dim),
                 );

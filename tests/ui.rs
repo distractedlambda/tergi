@@ -688,22 +688,8 @@ fn fetch_asks_which_remotes_and_remembers_the_choices() {
     assert_eq!(fetch_dialog(&ui), (all, true));
 }
 
-#[test]
-fn fetch_from_the_sidebar_fetches_one_remote() {
-    let s = Scratch::new();
-    s.write("a.txt", "a\n");
-    s.commit_all("Add a");
-    let remotes = tempfile::tempdir().expect("tempdir");
-    for name in ["origin", "upstream"] {
-        let p = remotes.path().join(name);
-        let p = p.to_str().expect("UTF-8 temporary path").to_string();
-        s.sh(&["init", "-q", "--bare", &p]);
-        s.sh(&["remote", "add", name, &p]);
-        s.sh(&["push", "-q", name, "HEAD:main"]);
-        s.sh(&["--git-dir", &p, "branch", "new", "main"]);
-    }
-    let mut ui = Ui::open(&s);
-    ui.wait_loaded(1);
+/// Select a remote in the sidebar and press `.F` on it.
+fn fetch_from_sidebar(ui: &mut Ui, remote: &str) {
     ui.app.sidebar_visible = Some(true);
     ui.run_cmd(Cmd::Focus(Focus::Sidebar));
     ui.draw();
@@ -712,13 +698,81 @@ fn fetch_from_the_sidebar_fetches_one_remote() {
         .sidebar
         .rows
         .iter()
-        .position(|r| *r == SideRow::Remote("upstream".into()))
-        .expect("a row for upstream");
+        .position(|r| *r == SideRow::Remote(remote.into()))
+        .expect("a row for the remote");
     ui.app.sidebar_select(i);
     ui.dot('F');
+}
+
+#[test]
+fn fetch_from_the_sidebar_asks_only_about_prune() {
+    let s = Scratch::new();
+    s.write("a.txt", "a\n");
+    s.commit_all("Add a");
+    let remotes = tempfile::tempdir().expect("tempdir");
+    let mut upstream = String::new();
+    for name in ["origin", "upstream"] {
+        let p = remotes.path().join(name);
+        let p = p.to_str().expect("UTF-8 temporary path").to_string();
+        s.sh(&["init", "-q", "--bare", &p]);
+        s.sh(&["remote", "add", name, &p]);
+        s.sh(&["push", "-q", name, "HEAD:main"]);
+        s.sh(&["--git-dir", &p, "branch", "new", "main"]);
+        upstream = p;
+    }
+    s.sh(&["push", "-q", "upstream", "HEAD:gone"]);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = dir.path().join("state.redb");
+    let mut ui = Ui::open_with_store(&s, &store);
+    ui.wait_loaded(1);
+
+    // Leave origin out of the fetch from the git menu.
+    ui.git('F');
+    ui.key(KeyCode::Char(' '));
+    ui.key(KeyCode::Char('F'));
+    ui.settle();
+    assert!(!has_ref(&s, "refs/remotes/origin/new"));
+    s.sh(&["--git-dir", &upstream, "branch", "-D", "gone"]);
+
+    // The dialog for one remote only has the prune box, which starts as
+    // the last fetch left it.
+    fetch_from_sidebar(&mut ui, "upstream");
+    assert_eq!(fetch_dialog(&ui), (vec![], true));
+    assert!(
+        ui.screen().contains("Fetch from upstream"),
+        "{}",
+        ui.screen()
+    );
+    ui.key(KeyCode::Char(' '));
+    ui.key(KeyCode::Char('F'));
+    assert!(ui.app.overlays.is_empty(), "{}", ui.screen());
     ui.settle();
     assert!(has_ref(&s, "refs/remotes/upstream/new"));
+    assert!(has_ref(&s, "refs/remotes/upstream/gone"));
     assert!(!has_ref(&s, "refs/remotes/origin/new"));
+
+    // Its prune choice is the git menu's too, and the remotes the git
+    // menu left out stay out.
+    let origin_out = vec![
+        ("origin".to_string(), false),
+        ("upstream".to_string(), true),
+    ];
+    ui.git('F');
+    assert_eq!(fetch_dialog(&ui), (origin_out.clone(), false));
+    ui.key(KeyCode::Esc);
+
+    ui.finish_saving();
+    drop(ui);
+    let mut ui = Ui::open_with_store(&s, &store);
+    ui.wait_loaded(1);
+    fetch_from_sidebar(&mut ui, "upstream");
+    assert_eq!(fetch_dialog(&ui), (vec![], false));
+    ui.key(KeyCode::Char(' '));
+    ui.key(KeyCode::Enter);
+    ui.settle();
+    assert!(!has_ref(&s, "refs/remotes/upstream/gone"));
+    ui.git('F');
+    assert_eq!(fetch_dialog(&ui), (origin_out, true));
 }
 
 #[test]
@@ -959,6 +1013,9 @@ fn draws_at_any_size() {
     ui.key(KeyCode::Esc);
     ui.git('F');
     draw_all(&mut ui, "the fetch dialog");
+    ui.key(KeyCode::Esc);
+    ui.run_cmd(Cmd::FetchRemote("origin".into()));
+    draw_all(&mut ui, "the fetch dialog for one remote");
     ui.key(KeyCode::Esc);
     ui.app.show_error(
         "Something failed",

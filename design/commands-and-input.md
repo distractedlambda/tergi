@@ -116,8 +116,8 @@ Only the top one gets keys and clicks. The kinds are:
 - `Confirm`: a yes or no question.
 - `Input`: a text box with a `Purpose` that says what to do with the
   text, such as naming a branch.
-- `Fetch`: the fetch dialog, a list of boxes to check
-  (`running-git.md`). Its rows are `Target::Checkbox`es. Space or a
+- `Fetch`: the fetch dialog, a list of boxes to check, for all remotes
+  or for one (`running-git.md`). Its rows are `Target::Checkbox`es. Space or a
   click checks one, and `F` or Enter fetches, as its Fetch button
   (`Cmd::SubmitInput`) does.
 - `Palette`: the command palette.

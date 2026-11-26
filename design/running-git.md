@@ -177,8 +177,10 @@ The dialog starts with the choices of the last fetch from it, which
 (`state::FetchChoices`). It keeps the remotes that were left out
 rather than the ones that were checked, so a remote added later starts
 out checked. Cancelling the dialog saves nothing. `.F` on a remote in
-the sidebar fetches only that remote, with the saved prune choice,
-without asking.
+the sidebar (`Cmd::FetchRemote`) opens the same dialog for that remote
+alone (`FetchDialog::single`). It has only the prune box, which starts
+with the saved choice and saves it again, and leaves the saved remotes
+alone.
 
 Push needs some care. Without a refspec, git pushes whatever is checked
 out when it runs, and it respects settings like `remote.pushDefault` and
@@ -259,7 +261,8 @@ works. The app suspends while it runs (see `background-work.md`).
 - `fetch_asks_which_remotes_and_remembers_the_choices` in
   `tests/ui.rs` fetches from the dialog with some remotes and prune
   unchecked, and checks that the next run starts with the same choices.
-  `fetch_from_the_sidebar_fetches_one_remote` checks `.F` on a remote.
+  `fetch_from_the_sidebar_asks_only_about_prune` checks `.F` on a
+  remote, and that it shares the prune choice with `,F`.
 - `ssh_never_asks_on_the_terminal` in `tests/ops.rs` fetches through
   a fake ssh command and checks that ssh would run the askpass program,
   and that the program fails.

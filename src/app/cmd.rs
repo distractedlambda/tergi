@@ -114,6 +114,9 @@ pub enum Cmd {
 
     /// Open the fetch dialog.
     Fetch,
+    /// Open the fetch dialog for one remote, which only asks whether to
+    /// prune.
+    FetchRemote(BString),
     /// Fetch these remotes, which were configured when the user chose
     /// this.
     FetchRemotes {
@@ -449,9 +452,16 @@ pub struct MessageEdit {
 /// The dialog that `Cmd::Fetch` opens. It has a box to check for each
 /// remote, and one more for `--prune`. It starts with the choices that
 /// the last fetch from it used (`App::fetch`).
+///
+/// `Cmd::FetchRemote` opens it for one remote. Then it has no boxes for
+/// the remotes, only the one for `--prune`, which shares its choice with
+/// the dialog for all remotes.
 pub struct FetchDialog {
-    /// Each configured remote, and whether to fetch it.
+    /// Each configured remote, and whether to fetch it. Empty when the
+    /// dialog is for one remote.
     pub remotes: Vec<(BString, bool)>,
+    /// The one remote to fetch, if the dialog is only for it.
+    pub single: Option<BString>,
     pub prune: bool,
     /// The row with the cursor: one of the remotes, or the prune box,
     /// which comes after them.
@@ -486,6 +496,9 @@ impl FetchDialog {
 
     /// The remotes to fetch.
     pub fn chosen(&self) -> Vec<BString> {
+        if let Some(r) = &self.single {
+            return vec![r.clone()];
+        }
         self.remotes
             .iter()
             .filter(|(_, on)| *on)
@@ -1235,11 +1248,8 @@ impl App {
                 .direct(),
                 act(
                     Some(Key::ch('F')),
-                    "Fetch this remote",
-                    Cmd::FetchRemotes {
-                        remotes: vec![r.clone()],
-                        prune: self.fetch.prune,
-                    },
+                    "Fetch this remote…",
+                    Cmd::FetchRemote(r.clone()),
                 )
                 .enabled(refs.remotes[..refs.configured_remotes].contains(r)),
             ],
@@ -1663,7 +1673,10 @@ impl App {
                     self.set_status("There are no remotes to fetch from", Level::Info);
                     return;
                 }
-                self.overlays.push(Overlay::Fetch(FetchDialog { remotes, prune: self.fetch.prune, selected: 0, scroll: 0 }));
+                self.overlays.push(Overlay::Fetch(FetchDialog { remotes, single: None, prune: self.fetch.prune, selected: 0, scroll: 0 }));
+            }
+            Cmd::FetchRemote(remote) => {
+                self.overlays.push(Overlay::Fetch(FetchDialog { remotes: Vec::new(), single: Some(remote), prune: self.fetch.prune, selected: 0, scroll: 0 }));
             }
             Cmd::FetchRemotes { remotes, prune } => {
                 self.spawn_op("Fetch", After::Nothing, move |r, progress| async move {
@@ -2176,7 +2189,8 @@ impl App {
     }
 
     /// Fetch what the fetch dialog chose, and remember the choices for
-    /// next time. With no remote chosen, the dialog stays open.
+    /// next time. With no remote chosen, the dialog stays open. The
+    /// dialog for one remote only changes the prune choice.
     pub fn submit_fetch(&mut self, d: FetchDialog) {
         let remotes = d.chosen();
         if remotes.is_empty() {
@@ -2184,12 +2198,15 @@ impl App {
             self.overlays.push(Overlay::Fetch(d));
             return;
         }
-        let skip = d
-            .remotes
-            .iter()
-            .filter(|(_, on)| !on)
-            .map(|(r, _)| r.clone())
-            .collect();
+        let skip = if d.single.is_some() {
+            self.fetch.skip.clone()
+        } else {
+            d.remotes
+                .iter()
+                .filter(|(_, on)| !on)
+                .map(|(r, _)| r.clone())
+                .collect()
+        };
         self.set_fetch_choices(crate::state::FetchChoices {
             prune: d.prune,
             skip,
